@@ -26,38 +26,10 @@ type DebugRow = {
 
 type DebugDataTableProps = {
   debugData: any;
+  userCurrency?: string;
 };
 
-export function DebugDataTable({ debugData }: DebugDataTableProps) {
-  const downloadData = () => {
-    if (!rows || rows.length === 0) return;
-
-    // Create CSV content
-    const headers = ["Metric", "Platform", "Total", ...weekHeaders];
-    const csvRows = [headers.join(",")];
-
-    for (const row of rows) {
-      const weekValues = weekHeaders.map((week) => row.weeks[week] || 0);
-      csvRows.push([
-        `"${row.metricName}"`,
-        row.platform,
-        row.total,
-        ...weekValues,
-      ].join(","));
-    }
-
-    const csvContent = csvRows.join("\n");
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const link = document.createElement("a");
-    const url = URL.createObjectURL(blob);
-    link.setAttribute("href", url);
-    link.setAttribute("download", `metrics-debug-${new Date().toISOString().split("T")[0]}.csv`);
-    link.style.visibility = "hidden";
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
+export function DebugDataTable({ debugData, userCurrency = "USD" }: DebugDataTableProps) {
   const { rows, weekHeaders } = useMemo(() => {
     if (!debugData || !debugData.latestByPlatform) return { rows: [], weekHeaders: [] };
 
@@ -68,11 +40,9 @@ export function DebugDataTable({ debugData }: DebugDataTableProps) {
       monthlySubscribers: "Monthly Subs",
       yearlySubscribers: "Yearly Subs",
       cancellations: "Cancellations",
-      churn: "Churn",
       graceEvents: "Grace Events",
       firstPayments: "First Payments",
       renewals: "Renewals",
-      weeklyRevenue: "Revenue (Week)",
       mrr: "MRR",
       monthlyRevenueGross: "Monthly Rev. (Gross)",
       monthlyRevenueNet: "Monthly Rev. (Net)",
@@ -155,14 +125,43 @@ export function DebugDataTable({ debugData }: DebugDataTableProps) {
     return { rows, weekHeaders: sortedWeeks };
   }, [debugData]);
 
+  const downloadData = () => {
+    if (!rows || rows.length === 0) return;
+
+    // Create CSV content
+    const headers = ["Metric", "Platform", "Total", ...weekHeaders];
+    const csvRows = [headers.join(",")];
+
+    for (const row of rows) {
+      const weekValues = weekHeaders.map((week) => row.weeks[week] || 0);
+      csvRows.push([
+        `"${row.metricName}"`,
+        row.platform,
+        row.total,
+        ...weekValues,
+      ].join(","));
+    }
+
+    const csvContent = csvRows.join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.setAttribute("href", url);
+    link.setAttribute("download", `metrics-debug-${new Date().toISOString().split("T")[0]}.csv`);
+    link.style.visibility = "hidden";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   const formatValue = (metricName: string, value: number) => {
-    const currencyMetrics = ["Revenue (Week)", "MRR", "Monthly Rev. (Gross)", "Monthly Rev. (Net)"];
+    const currencyMetrics = ["MRR", "Monthly Rev. (Gross)", "Monthly Rev. (Net)"];
     if (currencyMetrics.includes(metricName)) {
       return new Intl.NumberFormat("en-US", {
         style: "currency",
-        currency: "USD",
-        minimumFractionDigits: 0,
-        maximumFractionDigits: 0,
+        currency: userCurrency,
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
       }).format(value);
     }
     return value.toLocaleString();

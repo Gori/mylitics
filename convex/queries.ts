@@ -1,26 +1,27 @@
 import { query } from "./_generated/server";
 import { v } from "convex/values";
+import { getAuthUserId } from "./auth";
 
 async function getUserId(ctx: any) {
-  const identity = await ctx.auth.getUserIdentity();
-  if (!identity) return null;
+  const userId = await getAuthUserId(ctx);
+  return userId || null;
+}
 
-  const existing = await ctx.db
-    .query("users")
-    .withIndex("by_clerk_id", (q: any) => q.eq("clerkId", identity.subject))
-    .first();
-
-  if (existing) return existing._id;
-
-  // Read-only path: if user doc missing, just return null; mutations will upsert/backfill.
-  return null;
+async function validateAppOwnership(ctx: any, appId: string) {
+  const userId = await getUserId(ctx);
+  if (!userId) throw new Error("Not authenticated");
+  
+  const app = await ctx.db.get(appId);
+  if (!app) throw new Error("App not found");
+  if (app.userId !== userId) throw new Error("Not authorized");
+  
+  return app;
 }
 
 export const getLatestMetrics = query({
-  args: {},
-  handler: async (ctx) => {
-    const userId = await getUserId(ctx);
-    if (!userId) return null;
+  args: { appId: v.id("apps") },
+  handler: async (ctx, { appId }) => {
+    await validateAppOwnership(ctx, appId);
 
     const now = new Date();
     const today = now.toISOString().split("T")[0];
@@ -31,7 +32,7 @@ export const getLatestMetrics = query({
 
     const connections = await ctx.db
       .query("platformConnections")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .withIndex("by_app", (q) => q.eq("appId", appId))
       .filter((q) => q.eq(q.field("isActive"), true))
       .collect();
 
@@ -52,7 +53,7 @@ export const getLatestMetrics = query({
     // Get the most recent snapshots for each platform (for stock metrics)
     const recentSnapshots = await ctx.db
       .query("metricsSnapshots")
-      .withIndex("by_user_date", (q) => q.eq("userId", userId))
+      .withIndex("by_app_date", (q) => q.eq("appId", appId))
       .filter((q) => q.neq(q.field("platform"), "unified"))
       .order("desc")
       .take(100);
@@ -68,7 +69,7 @@ export const getLatestMetrics = query({
     // Get 30-day snapshots for summing flow metrics
     const snapshots30 = await ctx.db
       .query("metricsSnapshots")
-      .withIndex("by_user_date", (q) => q.eq("userId", userId))
+      .withIndex("by_app_date", (q) => q.eq("appId", appId))
       .filter((q) => q.gte(q.field("date"), thirtyDaysAgo.toISOString().split("T")[0]))
       .filter((q) => q.neq(q.field("platform"), "unified"))
       .collect();
@@ -135,10 +136,10 @@ export const getLatestMetrics = query({
       paybacks: 0,
       firstPayments: platformMap.appstore.firstPayments + platformMap.googleplay.firstPayments + platformMap.stripe.firstPayments,
       renewals: platformMap.appstore.renewals + platformMap.googleplay.renewals + platformMap.stripe.renewals,
-      weeklyRevenue: platformMap.appstore.weeklyRevenue + platformMap.googleplay.weeklyRevenue + platformMap.stripe.weeklyRevenue,
-      mrr: platformMap.appstore.mrr + platformMap.googleplay.mrr + platformMap.stripe.mrr,
-      monthlyRevenueGross: platformMap.appstore.monthlyRevenueGross + platformMap.googleplay.monthlyRevenueGross + platformMap.stripe.monthlyRevenueGross,
-      monthlyRevenueNet: platformMap.appstore.monthlyRevenueNet + platformMap.googleplay.monthlyRevenueNet + platformMap.stripe.monthlyRevenueNet,
+      weeklyRevenue: Math.round((platformMap.appstore.weeklyRevenue + platformMap.googleplay.weeklyRevenue + platformMap.stripe.weeklyRevenue + Number.EPSILON) * 100) / 100,
+      mrr: Math.round((platformMap.appstore.mrr + platformMap.googleplay.mrr + platformMap.stripe.mrr + Number.EPSILON) * 100) / 100,
+      monthlyRevenueGross: Math.round((platformMap.appstore.monthlyRevenueGross + platformMap.googleplay.monthlyRevenueGross + platformMap.stripe.monthlyRevenueGross + Number.EPSILON) * 100) / 100,
+      monthlyRevenueNet: Math.round((platformMap.appstore.monthlyRevenueNet + platformMap.googleplay.monthlyRevenueNet + platformMap.stripe.monthlyRevenueNet + Number.EPSILON) * 100) / 100,
       monthlySubscribers: platformMap.appstore.monthlySubscribers + platformMap.googleplay.monthlySubscribers + platformMap.stripe.monthlySubscribers,
       yearlySubscribers: platformMap.appstore.yearlySubscribers + platformMap.googleplay.yearlySubscribers + platformMap.stripe.yearlySubscribers,
     };
@@ -155,16 +156,16 @@ export const getLatestMetrics = query({
 
 export const getMetricsHistory = query({
   args: {
+    appId: v.id("apps"),
     days: v.optional(v.number()),
   },
-  handler: async (ctx, { days = 30 }) => {
-    const userId = await getUserId(ctx);
-    if (!userId) return [];
+  handler: async (ctx, { appId, days = 30 }) => {
+    await validateAppOwnership(ctx, appId);
 
     const snapshots = await ctx.db
       .query("metricsSnapshots")
-      .withIndex("by_user_platform", (q) =>
-        q.eq("userId", userId).eq("platform", "unified")
+      .withIndex("by_app_platform", (q) =>
+        q.eq("appId", appId).eq("platform", "unified")
       )
       .order("desc")
       .take(days);
@@ -174,14 +175,13 @@ export const getMetricsHistory = query({
 });
 
 export const getPlatformConnections = query({
-  args: {},
-  handler: async (ctx) => {
-    const userId = await getUserId(ctx);
-    if (!userId) return [];
+  args: { appId: v.id("apps") },
+  handler: async (ctx, { appId }) => {
+    await validateAppOwnership(ctx, appId);
 
     const connections = await ctx.db
       .query("platformConnections")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .withIndex("by_app", (q) => q.eq("appId", appId))
       .filter((q) => q.eq(q.field("isActive"), true))
       .collect();
 
@@ -189,20 +189,32 @@ export const getPlatformConnections = query({
       _id: c._id,
       platform: c.platform,
       lastSync: c.lastSync,
+      credentials: c.credentials,
     }));
+  },
+});
+
+export const getUserPreferences = query({
+  args: { appId: v.id("apps") },
+  handler: async (ctx, { appId }) => {
+    const app = await validateAppOwnership(ctx, appId);
+    
+    return {
+      currency: app.currency || "USD",
+    };
   },
 });
 
 export const getSyncLogs = query({
   args: {
+    appId: v.id("apps"),
     limit: v.optional(v.number()),
   },
-  handler: async (ctx, { limit = 50 }) => {
-    const userId = await getUserId(ctx);
-    if (!userId) return [];
+  handler: async (ctx, { appId, limit = 50 }) => {
+    await validateAppOwnership(ctx, appId);
     return await ctx.db
       .query("syncLogs")
-      .withIndex("by_user_time", (q) => q.eq("userId", userId))
+      .withIndex("by_app_time", (q) => q.eq("appId", appId))
       .order("desc")
       .take(limit);
   },
@@ -210,18 +222,18 @@ export const getSyncLogs = query({
 
 export const getWeeklyMetricsHistory = query({
   args: {
+    appId: v.id("apps"),
     metric: v.string(),
   },
-  handler: async (ctx, { metric }) => {
-    const userId = await getUserId(ctx);
-    if (!userId) return [];
+  handler: async (ctx, { appId, metric }) => {
+    await validateAppOwnership(ctx, appId);
 
     const oneYearAgo = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
     
     // Get active platform connections to determine which platforms should have data
     const connections = await ctx.db
       .query("platformConnections")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .withIndex("by_app", (q) => q.eq("appId", appId))
       .filter((q) => q.eq(q.field("isActive"), true))
       .collect();
     
@@ -243,7 +255,7 @@ export const getWeeklyMetricsHistory = query({
     // Get all snapshots from past year
     const snapshots = await ctx.db
       .query("metricsSnapshots")
-      .withIndex("by_user_date", (q) => q.eq("userId", userId))
+      .withIndex("by_app_date", (q) => q.eq("appId", appId))
       .filter((q) => q.gte(q.field("date"), oneYearAgo))
       .collect();
 
@@ -283,7 +295,11 @@ export const getWeeklyMetricsHistory = query({
         const appstore = val((platforms as any).appstore);
         const googleplay = val((platforms as any).googleplay);
         const stripe = val((platforms as any).stripe);
-        const unified = appstore + googleplay + stripe;
+        // Round currency values to 2 decimals
+        const isCurrencyMetric = ["mrr", "weeklyRevenue", "monthlyRevenueGross", "monthlyRevenueNet"].includes(metric);
+        const unified = isCurrencyMetric 
+          ? Math.round((appstore + googleplay + stripe + Number.EPSILON) * 100) / 100
+          : appstore + googleplay + stripe;
         return {
           week,
           appstore,
@@ -301,11 +317,52 @@ export const getWeeklyMetricsHistory = query({
   },
 });
 
+export const getExchangeRate = query({
+  args: {
+    fromCurrency: v.string(),
+    toCurrency: v.string(),
+  },
+  handler: async (ctx, { fromCurrency, toCurrency }) => {
+    // Same currency, no conversion needed
+    if (fromCurrency.toUpperCase() === toCurrency.toUpperCase()) {
+      return 1;
+    }
+
+    // Get the most recent exchange rate
+    const rate = await ctx.db
+      .query("exchangeRates")
+      .withIndex("by_pair", (q) => 
+        q.eq("fromCurrency", fromCurrency.toUpperCase()).eq("toCurrency", toCurrency.toUpperCase())
+      )
+      .order("desc")
+      .first();
+
+    if (rate) {
+      return rate.rate;
+    }
+
+    // If no direct rate, try inverse
+    const inverseRate = await ctx.db
+      .query("exchangeRates")
+      .withIndex("by_pair", (q) => 
+        q.eq("fromCurrency", toCurrency.toUpperCase()).eq("toCurrency", fromCurrency.toUpperCase())
+      )
+      .order("desc")
+      .first();
+
+    if (inverseRate) {
+      return 1 / inverseRate.rate;
+    }
+
+    // Default to 1 if no rate found (will need to be fetched)
+    return 1;
+  },
+});
+
 export const getAllDebugData = query({
-  args: {},
-  handler: async (ctx) => {
-    const userId = await getUserId(ctx);
-    if (!userId) return null;
+  args: { appId: v.id("apps") },
+  handler: async (ctx, { appId }) => {
+    await validateAppOwnership(ctx, appId);
 
     const metrics = [
       "activeSubscribers",
@@ -331,7 +388,7 @@ export const getAllDebugData = query({
     // Get active platform connections to determine which platforms should have data
     const connections = await ctx.db
       .query("platformConnections")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .withIndex("by_app", (q) => q.eq("appId", appId))
       .filter((q) => q.eq(q.field("isActive"), true))
       .collect();
     
@@ -351,14 +408,14 @@ export const getAllDebugData = query({
     // Get all snapshots from past year for weekly data
     const snapshots = await ctx.db
       .query("metricsSnapshots")
-      .withIndex("by_user_date", (q) => q.eq("userId", userId))
+      .withIndex("by_app_date", (q) => q.eq("appId", appId))
       .filter((q) => q.gte(q.field("date"), oneYearAgo))
       .collect();
 
     // Get the most recent snapshots for each platform (for stock metrics like activeSubscribers, MRR)
     const recentSnapshots = await ctx.db
       .query("metricsSnapshots")
-      .withIndex("by_user_date", (q) => q.eq("userId", userId))
+      .withIndex("by_app_date", (q) => q.eq("appId", appId))
       .filter((q) => q.neq(q.field("platform"), "unified"))
       .order("desc")
       .take(100);
@@ -455,6 +512,139 @@ export const getAllDebugData = query({
       flowSumsByPlatform,
       flowMetrics,
       activePlatforms: Array.from(activePlatforms),
+    };
+  },
+});
+
+export const getChatContext = query({
+  args: { appId: v.id("apps") },
+  handler: async (ctx, { appId }) => {
+    const app = await validateAppOwnership(ctx, appId);
+
+    const currency = app.currency || "USD";
+
+    // Get ALL latest snapshots (including platform-specific ones)
+    const now = new Date();
+    const today = now.toISOString().split("T")[0];
+    
+    const allLatestSnapshots = await ctx.db
+      .query("metricsSnapshots")
+      .withIndex("by_app_date", (q) => q.eq("appId", appId))
+      .order("desc")
+      .take(100);
+
+    // Group by platform and get the most recent for each
+    const latestByPlatform: Record<string, any> = {};
+    for (const snap of allLatestSnapshots) {
+      if (!latestByPlatform[snap.platform]) {
+        latestByPlatform[snap.platform] = snap;
+      }
+    }
+
+    const latestMetrics = latestByPlatform.unified ? {
+      ...latestByPlatform.unified,
+      platformBreakdown: {
+        appstore: latestByPlatform.appstore || null,
+        googleplay: latestByPlatform.googleplay || null,
+        stripe: latestByPlatform.stripe || null,
+      }
+    } : null;
+    
+    // Get 52 weeks of historical data
+    const oneYearAgo = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000);
+    
+    const snapshots = await ctx.db
+      .query("metricsSnapshots")
+      .withIndex("by_app_date", (q) => q.eq("appId", appId))
+      .filter((q) => q.gte(q.field("date"), oneYearAgo.toISOString().split("T")[0]))
+      .collect();
+
+    const metrics = [
+      "activeSubscribers",
+      "trialSubscribers",
+      "paidSubscribers",
+      "monthlySubscribers",
+      "yearlySubscribers",
+      "cancellations",
+      "churn",
+      "graceEvents",
+      "firstPayments",
+      "renewals",
+      "mrr",
+      "monthlyRevenueGross",
+      "monthlyRevenueNet",
+    ];
+
+    const flowMetrics = [
+      "cancellations",
+      "churn",
+      "graceEvents",
+      "firstPayments",
+      "renewals",
+      "monthlyRevenueGross",
+      "monthlyRevenueNet",
+    ];
+
+    // Calculate weekly data for each metric
+    const weeklyData: Record<string, any[]> = {};
+
+    for (const metric of metrics) {
+      const weeklyDataMap: Record<string, Record<string, { sum: number; last: number; lastDate: string }>> = {};
+      const isFlowMetric = flowMetrics.includes(metric);
+
+      for (const snap of snapshots) {
+        if (snap.platform === "unified") continue;
+
+        const date = new Date(snap.date);
+        const weekStart = new Date(date);
+        weekStart.setDate(date.getDate() - date.getDay());
+        const weekKey = weekStart.toISOString().split("T")[0];
+
+        if (!weeklyDataMap[weekKey]) weeklyDataMap[weekKey] = {} as any;
+        const value = (snap as any)[metric] || 0;
+        const entry = weeklyDataMap[weekKey][snap.platform] || { sum: 0, last: 0, lastDate: "" };
+        entry.sum += value;
+        if (snap.date >= entry.lastDate) {
+          entry.last = value;
+          entry.lastDate = snap.date;
+        }
+        weeklyDataMap[weekKey][snap.platform] = entry;
+      }
+
+      const result = Object.entries(weeklyDataMap)
+        .map(([week, platforms]) => {
+          const val = (p?: { sum: number; last: number; lastDate: string }) => (p ? (isFlowMetric ? p.sum : p.last) : 0);
+          const appstore = val((platforms as any).appstore);
+          const googleplay = val((platforms as any).googleplay);
+          const stripe = val((platforms as any).stripe);
+          const unified = appstore + googleplay + stripe;
+          return { week, appstore, googleplay, stripe, unified };
+        })
+        .sort((a, b) => a.week.localeCompare(b.week))
+        .slice(-52);
+
+      weeklyData[metric] = result;
+    }
+
+    return {
+      currency,
+      latestMetrics,
+      weeklyData,
+      metricDefinitions: {
+        activeSubscribers: "Total active subscriptions (trial + paid)",
+        trialSubscribers: "Subscriptions currently in trial period",
+        paidSubscribers: "Active paying subscriptions",
+        monthlySubscribers: "Subscribers on monthly billing plans",
+        yearlySubscribers: "Subscribers on yearly billing plans",
+        cancellations: "Total cancellations in period",
+        churn: "Subscribers who canceled (ended)",
+        graceEvents: "Subscriptions in grace/retry period",
+        firstPayments: "New paying customers",
+        renewals: "Subscription renewals",
+        mrr: "Monthly Recurring Revenue",
+        monthlyRevenueGross: "Total revenue before fees",
+        monthlyRevenueNet: "Revenue after platform fees",
+      },
     };
   },
 });

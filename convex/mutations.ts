@@ -1,39 +1,26 @@
 import { v } from "convex/values";
-import { mutation } from "./_generated/server";
+import { mutation, internalMutation } from "./_generated/server";
+import { getAuthUserId } from "./auth";
 
 async function getUserId(ctx: any) {
-  const identity = await ctx.auth.getUserIdentity();
-  if (!identity) return null;
+  const userId = await getAuthUserId(ctx);
+  if (!userId) throw new Error("Not authenticated");
+  return userId;
+}
 
-  const existing = await ctx.db
-    .query("users")
-    .withIndex("by_clerk_id", (q: any) => q.eq("clerkId", identity.subject))
-    .first();
-
-  if (existing) return existing._id;
-
-  // Create the user document on first authenticated call
-  // Backfill: if a user exists by email but missing clerkId, patch it
-  if (identity.email) {
-    const byEmail = await ctx.db
-      .query("users")
-      .filter((q: any) => q.eq(q.field("email"), identity.email))
-      .first();
-    if (byEmail) {
-      await ctx.db.patch(byEmail._id, { clerkId: identity.subject });
-      return byEmail._id;
-    }
-  }
-
-  if (!identity.email) throw new Error("Authenticated user missing email");
-  return await ctx.db.insert("users", {
-    clerkId: identity.subject,
-    email: identity.email,
-  });
+async function validateAppOwnership(ctx: any, appId: string) {
+  const userId = await getUserId(ctx);
+  
+  const app = await ctx.db.get(appId);
+  if (!app) throw new Error("App not found");
+  if (app.userId !== userId) throw new Error("Not authorized");
+  
+  return app;
 }
 
 export const addPlatformConnection = mutation({
   args: {
+    appId: v.id("apps"),
     platform: v.union(
       v.literal("appstore"),
       v.literal("googleplay"),
@@ -41,14 +28,13 @@ export const addPlatformConnection = mutation({
     ),
     credentials: v.string(),
   },
-  handler: async (ctx, { platform, credentials }) => {
-    const userId = await getUserId(ctx);
-    if (!userId) throw new Error("Not authenticated");
+  handler: async (ctx, { appId, platform, credentials }) => {
+    await validateAppOwnership(ctx, appId);
 
     // Check if connection already exists
     const existing = await ctx.db
       .query("platformConnections")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .withIndex("by_app", (q) => q.eq("appId", appId))
       .filter((q) => q.eq(q.field("platform"), platform))
       .first();
 
@@ -61,7 +47,7 @@ export const addPlatformConnection = mutation({
     }
 
     return await ctx.db.insert("platformConnections", {
-      userId,
+      appId,
       platform,
       credentials,
       isActive: true,
@@ -71,20 +57,57 @@ export const addPlatformConnection = mutation({
 
 export const removePlatformConnection = mutation({
   args: {
+    appId: v.id("apps"),
     connectionId: v.id("platformConnections"),
   },
-  handler: async (ctx, { connectionId }) => {
-    const userId = await getUserId(ctx);
-    if (!userId) throw new Error("Not authenticated");
+  handler: async (ctx, { appId, connectionId }) => {
+    await validateAppOwnership(ctx, appId);
 
     const connection = await ctx.db.get(connectionId);
     if (!connection) throw new Error("Connection not found");
 
-    if (connection.userId !== userId) {
+    if (connection.appId !== appId) {
       throw new Error("Unauthorized");
     }
 
     await ctx.db.patch(connectionId, { isActive: false });
+  },
+});
+
+export const updateAppCurrency = mutation({
+  args: {
+    appId: v.id("apps"),
+    currency: v.string(),
+  },
+  handler: async (ctx, { appId, currency }) => {
+    await validateAppOwnership(ctx, appId);
+
+    await ctx.db.patch(appId, { currency, updatedAt: Date.now() });
+    return { success: true };
+  },
+});
+
+export const storeExchangeRates = internalMutation({
+  args: {
+    rates: v.array(v.object({
+      fromCurrency: v.string(),
+      toCurrency: v.string(),
+      rate: v.number(),
+    })),
+  },
+  handler: async (ctx, { rates }) => {
+    const timestamp = Date.now();
+    
+    for (const { fromCurrency, toCurrency, rate } of rates) {
+      await ctx.db.insert("exchangeRates", {
+        fromCurrency: fromCurrency.toUpperCase(),
+        toCurrency: toCurrency.toUpperCase(),
+        rate,
+        timestamp,
+      });
+    }
+    
+    return { success: true, count: rates.length };
   },
 });
 

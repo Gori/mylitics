@@ -6,17 +6,25 @@ import { useRouter } from "next/navigation";
 import { useUser, UserButton } from "@clerk/nextjs";
 import { useEffect, useMemo, useState } from "react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from "recharts";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardFooter } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 import { DebugDataTable } from "./components/DebugDataTable";
 import { MetricsDefinitions } from "./components/MetricsDefinitions";
+import { ChatSidebar } from "./components/chat/ChatSidebar";
+import { SidebarProvider, SidebarInset, SidebarTrigger } from "@/components/ui/sidebar";
 
 function Dashboard() {
   const router = useRouter();
   const { isSignedIn, isLoaded } = useUser();
   const metrics = useQuery(api.queries.getLatestMetrics);
   const debugData = useQuery(api.queries.getAllDebugData);
+  const userPreferences = useQuery(api.queries.getUserPreferences);
+  const chatContext = useQuery(api.queries.getChatContext);
   const triggerSync = useMutation(api.syncHelpers.triggerSync);
+  const triggerExchangeRates = useMutation(api.syncHelpers.triggerExchangeRatesFetch);
   const [syncing, setSyncing] = useState(false);
+  const [fetchingRates, setFetchingRates] = useState(false);
   const logs = useQuery(api.queries.getSyncLogs, { limit: 50 });
 
   useEffect(() => {
@@ -51,10 +59,24 @@ function Dashboard() {
     await triggerSync({ forceHistorical, platform });
   };
 
+  const handleFetchExchangeRates = async () => {
+    setFetchingRates(true);
+    try {
+      await triggerExchangeRates({});
+      // Wait a bit for the action to complete
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    } finally {
+      setFetchingRates(false);
+    }
+  };
+
   const formatCurrency = (amount: number) => {
+    const currency = userPreferences?.currency || "USD";
     return new Intl.NumberFormat("en-US", {
       style: "currency",
-      currency: "USD",
+      currency: currency,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
     }).format(amount);
   };
 
@@ -92,63 +114,86 @@ function Dashboard() {
   };
 
   return (
-    <div className="min-h-screen bg-white p-4 md:p-8">
-      <div className="max-w-6xl mx-auto">
-        <div className="flex justify-between items-center mb-8">
-          <UserButton />
-          <div className="flex items-center gap-4">
-            <div className="text-sm text-gray-600">
-              {metrics?.lastSync ? formatDate(metrics.lastSync) : "No sync yet"}
+    <SidebarProvider defaultOpen={false}>
+      <SidebarInset>
+        <header className="w-full border-b bg-white">
+          <div className="flex items-center justify-between px-4 md:px-8 h-16">
+            <div className="flex items-center">
+              <UserButton />
             </div>
-            <button
-              onClick={() => handleSync(false)}
-              disabled={syncing}
-              className={`px-4 py-2 rounded ${syncing ? "bg-gray-300 text-gray-600 cursor-not-allowed" : "bg-black text-white"}`}
-            >
-              {syncing ? "Syncing..." : "Sync"}
-            </button>
-            <button
-              onClick={() => handleSync(true)}
-              disabled={syncing}
-              className={`px-4 py-2 rounded border ${syncing ? "bg-gray-100 text-gray-400 cursor-not-allowed border-gray-200" : "bg-white text-black border-black"}`}
-              title="Force full historical sync (365 days)"
-            >
-              Full Sync
-            </button>
-            <div className="flex gap-2">
-              <button
-                onClick={() => handleSync(true, "stripe")}
-                disabled={syncing}
-                className={`px-3 py-2 rounded border ${syncing ? "bg-gray-100 text-gray-400 cursor-not-allowed border-gray-200" : "bg-white text-black border-black"}`}
-                title="Full Sync: Stripe"
+            <div className="flex items-center gap-4 flex-1 justify-center">
+              <div className="text-sm text-muted-foreground">
+                {metrics?.lastSync ? formatDate(metrics.lastSync) : "No sync yet"}
+              </div>
+              <Button
+                onClick={handleFetchExchangeRates}
+                disabled={fetchingRates}
+                variant="outline"
+                size="sm"
+                title="Fetch latest exchange rates for currency conversion"
               >
-                Full Stripe
-              </button>
-              <button
-                onClick={() => handleSync(true, "appstore")}
+                {fetchingRates ? "Fetching..." : "Fetch Rates"}
+              </Button>
+              <Button
+                onClick={() => handleSync(false)}
                 disabled={syncing}
-                className={`px-3 py-2 rounded border ${syncing ? "bg-gray-100 text-gray-400 cursor-not-allowed border-gray-200" : "bg-white text-black border-black"}`}
-                title="Full Sync: App Store"
+                variant="default"
+                size="sm"
               >
-                Full App Store
-              </button>
-              <button
-                onClick={() => handleSync(true, "googleplay")}
+                {syncing ? "Syncing..." : "Sync"}
+              </Button>
+              <Button
+                onClick={() => handleSync(true)}
                 disabled={syncing}
-                className={`px-3 py-2 rounded border ${syncing ? "bg-gray-100 text-gray-400 cursor-not-allowed border-gray-200" : "bg-white text-black border-black"}`}
-                title="Full Sync: Google Play"
+                variant="outline"
+                size="sm"
+                title="Force full historical sync (365 days)"
               >
-                Full Google
-              </button>
+                Full Sync
+              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  onClick={() => handleSync(true, "stripe")}
+                  disabled={syncing}
+                  variant="outline"
+                  size="sm"
+                  title="Full Sync: Stripe"
+                >
+                  Stripe
+                </Button>
+                <Button
+                  onClick={() => handleSync(true, "appstore")}
+                  disabled={syncing}
+                  variant="outline"
+                  size="sm"
+                  title="Full Sync: App Store"
+                >
+                  App Store
+                </Button>
+                <Button
+                  onClick={() => handleSync(true, "googleplay")}
+                  disabled={syncing}
+                  variant="outline"
+                  size="sm"
+                  title="Full Sync: Google Play"
+                >
+                  Google Play
+                </Button>
+              </div>
+            </div>
+            <div className="flex items-center">
+              <SidebarTrigger />
             </div>
           </div>
-        </div>
+        </header>
+        <div className="min-h-screen bg-white p-4 md:p-8">
 
-        {!metrics?.unified ? (
+          <div className="max-w-6xl mx-auto">
+          {!metrics?.unified ? (
           <div className="text-center py-12">
             <p className="text-gray-600 mb-4">No data yet</p>
             <button
-              onClick={() => router.push("/dashboard/connections")}
+              onClick={() => router.push("/dashboard/settings")}
               className="px-4 py-2 bg-black text-white rounded"
             >
               Connect Platforms
@@ -218,19 +263,19 @@ function Dashboard() {
             />
             <MetricCard
               label="MRR"
-              value={formatCurrency(Math.round((metrics.unified.mrr + Number.EPSILON) * 100) / 100)}
+              value={formatCurrency(metrics.unified.mrr)}
               metricKey="mrr"
               right={rightBlock("mrr", true)}
             />
             <MetricCard
               label="Monthly Rev. (Gross)"
-              value={formatCurrency(Math.round((metrics.unified.monthlyRevenueGross + Number.EPSILON) * 100) / 100)}
+              value={formatCurrency(metrics.unified.monthlyRevenueGross)}
               metricKey="monthlyRevenueGross"
               right={rightBlock("monthlyRevenueGross", true)}
             />
             <MetricCard
               label="Monthly Rev. (Net)"
-              value={formatCurrency(Math.round((metrics.unified.monthlyRevenueNet + Number.EPSILON) * 100) / 100)}
+              value={formatCurrency(metrics.unified.monthlyRevenueNet)}
               metricKey="monthlyRevenueNet"
               right={rightBlock("monthlyRevenueNet", true)}
             />
@@ -259,10 +304,10 @@ function Dashboard() {
 
         <div className="mt-8 flex gap-4">
           <button
-            onClick={() => router.push("/dashboard/connections")}
+            onClick={() => router.push("/dashboard/settings")}
             className="px-4 py-2 border border-gray-300 rounded"
           >
-            Connections
+            Settings
           </button>
           <button
             onClick={() => router.push("/dashboard/history")}
@@ -272,12 +317,18 @@ function Dashboard() {
           </button>
         </div>
 
-        <div className="mt-12">
-          <h2 className="text-xl font-semibold mb-4">Debug: All Metrics Data</h2>
-          <DebugDataTable debugData={debugData} />
+          <div className="mt-12">
+            <h2 className="text-xl font-semibold mb-4">Debug: All Metrics Data</h2>
+            <DebugDataTable debugData={debugData} userCurrency={userPreferences?.currency || "USD"} />
+          </div>
+          </div>
         </div>
-      </div>
-    </div>
+      </SidebarInset>
+      <ChatSidebar 
+        chatContext={chatContext}
+        debugData={debugData}
+      />
+    </SidebarProvider>
   );
 }
 
@@ -296,25 +347,50 @@ function MetricCard({
 }) {
   const chartData = useQuery(api.queries.getWeeklyMetricsHistory, { metric: metricKey });
 
+  // Calculate change from chart data
+  const change = useMemo(() => {
+    if (!chartData || chartData.length < 2) return null;
+    const latest = chartData[0]?.unified ?? 0;
+    const previous = chartData[1]?.unified ?? 0;
+    if (previous === 0) return null;
+    const percentChange = ((latest - previous) / previous) * 100;
+    return {
+      value: percentChange,
+      type: percentChange >= 0 ? "positive" : "negative",
+      formatted: `${percentChange >= 0 ? "+" : ""}${percentChange.toFixed(1)}%`,
+    };
+  }, [chartData]);
+
   return (
-    <Card>
-      <CardHeader className="pb-0">
-        <div className="flex items-start justify-between">
-          <div>
-            <CardTitle className="text-2xl">
-              {label}
-            </CardTitle>
-            {dateRange && (
-              <div className="text-sm text-muted-foreground/80">({dateRange})</div>
-            )}
+    <Card className="p-0 gap-0">
+      <CardContent className="p-6">
+        <dd className="flex items-start justify-between space-x-2">
+          <span className="truncate text-sm text-muted-foreground">
+            {label}
+          </span>
+          {change && (
+            <span
+              className={cn(
+                "text-sm font-medium",
+                change.type === "positive"
+                  ? "text-emerald-700 dark:text-emerald-500"
+                  : "text-red-700 dark:text-red-500"
+              )}
+            >
+              {change.formatted}
+            </span>
+          )}
+        </dd>
+        <dd className="mt-1 text-3xl font-semibold text-foreground">
+          {value}
+        </dd>
+        {right && (
+          <div className="mt-2">
+            {right}
           </div>
-          {right}
-        </div>
-      </CardHeader>
-      <CardContent>
-        <div className="text-4xl font-semibold mb-2">{value}</div>
+        )}
         {chartData && chartData.length > 0 && (
-          <div className="h-32">
+          <div className="h-32 mt-4">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={chartData}>
                 <XAxis dataKey="week" hide />

@@ -1,30 +1,65 @@
 import { v } from "convex/values";
-import { mutation, internalQuery, internalMutation } from "./_generated/server";
+import { mutation, query, internalQuery, internalMutation } from "./_generated/server";
 import { api, internal } from "./_generated/api";
+import { getAuthUserId } from "./auth";
 
 async function getUserId(ctx: any) {
-  const identity = await ctx.auth.getUserIdentity();
-  if (!identity) return null;
+  const userId = await getAuthUserId(ctx);
+  return userId || null;
+}
+
+// Helper to check if exchange rate exists for a currency
+async function hasExchangeRate(ctx: any, currency: string): Promise<boolean> {
+  const targetCurrency = currency.toUpperCase();
   
-  const user = await ctx.db
-    .query("users")
-    .withIndex("by_clerk_id", (q: any) => q.eq("clerkId", identity.subject))
+  // USD always has rates (base currency)
+  if (targetCurrency === "USD") return true;
+  
+  // Check if USD -> targetCurrency exists
+  const directRate = await ctx.db
+    .query("exchangeRates")
+    .withIndex("by_pair", (q: any) => q.eq("fromCurrency", "USD").eq("toCurrency", targetCurrency))
+    .order("desc")
     .first();
   
-  return user?._id ?? null;
+  if (directRate) return true;
+  
+  // Check if targetCurrency -> USD exists (inverse)
+  const inverseRate = await ctx.db
+    .query("exchangeRates")
+    .withIndex("by_pair", (q: any) => q.eq("fromCurrency", targetCurrency).eq("toCurrency", "USD"))
+    .order("desc")
+    .first();
+  
+  return !!inverseRate;
 }
 
 export const triggerSync = mutation({
   args: {
+    appId: v.id("apps"),
     forceHistorical: v.optional(v.boolean()),
     platform: v.optional(v.union(v.literal("stripe"), v.literal("googleplay"), v.literal("appstore"))),
   },
-  handler: async (ctx, { forceHistorical, platform }) => {
+  handler: async (ctx, { appId, forceHistorical, platform }) => {
     const userId = await getUserId(ctx);
     if (!userId) throw new Error("Not authenticated");
 
+    // Validate app ownership
+    const app = await ctx.db.get(appId);
+    if (!app || app.userId !== userId) {
+      throw new Error("Not authorized");
+    }
+
+    // Check if exchange rates exist for the app's currency
+    const appCurrency = app.currency || "USD";
+    const hasRate = await hasExchangeRate(ctx, appCurrency);
+    
+    if (!hasRate) {
+      throw new Error(`Exchange rates not available for ${appCurrency}. Please fetch exchange rates first by clicking "Fetch Rates".`);
+    }
+
     await ctx.scheduler.runAfter(0, api.sync.syncAllPlatforms, {
-      userId,
+      appId,
       forceHistorical: forceHistorical || false,
       platform,
     });
@@ -33,15 +68,33 @@ export const triggerSync = mutation({
   },
 });
 
-export const resetConnectionSyncs = mutation({
+export const triggerExchangeRatesFetch = mutation({
   args: {},
   handler: async (ctx) => {
     const userId = await getUserId(ctx);
     if (!userId) throw new Error("Not authenticated");
 
+    await ctx.scheduler.runAfter(0, api.crons.fetchExchangeRates, {});
+
+    return { success: true };
+  },
+});
+
+export const resetConnectionSyncs = mutation({
+  args: { appId: v.id("apps") },
+  handler: async (ctx, { appId }) => {
+    const userId = await getUserId(ctx);
+    if (!userId) throw new Error("Not authenticated");
+
+    // Validate app ownership
+    const app = await ctx.db.get(appId);
+    if (!app || app.userId !== userId) {
+      throw new Error("Not authorized");
+    }
+
     const connections = await ctx.db
       .query("platformConnections")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .withIndex("by_app", (q) => q.eq("appId", appId))
       .collect();
 
     for (const conn of connections) {
@@ -54,12 +107,12 @@ export const resetConnectionSyncs = mutation({
 
 export const getPlatformConnections = internalQuery({
   args: {
-    userId: v.id("users"),
+    appId: v.id("apps"),
   },
-  handler: async (ctx, { userId }) => {
+  handler: async (ctx, { appId }) => {
     return await ctx.db
       .query("platformConnections")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .withIndex("by_app", (q) => q.eq("appId", appId))
       .filter((q) => q.eq(q.field("isActive"), true))
       .collect();
   },
@@ -78,13 +131,13 @@ export const updateLastSync = internalMutation({
 
 export const appendSyncLog = internalMutation({
   args: {
-    userId: v.id("users"),
+    appId: v.id("apps"),
     message: v.string(),
     level: v.optional(v.string()),
   },
-  handler: async (ctx, { userId, message, level }) => {
+  handler: async (ctx, { appId, message, level }) => {
     await ctx.db.insert("syncLogs", {
-      userId,
+      appId,
       timestamp: Date.now(),
       message,
       level,
@@ -94,31 +147,31 @@ export const appendSyncLog = internalMutation({
 
 export const getRecentSyncLogs = internalQuery({
   args: {
-    userId: v.id("users"),
+    appId: v.id("apps"),
     limit: v.optional(v.number()),
   },
-  handler: async (ctx, { userId, limit = 50 }) => {
+  handler: async (ctx, { appId, limit = 50 }) => {
     return await ctx.db
       .query("syncLogs")
-      .withIndex("by_user_time", (q) => q.eq("userId", userId))
+      .withIndex("by_app_time", (q) => q.eq("appId", appId))
       .order("desc")
       .take(limit);
   },
 });
 
-export const getAllUsersWithConnections = internalQuery({
+export const getAllAppsWithConnections = internalQuery({
   args: {},
   handler: async (ctx) => {
     const connections = await ctx.db.query("platformConnections").collect();
-    const userIds = [...new Set(connections.map((c) => c.userId))];
-    const users = await Promise.all(userIds.map((id) => ctx.db.get(id)));
-    return users.filter((u) => u !== null);
+    const appIds = [...new Set(connections.map((c) => c.appId).filter((id): id is NonNullable<typeof id> => id !== undefined))];
+    const apps = await Promise.all(appIds.map((id) => ctx.db.get(id)));
+    return apps.filter((a) => a !== null);
   },
 });
 
 export const recordAppStoreNotification = internalMutation({
   args: {
-    userId: v.optional(v.id("users")),
+    appId: v.optional(v.id("apps")),
     notificationType: v.optional(v.string()),
     subtype: v.optional(v.string()),
     originalTransactionId: v.optional(v.string()),
@@ -128,10 +181,10 @@ export const recordAppStoreNotification = internalMutation({
   },
   handler: async (
     ctx,
-    { userId, notificationType, subtype, originalTransactionId, bundleId, environment, rawPayload }
+    { appId, notificationType, subtype, originalTransactionId, bundleId, environment, rawPayload }
   ) => {
     await ctx.db.insert("appStoreNotifications", {
-      userId,
+      appId,
       timestamp: Date.now(),
       notificationType: notificationType ?? "unknown",
       subtype,
@@ -145,7 +198,7 @@ export const recordAppStoreNotification = internalMutation({
 
 export const saveAppStoreReport = internalMutation({
   args: {
-    userId: v.id("users"),
+    appId: v.id("apps"),
     reportType: v.string(),
     reportSubType: v.string(),
     frequency: v.string(),
@@ -164,12 +217,12 @@ export const saveAppStoreReport = internalMutation({
 
 export const getLatestAppStoreSnapshot = internalQuery({
   args: {
-    userId: v.id("users"),
+    appId: v.id("apps"),
   },
-  handler: async (ctx, { userId }) => {
+  handler: async (ctx, { appId }) => {
     return await ctx.db
       .query("metricsSnapshots")
-      .withIndex("by_user_platform", (q) => q.eq("userId", userId).eq("platform", "appstore"))
+      .withIndex("by_app_platform", (q) => q.eq("appId", appId).eq("platform", "appstore"))
       .order("desc")
       .first();
   },
@@ -177,13 +230,13 @@ export const getLatestAppStoreSnapshot = internalQuery({
 
 export const startSync = internalMutation({
   args: {
-    userId: v.id("users"),
+    appId: v.id("apps"),
   },
-  handler: async (ctx, { userId }) => {
+  handler: async (ctx, { appId }) => {
     // Cancel any existing active syncs
     const existingSync = await ctx.db
       .query("syncStatus")
-      .withIndex("by_user_status", (q) => q.eq("userId", userId).eq("status", "active"))
+      .withIndex("by_app_status", (q) => q.eq("appId", appId).eq("status", "active"))
       .first();
     
     if (existingSync) {
@@ -192,7 +245,7 @@ export const startSync = internalMutation({
     
     // Create new sync status
     const syncId = await ctx.db.insert("syncStatus", {
-      userId,
+      appId,
       startedAt: Date.now(),
       status: "active",
     });
@@ -218,6 +271,58 @@ export const completeSyncSession = internalMutation({
   },
   handler: async (ctx, { syncId, status }) => {
     await ctx.db.patch(syncId, { status });
+  },
+});
+
+export const cancelSync = mutation({
+  args: {
+    appId: v.id("apps"),
+  },
+  handler: async (ctx, { appId }) => {
+    const userId = await getUserId(ctx);
+    if (!userId) throw new Error("Not authenticated");
+
+    // Validate app ownership
+    const app = await ctx.db.get(appId);
+    if (!app || app.userId !== userId) {
+      throw new Error("Not authorized");
+    }
+
+    // Find active sync and cancel it
+    const activeSync = await ctx.db
+      .query("syncStatus")
+      .withIndex("by_app_status", (q) => q.eq("appId", appId).eq("status", "active"))
+      .first();
+    
+    if (activeSync) {
+      await ctx.db.patch(activeSync._id, { status: "cancelled" });
+      return { success: true };
+    }
+    
+    return { success: false, message: "No active sync to cancel" };
+  },
+});
+
+export const getActiveSyncStatus = query({
+  args: {
+    appId: v.id("apps"),
+  },
+  handler: async (ctx, { appId }) => {
+    const userId = await getUserId(ctx);
+    if (!userId) throw new Error("Not authenticated");
+
+    // Validate app ownership
+    const app = await ctx.db.get(appId);
+    if (!app || app.userId !== userId) {
+      throw new Error("Not authorized");
+    }
+
+    const activeSync = await ctx.db
+      .query("syncStatus")
+      .withIndex("by_app_status", (q) => q.eq("appId", appId).eq("status", "active"))
+      .first();
+    
+    return activeSync ? { active: true, syncId: activeSync._id, startedAt: activeSync.startedAt } : { active: false };
   },
 });
 

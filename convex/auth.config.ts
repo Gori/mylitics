@@ -1,7 +1,13 @@
+const convexSiteUrl = process.env.CONVEX_SITE_URL;
+
+if (!convexSiteUrl) {
+  throw new Error("CONVEX_SITE_URL is not set");
+}
+
 export default {
   providers: [
     {
-      domain: process.env.CLERK_ISSUER_URL!,
+      domain: convexSiteUrl,
       applicationID: "convex",
     },
   ],

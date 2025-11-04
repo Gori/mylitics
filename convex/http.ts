@@ -2,29 +2,12 @@ import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { api } from "./_generated/api";
+import { authComponent, createAuth } from "./auth";
 
 const http = httpRouter();
 
-http.route({
-  path: "/clerk-webhook",
-  method: "POST",
-  handler: httpAction(async (ctx, request) => {
-    const payload = await request.json();
-    const eventType = payload.type;
-
-    if (eventType === "user.created" || eventType === "user.updated") {
-      const clerkUser = payload.data;
-      await ctx.runMutation(internal.users.upsertUser, {
-        clerkId: clerkUser.id,
-        email: clerkUser.email_addresses[0]?.email_address || "",
-      });
-    }
-
-    return new Response(null, { status: 200 });
-  }),
-});
-
-export default http;
+// Register BetterAuth routes
+authComponent.registerRoutes(http, createAuth);
 
 // App Store Server Notifications V2 ingestion
 http.route({
@@ -53,9 +36,9 @@ const data = decoded?.data;
         data?.renewalInfo?.originalTransactionId ||
         undefined;
 
-      // Persist notification for later mapping to a user
+      // Persist notification for later mapping to an app
       await ctx.runMutation(internal.syncHelpers.recordAppStoreNotification, {
-        userId: undefined,
+        appId: undefined,
         notificationType,
         subtype,
         originalTransactionId,
@@ -70,3 +53,5 @@ const data = decoded?.data;
     }
   }),
 });
+
+export default http;

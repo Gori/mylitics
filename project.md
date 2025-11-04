@@ -1,5 +1,112 @@
 # Project Status
 
+## Google Play Revenue Integration - ✅ COMPLETED (Oct 29, 2025)
+
+**Objective**: Refactor Google Play connection to read Monthly Revenue (Gross/Net) from Google Cloud Storage exported financial reports, with weekly historical and last 30 days total.
+
+**Implementation**: Completely rebuilt Google Play integration using GCS financial report exports (similar to App Store file-based approach):
+
+### Changes Made
+- **Integration Layer** (`convex/integrations/googlePlay.ts`):
+  - Complete rewrite to use `@google-cloud/storage` instead of Android Publisher API
+  - Implemented `fetchGooglePlayFromGCS()` to list and download CSV reports from GCS bucket
+  - Implemented `parseFinancialReportCSV()` to parse financial reports and extract revenue by date
+  - Handles multiple CSV formats with flexible column matching
+  - Currency conversion support (reports typically in USD)
+
+- **Metrics Processing** (`convex/metrics.ts`):
+  - Added `processGooglePlayFinancialReport()` mutation
+  - Creates daily snapshots from parsed revenue data
+  - Sets subscriber metrics to 0 (not available from financial reports)
+  - Accurate revenue tracking: gross and net amounts with proper currency conversion
+
+- **Sync Logic** (`convex/sync.ts`):
+  - Updated Google Play sync to fetch from GCS bucket
+  - Historical sync: processes 365 days of financial reports
+  - Incremental sync: checks last 90 days for updates
+  - Comprehensive error handling and logging
+
+- **Settings UI** (`app/dashboard/settings/page.tsx`):
+  - Added GCS Bucket Name field (required)
+  - Added GCS Report Prefix field (optional, defaults to "earnings/")
+  - Updated credential structure
+
+- **Dependencies** (`package.json`):
+  - Added `@google-cloud/storage: ^7.14.0`
+
+### User Setup Requirements
+
+**1. Google Cloud Console:**
+- Create a GCS bucket (e.g., `my-app-play-reports`)
+- Service account needs `Storage Object Viewer` role
+- Download service account JSON key
+
+**2. Play Console:**
+- Go to Settings → Cloud Storage
+- Link the GCS bucket
+- Enable automated financial report export
+- Select "Earnings" report type
+- Reports typically export monthly
+
+**3. In App (Settings → Google Play):**
+- Package Name: `com.example.app`
+- GCS Bucket Name: `my-app-play-reports`
+- GCS Report Prefix: `earnings/` (or custom path)
+- Service Account JSON: Paste the JSON key
+
+### Metrics Available
+
+**Revenue (Accurate from Financial Reports):**
+- ✅ Monthly Revenue Gross
+- ✅ Monthly Revenue Net
+- ✅ Weekly historical data (52 weeks)
+- ✅ Last 30 days total
+- ✅ Historical data (365 days)
+
+**Subscriber Metrics (Not Available):**
+- ⚠️ Active/Trial/Paid Subscribers: Set to 0
+- ⚠️ Cancellations, Churn, Grace: Set to 0
+- ⚠️ First Payments, Renewals: Set to 0
+- ⚠️ MRR: Set to 0
+
+**Note**: Google Play financial reports are transaction-focused, not subscriber snapshots. Revenue data is highly accurate, but subscriber counts require additional data sources.
+
+### Impact on Other Platforms
+
+- ✅ Stripe metrics: Completely unaffected
+- ✅ App Store metrics: Completely unaffected
+- ✅ Unified snapshots: Now include Google Play revenue
+- ✅ Weekly charts: Display Google Play revenue line
+- ✅ Dashboard: Shows Google Play revenue in totals
+
+### Files Modified
+1. `convex/integrations/googlePlay.ts` - Complete rewrite with GCS integration
+2. `convex/metrics.ts` - Added `processGooglePlayFinancialReport()` mutation
+3. `convex/sync.ts` - Updated Google Play sync logic
+4. `app/dashboard/settings/page.tsx` - Added GCS credential fields
+5. `package.json` - Added `@google-cloud/storage` dependency
+
+## Currency Rounding Standardization - ✅ COMPLETED (Oct 28, 2025)
+
+**Problem**: Currency values were being rounded inconsistently across the codebase, sometimes with different decimal places.
+
+**Solution**: Implemented centralized currency handling with consistent 2-decimal rounding:
+- Created `convertAndRoundCurrency()` function in `convex/metrics.ts` - single source of truth for all currency conversion and rounding
+- Function only converts currency when needed (from !== to)
+- Always rounds to exactly 2 decimals after conversion
+- Updated all currency calculations throughout the backend to use this function
+- Updated all frontend currency formatting to consistently show 2 decimal places
+- Added rounding to unified snapshot calculations where platforms are summed together
+
+**Files Changed**:
+- `convex/metrics.ts`: New `convertAndRoundCurrency()` function + updated all MRR and revenue calculations
+- `convex/queries.ts`: Added rounding to unified metric calculations
+- `app/dashboard/page.tsx`: Updated `formatCurrency` to always show 2 decimals
+- `app/dashboard/components/DebugDataTable.tsx`: Updated currency formatting to 2 decimals
+- `app/dashboard/history/page.tsx`: Updated currency formatting to 2 decimals
+
+**Result**: All currency values throughout the application now consistently display with exactly 2 decimal places.
+
 ## Platform Metrics Fix - ✅ COMPLETELY REWRITTEN (Oct 24, 2025)
 
 ### LATEST FIXES (Evening - Oct 24, 2025)
@@ -209,16 +316,16 @@ Previous implementation tried to calculate metrics by querying old database data
 - Monthly Revenue (Gross + Net)
 
 ### Platform Support
-- **Stripe**: Full implementation with subscription and invoice data
-- **Google Play**: Implementation using Google Play Developer API
-- **App Store**: Basic structure (requires transaction IDs from server notifications for full implementation)
+- **Stripe**: Full implementation with subscription and invoice data (subscriber metrics + revenue)
+- **App Store**: Full implementation using Sales Reports API (subscriber metrics + revenue via TSV reports)
+- **Google Play**: Revenue-only implementation using GCS financial report exports (accurate gross/net revenue, subscriber metrics set to 0)
 
 ## Known Limitations
 
-- App Store integration requires additional setup with App Store Server Notifications to track transaction IDs
-- MRR calculation is simplified (uses placeholder pricing - needs actual product pricing data)
-- Paybacks metric calculation requires historical comparison (set to 0 for now)
-- Credentials stored as encrypted strings (consider using environment variables for encryption key)
+- **Google Play**: Subscriber metrics not available from financial reports (Active Subscribers, Trials, MRR, etc. set to 0). Only revenue data is accurate. Alternative data sources (RTDN, purchases API) would be needed for subscriber counts.
+- **App Store**: Reports are delayed 1-3 days by Apple
+- **MRR calculation**: Simplified for Stripe (extracts from subscription prices); set to 0 for Google Play
+- **Credentials**: Stored as encrypted strings in database (consider environment variables for encryption key)
 
 ## Files Structure
 

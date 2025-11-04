@@ -4,22 +4,22 @@ import { v } from "convex/values";
 import { action } from "./_generated/server";
 import { api, internal } from "./_generated/api";
 import { fetchStripe } from "./integrations/stripe";
-import { fetchGoogle } from "./integrations/googlePlay";
+import { fetchGooglePlayFromGCS } from "./integrations/googlePlay";
 import { fetchAppStore, downloadASCSubscriptionSummary, downloadASCSubscriberReport } from "./integrations/appStore";
 
 export const syncAllPlatforms = action({
   args: {
-    userId: v.id("users"),
+    appId: v.id("apps"),
     forceHistorical: v.optional(v.boolean()),
     platform: v.optional(v.union(v.literal("stripe"), v.literal("googleplay"), v.literal("appstore"))),
   },
-  handler: async (ctx, { userId, forceHistorical, platform }) => {
+  handler: async (ctx, { appId, forceHistorical, platform }) => {
     // Start sync session and cancel any existing active syncs
-    const syncId = await ctx.runMutation(internal.syncHelpers.startSync, { userId });
+    const syncId = await ctx.runMutation(internal.syncHelpers.startSync, { appId });
     
     try {
       await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-        userId,
+        appId,
         message: "Sync started",
         level: "info",
       });
@@ -27,7 +27,7 @@ export const syncAllPlatforms = action({
       let connections = await ctx.runQuery(
         internal.syncHelpers.getPlatformConnections,
         {
-          userId,
+          appId,
         }
       );
 
@@ -36,7 +36,7 @@ export const syncAllPlatforms = action({
     }
 
     await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-      userId,
+      appId,
       message: `Found ${connections.length} platform connection(s)`,
       level: "info",
     });
@@ -44,7 +44,7 @@ export const syncAllPlatforms = action({
     for (const connection of connections) {
       try {
         await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-          userId,
+          appId,
           message: `Starting ${connection.platform} sync...`,
           level: "info",
         });
@@ -52,7 +52,7 @@ export const syncAllPlatforms = action({
         const isFirstSync = !connection.lastSync || forceHistorical;
 
         await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-          userId,
+          appId,
           message: `${connection.platform}: Sync mode = ${isFirstSync ? "HISTORICAL (365 days)" : "INCREMENTAL (current)"}`,
           level: "info",
         });
@@ -62,7 +62,7 @@ export const syncAllPlatforms = action({
           
           if (isFirstSync) {
             await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-              userId,
+              appId,
               message: "Stripe: First sync detected, fetching historical data (365 days)",
               level: "info",
             });
@@ -71,23 +71,23 @@ export const syncAllPlatforms = action({
             const data = await fetchStripe(credentials.apiKey, oneYearAgo);
 
             await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-              userId,
+              appId,
               message: `Stripe: Fetched ${data.subscriptions.length} subscriptions, ${data.revenueEvents.length} revenue events`,
               level: "info",
             });
             if (data.debug) {
               await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-                userId,
+                appId,
                 message: `Stripe: Invoices - total ${data.debug.invoiceCount}, with subscription ${data.debug.invoicesWithSubscription}, paid ${data.debug.invoicesPaid}`,
                 level: "info",
               });
               await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-                userId,
+                appId,
                 message: `Stripe: Invoice statuses: ${JSON.stringify(data.debug.invoiceStatusCounts)}`,
                 level: "info",
               });
               await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-                userId,
+                appId,
                 message: `Stripe: Event types - First Payments: ${data.debug.eventTypeCounts.first_payment}, Renewals: ${data.debug.eventTypeCounts.renewal}, Refunds: ${data.debug.eventTypeCounts.refund}`,
                 level: "info",
               });
@@ -98,13 +98,13 @@ export const syncAllPlatforms = action({
             const canceledCount = data.subscriptions.filter(s => s.status === "canceled").length;
             
             await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-              userId,
+              appId,
               message: `Stripe: Status breakdown - Active: ${activeCount}, Trial: ${trialCount}, Canceled: ${canceledCount}`,
               level: "info",
             });
 
             const result1 = await ctx.runMutation(internal.metrics.processAndStoreMetrics, {
-              userId,
+              appId,
               platform: "stripe",
               subscriptions: data.subscriptions,
               revenueEvents: data.revenueEvents,
@@ -117,12 +117,12 @@ export const syncAllPlatforms = action({
             while (chunkStart < nowMs) {
               const chunkEnd = Math.min(chunkStart + thirtyDaysMs - 1, nowMs);
               await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-                userId,
+                appId,
                 message: `Stripe: Generating daily snapshots chunk ${chunkIdx} (${new Date(chunkStart).toISOString().split("T")[0]} → ${new Date(chunkEnd).toISOString().split("T")[0]})`,
                 level: "info",
               });
               await ctx.runMutation(internal.metrics.generateHistoricalSnapshots, {
-                userId,
+                appId,
                 platform: "stripe",
                 startMs: chunkStart,
                 endMs: chunkEnd,
@@ -132,13 +132,13 @@ export const syncAllPlatforms = action({
             }
             
             await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-              userId,
+              appId,
               message: `Stripe: Calculated metrics - Active: ${result1.snapshot.activeSubscribers}, Paid: ${result1.snapshot.paidSubscribers}, Churn: ${result1.snapshot.churn}, Cancellations: ${result1.snapshot.cancellations}, First Payments: ${result1.snapshot.firstPayments}, Renewals: ${result1.snapshot.renewals}, MRR: $${result1.snapshot.mrr.toFixed(2)}`,
               level: "info",
             });
           } else {
             await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-              userId,
+              appId,
               message: "Stripe: Incremental sync (current data)",
               level: "info",
             });
@@ -146,7 +146,7 @@ export const syncAllPlatforms = action({
             const data = await fetchStripe(credentials.apiKey);
 
             await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-              userId,
+              appId,
               message: `Stripe: Fetched ${data.subscriptions.length} subscriptions, ${data.revenueEvents.length} revenue events`,
               level: "info",
             });
@@ -156,79 +156,156 @@ export const syncAllPlatforms = action({
             const canceledCount = data.subscriptions.filter(s => s.status === "canceled").length;
             
             await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-              userId,
+              appId,
               message: `Stripe: Status breakdown - Active: ${activeCount}, Trial: ${trialCount}, Canceled: ${canceledCount}`,
               level: "info",
             });
 
             const result2 = await ctx.runMutation(internal.metrics.processAndStoreMetrics, {
-              userId,
+              appId,
               platform: "stripe",
               subscriptions: data.subscriptions,
               revenueEvents: data.revenueEvents,
             });
             
             await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-              userId,
+              appId,
               message: `Stripe: Calculated metrics - Active: ${result2.snapshot.activeSubscribers}, Paid: ${result2.snapshot.paidSubscribers}, Churn: ${result2.snapshot.churn}, Cancellations: ${result2.snapshot.cancellations}, First Payments: ${result2.snapshot.firstPayments}, Renewals: ${result2.snapshot.renewals}, MRR: $${result2.snapshot.mrr.toFixed(2)}`,
               level: "info",
             });
           }
           
           await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-            userId,
+            appId,
             message: "Stripe: Sync completed successfully",
             level: "success",
           });
         } else if (connection.platform === "googleplay") {
           const credentials = JSON.parse(connection.credentials);
-          
+          const { serviceAccountJson, packageName, gcsBucketName, gcsReportPrefix } = credentials;
+
+          if (!gcsBucketName) {
+            await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
+              appId,
+              message: "Google Play: gcsBucketName is required. Update connection in Settings.",
+              level: "error",
+            });
+            continue;
+          }
+
+          await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
+            appId,
+            message: `Google Play: Using GCS bucket gs://${gcsBucketName}/${gcsReportPrefix || 'earnings/'}`,
+            level: "info",
+          });
+
           if (isFirstSync) {
             await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-              userId,
-              message: "Google Play: First sync detected, fetching historical data (365 days)",
+              appId,
+              message: "Google Play: First sync - fetching historical financial reports from GCS (365 days)",
               level: "info",
             });
 
             const oneYearAgo = Date.now() - 365 * 24 * 60 * 60 * 1000;
-            const data = await fetchGoogle(
-              credentials.serviceAccountJson,
-              credentials.packageName,
-              oneYearAgo
-            );
+            
+            try {
+              const data = await fetchGooglePlayFromGCS(
+                serviceAccountJson,
+                packageName,
+                gcsBucketName,
+                gcsReportPrefix || "earnings/",
+                oneYearAgo
+              );
 
-            await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-              userId,
-              message: `Google Play: Fetched ${data.subscriptions.length} subscriptions, ${data.revenueEvents.length} revenue events`,
-              level: "info",
-            });
+              const daysWithData = Object.keys(data.revenueByDate).length;
+              const totalGross = Object.values(data.revenueByDate).reduce((sum: number, d: any) => sum + d.gross, 0);
+              const totalNet = Object.values(data.revenueByDate).reduce((sum: number, d: any) => sum + d.net, 0);
 
-            await ctx.runMutation(internal.metrics.processAndStoreMetrics, {
-              userId,
-              platform: "googleplay",
-              subscriptions: data.subscriptions,
-              revenueEvents: data.revenueEvents,
-            });
+              await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
+                appId,
+                message: `Google Play: Found revenue data for ${daysWithData} days - Total Gross: $${totalGross.toFixed(2)}, Net: $${totalNet.toFixed(2)}`,
+                level: "info",
+              });
+
+              // Process revenue data and create daily snapshots
+              const result = await ctx.runMutation(internal.metrics.processGooglePlayFinancialReport, {
+                appId,
+                revenueByDate: data.revenueByDate,
+              });
+
+              await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
+                appId,
+                message: `Google Play: Created ${result.snapshotsCreated} snapshots, updated ${result.snapshotsUpdated} snapshots`,
+                level: "success",
+              });
+            } catch (error) {
+              await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
+                appId,
+                message: `Google Play: Error fetching from GCS - ${error instanceof Error ? error.message : String(error)}`,
+                level: "error",
+              });
+            }
           } else {
             await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-              userId,
-              message: "Google Play: Incremental sync (current data)",
+              appId,
+              message: "Google Play: Incremental sync - checking for recent reports",
               level: "info",
             });
 
-            const data = await fetchGoogle(credentials.serviceAccountJson, credentials.packageName);
+            // For incremental sync, fetch last 90 days to catch any updates
+            const ninetyDaysAgo = Date.now() - 90 * 24 * 60 * 60 * 1000;
+            
+            try {
+              const data = await fetchGooglePlayFromGCS(
+                serviceAccountJson,
+                packageName,
+                gcsBucketName,
+                gcsReportPrefix || "earnings/",
+                ninetyDaysAgo
+              );
 
-            await ctx.runMutation(internal.metrics.processAndStoreMetrics, {
-              userId,
-              platform: "googleplay",
-              subscriptions: data.subscriptions,
-              revenueEvents: data.revenueEvents,
-            });
+              const daysWithData = Object.keys(data.revenueByDate).length;
+
+              if (daysWithData > 0) {
+                const totalGross = Object.values(data.revenueByDate).reduce((sum: number, d: any) => sum + d.gross, 0);
+                const totalNet = Object.values(data.revenueByDate).reduce((sum: number, d: any) => sum + d.net, 0);
+
+                await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
+                  appId,
+                  message: `Google Play: Found ${daysWithData} days with updates - Gross: $${totalGross.toFixed(2)}, Net: $${totalNet.toFixed(2)}`,
+                  level: "info",
+                });
+
+                // Process revenue data
+                const result = await ctx.runMutation(internal.metrics.processGooglePlayFinancialReport, {
+                  appId,
+                  revenueByDate: data.revenueByDate,
+                });
+
+                await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
+                  appId,
+                  message: `Google Play: Updated ${result.snapshotsUpdated} snapshots, created ${result.snapshotsCreated} new snapshots`,
+                  level: "success",
+                });
+              } else {
+                await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
+                  appId,
+                  message: "Google Play: No new revenue data found in recent reports",
+                  level: "info",
+                });
+              }
+            } catch (error) {
+              await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
+                appId,
+                message: `Google Play: Error fetching from GCS - ${error instanceof Error ? error.message : String(error)}`,
+                level: "error",
+              });
+            }
           }
 
           await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-            userId,
-            message: "Google Play: Sync completed successfully",
+            appId,
+            message: "Google Play: Sync completed",
             level: "success",
           });
         } else if (connection.platform === "appstore") {
@@ -237,7 +314,7 @@ export const syncAllPlatforms = action({
 
           if (!vendorNumber) {
             await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-              userId,
+              appId,
               message: "App Store: vendorNumber is required. Add it in Connections.",
               level: "error",
             });
@@ -245,14 +322,14 @@ export const syncAllPlatforms = action({
           }
 
           await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-            userId,
+            appId,
             message: `App Store: Using vendor ${vendorNumber}`,
             level: "info",
           });
 
           if (isFirstSync) {
             await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-              userId,
+              appId,
               message: "App Store: First sync detected, fetching 365 daily reports...",
               level: "info",
             });
@@ -270,7 +347,7 @@ export const syncAllPlatforms = action({
                 const isCancelled = await ctx.runQuery(internal.syncHelpers.checkSyncCancelled, { syncId });
                 if (isCancelled) {
                   await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-                    userId,
+                    appId,
                     message: "App Store: Sync cancelled by user",
                     level: "info",
                   });
@@ -285,7 +362,7 @@ export const syncAllPlatforms = action({
               // Only log at key milestones to reduce noise
               if (dayOffset === 0 || dayOffset === 182 || dayOffset === 364) {
                 await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-                  userId,
+                  appId,
                   message: `App Store: Processing day ${dayOffset + 1}/365 (${dateStr})`,
                   level: "info",
                 });
@@ -318,7 +395,7 @@ export const syncAllPlatforms = action({
                   let eventData = undefined;
                   if (subscriberRes.ok) {
                     await ctx.runMutation(internal.syncHelpers.saveAppStoreReport, {
-                      userId,
+                      appId,
                       reportType: "SUBSCRIBER",
                       reportSubType: "DETAILED",
                       frequency: "DAILY",
@@ -328,7 +405,7 @@ export const syncAllPlatforms = action({
                       content: subscriberRes.tsv,
                     });
                     eventData = await ctx.runMutation(internal.metrics.processAppStoreSubscriberReport, {
-                      userId,
+                      appId,
                       date: dateStr,
                       tsv: subscriberRes.tsv,
                     });
@@ -338,7 +415,7 @@ export const syncAllPlatforms = action({
                   }
                   
                   await ctx.runMutation(internal.syncHelpers.saveAppStoreReport, {
-                    userId,
+                    appId,
                     reportType: "SUBSCRIPTION",
                     reportSubType: "SUMMARY",
                     frequency: "DAILY",
@@ -348,7 +425,7 @@ export const syncAllPlatforms = action({
                     content: res.tsv,
                   });
                   await ctx.runMutation(internal.metrics.processAppStoreReport, {
-                    userId,
+                    appId,
                     date: dateStr,
                     tsv: res.tsv,
                     eventData,
@@ -357,7 +434,7 @@ export const syncAllPlatforms = action({
                   
                   if (successCount === 1) {
                     await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-                      userId,
+                      appId,
                       message: `App Store: First successful report for ${dateStr} - ${res.tsv.length} bytes`,
                       level: "info",
                     });
@@ -370,11 +447,11 @@ export const syncAllPlatforms = action({
                   // Handle "no sales" as special case - carry forward previous day's data
                   if (code === "NOT_FOUND" && res.text.includes("no sales")) {
                     // Get previous day's snapshot to carry forward subscriber counts
-                    const prevSnapshot = await ctx.runQuery(internal.syncHelpers.getLatestAppStoreSnapshot, { userId });
+                    const prevSnapshot = await ctx.runQuery(internal.syncHelpers.getLatestAppStoreSnapshot, { appId });
                     if (prevSnapshot) {
                       // Create snapshot with 0 revenue but same subscriber counts
                       await ctx.runMutation(internal.metrics.createAppStoreSnapshotFromPrevious, {
-                        userId,
+                        appId,
                         date: dateStr,
                         previousSnapshot: prevSnapshot,
                       });
@@ -400,39 +477,39 @@ export const syncAllPlatforms = action({
                   if (errorSamples.length < 5) {
                     errorSamples.push(errorMsg);
                     await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-                      userId,
+                      appId,
                       message: `App Store ERROR: ${errorMsg}`,
                       level: "error",
                     });
                     if (code === "FORBIDDEN.REQUIRED_AGREEMENTS_MISSING_OR_EXPIRED") {
                       await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-                        userId,
+                        appId,
                         message: "App Store ACTION REQUIRED: Accept latest agreements in App Store Connect → Agreements, Tax, and Banking, then retry.",
                         level: "error",
                       });
                     }
                     if (code === "FORBIDDEN_ERROR") {
                       await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-                        userId,
+                        appId,
                         message: "App Store ACTION REQUIRED: Ensure the API Key has access to Sales Reports (Finance role) and is scoped correctly. Also verify bundleId/vendor permissions.",
                         level: "error",
                       });
                     }
                     if (code === "NOT_AUTHORIZED") {
                       await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-                        userId,
+                        appId,
                         message: `App Store 401 diagnostics: www-authenticate='${res.wwwAuth ?? ""}' x-request-id='${res.requestId ?? ""}'`,
                         level: "error",
                       });
                       await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-                        userId,
+                        appId,
                         message: "App Store ACTION REQUIRED: Verify issuerId, keyId, and private key match; device/server clock is accurate (NTP); token lifetime kept short; and role includes Finance.",
                         level: "error",
                       });
                     }
                     if (code === "PARAMETER_ERROR.INVALID_VENDOR_NUMBER") {
                       await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-                        userId,
+                        appId,
                         message: `App Store ACTION REQUIRED: Invalid vendor number '${vendorNumber}'. Verify your vendor in App Store Connect Finance Reports and update the connection.`,
                         level: "error",
                       });
@@ -446,7 +523,7 @@ export const syncAllPlatforms = action({
                 if (errorSamples.length < 5) {
                   errorSamples.push(errorMsg);
                   await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-                    userId,
+                    appId,
                     message: `App Store EXCEPTION: ${errorMsg}`,
                     level: "error",
                   });
@@ -455,13 +532,13 @@ export const syncAllPlatforms = action({
             }
 
             await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-              userId,
+              appId,
               message: `App Store: Historical sync completed - ${successCount} reports fetched, ${errorCount} errors`,
               level: successCount > 0 ? "success" : "error",
             });
           } else {
             await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-              userId,
+              appId,
               message: "App Store: Incremental sync (fetching most recent available report)",
               level: "info",
             });
@@ -476,7 +553,7 @@ export const syncAllPlatforms = action({
               const isCancelled = await ctx.runQuery(internal.syncHelpers.checkSyncCancelled, { syncId });
               if (isCancelled) {
                 await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-                  userId,
+                  appId,
                   message: "App Store: Sync cancelled by user",
                   level: "info",
                 });
@@ -487,7 +564,7 @@ export const syncAllPlatforms = action({
               const dateStr = targetDate.toISOString().split("T")[0];
               
               await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-                userId,
+                appId,
                 message: `App Store: Trying report for ${dateStr} (${daysAgo} days ago)...`,
                 level: "info",
               });
@@ -519,7 +596,7 @@ export const syncAllPlatforms = action({
                   let eventData = undefined;
                   if (subscriberRes.ok) {
                     await ctx.runMutation(internal.syncHelpers.saveAppStoreReport, {
-                      userId,
+                      appId,
                       reportType: "SUBSCRIBER",
                       reportSubType: "DETAILED",
                       frequency: "DAILY",
@@ -529,7 +606,7 @@ export const syncAllPlatforms = action({
                       content: subscriberRes.tsv,
                     });
                     eventData = await ctx.runMutation(internal.metrics.processAppStoreSubscriberReport, {
-                      userId,
+                      appId,
                       date: dateStr,
                       tsv: subscriberRes.tsv,
                     });
@@ -539,7 +616,7 @@ export const syncAllPlatforms = action({
                   }
                   
                   await ctx.runMutation(internal.syncHelpers.saveAppStoreReport, {
-                    userId,
+                    appId,
                     reportType: "SUBSCRIPTION",
                     reportSubType: "SUMMARY",
                     frequency: "DAILY",
@@ -549,13 +626,13 @@ export const syncAllPlatforms = action({
                     content: res.tsv,
                   });
                   await ctx.runMutation(internal.metrics.processAppStoreReport, {
-                    userId,
+                    appId,
                     date: dateStr,
                     tsv: res.tsv,
                     eventData,
                   });
                   await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-                    userId,
+                    appId,
                     message: `App Store: Successfully fetched and processed report for ${dateStr} (${res.tsv.length} bytes)${eventData ? ' with event data' : ''}`,
                     level: "success",
                   });
@@ -563,14 +640,14 @@ export const syncAllPlatforms = action({
                   break; // Got a report, stop trying
                 } else {
                   await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-                    userId,
+                    appId,
                     message: `App Store: Report for ${dateStr} not available (HTTP ${res.status})`,
                     level: "info",
                   });
                 }
               } catch (error) {
                 await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-                  userId,
+                  appId,
                   message: `App Store: Error fetching ${dateStr} - ${String(error)}`,
                   level: "info",
                 });
@@ -579,7 +656,7 @@ export const syncAllPlatforms = action({
             
             if (!successfulFetch) {
               await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-                userId,
+                appId,
                 message: "App Store: No recent reports available (reports may be delayed)",
                 level: "error",
               });
@@ -592,13 +669,13 @@ export const syncAllPlatforms = action({
         });
 
         await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-          userId,
+          appId,
           message: `${connection.platform}: Connection updated`,
           level: "info",
         });
       } catch (error) {
         await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-          userId,
+          appId,
           message: `Error syncing ${connection.platform}: ${String(error)}`,
           level: "error",
         });
@@ -606,28 +683,28 @@ export const syncAllPlatforms = action({
     }
 
     await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-      userId,
+      appId,
       message: "Creating unified snapshots (today + historical)...",
       level: "info",
     });
 
     // Create unified snapshot for today
-    await ctx.runMutation(internal.metrics.createUnifiedSnapshot, { userId });
+    await ctx.runMutation(internal.metrics.createUnifiedSnapshot, { appId });
 
     // Generate unified snapshots for ALL historical dates (past 365 days)
     const result = await ctx.runMutation(internal.metrics.generateUnifiedHistoricalSnapshots, { 
-      userId,
+      appId,
       daysBack: 365,
     });
 
     await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-      userId,
+      appId,
       message: `Created ${result.created} unified historical snapshots`,
       level: "info",
     });
 
       await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-        userId,
+        appId,
         message: "Sync completed",
         level: "success",
       });
@@ -641,7 +718,7 @@ export const syncAllPlatforms = action({
       return { success: true };
     } catch (error) {
       await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-        userId,
+        appId,
         message: `Sync error: ${error instanceof Error ? error.message : String(error)}`,
         level: "error",
       });
@@ -656,17 +733,17 @@ export const syncAllPlatforms = action({
   },
 });
 
-export const syncAllUsers = action({
+export const syncAllApps = action({
   args: {},
-  handler: async (ctx): Promise<{ success: boolean; usersProcessed: number }> => {
-    const users = await ctx.runQuery(internal.syncHelpers.getAllUsersWithConnections);
+  handler: async (ctx): Promise<{ success: boolean; appsProcessed: number }> => {
+    const apps = await ctx.runQuery(internal.syncHelpers.getAllAppsWithConnections);
 
-    for (const user of users) {
-      if (user && user._id) {
-        await ctx.runAction(api.sync.syncAllPlatforms, { userId: user._id });
+    for (const app of apps) {
+      if (app && app._id) {
+        await ctx.runAction(api.sync.syncAllPlatforms, { appId: app._id });
       }
     }
 
-    return { success: true, usersProcessed: users.length };
+    return { success: true, appsProcessed: apps.length };
   },
 });

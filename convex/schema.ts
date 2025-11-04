@@ -3,12 +3,24 @@ import { v } from "convex/values";
 
 export default defineSchema({
   users: defineTable({
-    clerkId: v.optional(v.string()),
     email: v.string(),
-  }).index("by_clerk_id", ["clerkId"]),
+    name: v.optional(v.string()),
+    image: v.optional(v.string()),
+  }).index("by_email", ["email"]),
+
+  apps: defineTable({
+    userId: v.id("users"),
+    name: v.string(),
+    slug: v.string(),
+    currency: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_user", ["userId"])
+    .index("by_user_slug", ["userId", "slug"]),
 
   platformConnections: defineTable({
-    userId: v.id("users"),
+    appId: v.id("apps"),
     platform: v.union(
       v.literal("appstore"),
       v.literal("googleplay"),
@@ -17,10 +29,10 @@ export default defineSchema({
     credentials: v.string(), // Encrypted JSON string
     lastSync: v.optional(v.number()),
     isActive: v.boolean(),
-  }).index("by_user", ["userId"]),
+  }).index("by_app", ["appId"]),
 
   metricsSnapshots: defineTable({
-    userId: v.id("users"),
+    appId: v.id("apps"),
     date: v.string(), // ISO date string
     platform: v.union(
       v.literal("appstore"),
@@ -44,11 +56,11 @@ export default defineSchema({
     monthlySubscribers: v.optional(v.number()), // Count of monthly subscription subscribers
     yearlySubscribers: v.optional(v.number()), // Count of yearly subscription subscribers
   })
-    .index("by_user_date", ["userId", "date"])
-    .index("by_user_platform", ["userId", "platform"]),
+    .index("by_app_date", ["appId", "date"])
+    .index("by_app_platform", ["appId", "platform"]),
 
   subscriptions: defineTable({
-    userId: v.id("users"),
+    appId: v.id("apps"),
     platform: v.union(
       v.literal("appstore"),
       v.literal("googleplay"),
@@ -65,12 +77,12 @@ export default defineSchema({
     isInGrace: v.boolean(),
     rawData: v.string(), // JSON string of raw platform data
   })
-    .index("by_user", ["userId"])
-    .index("by_user_platform", ["userId", "platform"])
+    .index("by_app", ["appId"])
+    .index("by_app_platform", ["appId", "platform"])
     .index("by_external_id", ["platform", "externalId"]),
 
   revenueEvents: defineTable({
-    userId: v.id("users"),
+    appId: v.id("apps"),
     platform: v.union(
       v.literal("appstore"),
       v.literal("googleplay"),
@@ -87,21 +99,21 @@ export default defineSchema({
     timestamp: v.number(),
     rawData: v.string(),
   })
-    .index("by_user", ["userId"])
-    .index("by_user_platform", ["userId", "platform"])
-    .index("by_user_platform_time", ["userId", "platform", "timestamp"]),
+    .index("by_app", ["appId"])
+    .index("by_app_platform", ["appId", "platform"])
+    .index("by_app_platform_time", ["appId", "platform", "timestamp"]),
 
   // Logs for sync progress and status
   syncLogs: defineTable({
-    userId: v.id("users"),
+    appId: v.id("apps"),
     timestamp: v.number(),
     message: v.string(),
     level: v.optional(v.string()), // info | error | success
-  }).index("by_user_time", ["userId", "timestamp"]),
+  }).index("by_app_time", ["appId", "timestamp"]),
 
   // Raw App Store Server Notifications (V2) for ingestion
   appStoreNotifications: defineTable({
-    userId: v.optional(v.id("users")),
+    appId: v.optional(v.id("apps")),
     timestamp: v.number(),
     notificationType: v.string(),
     subtype: v.optional(v.string()),
@@ -109,11 +121,12 @@ export default defineSchema({
     bundleId: v.optional(v.string()),
     environment: v.optional(v.string()),
     rawPayload: v.string(),
-  }).index("by_user_time", ["userId", "timestamp"]),
+  }).index("by_app_time", ["appId", "timestamp"]),
 
   // Stored App Store Connect reports (raw content for audit/debug)
   appStoreReports: defineTable({
-    userId: v.id("users"),
+    appId: v.optional(v.id("apps")),
+    userId: v.optional(v.string()),
     reportType: v.string(), // e.g. SUBSCRIPTION
     reportSubType: v.string(), // e.g. SUMMARY
     frequency: v.string(), // DAILY | WEEKLY | MONTHLY
@@ -122,13 +135,21 @@ export default defineSchema({
     bundleId: v.optional(v.string()),
     content: v.string(), // TSV content (decompressed)
     createdAt: v.number(),
-  }).index("by_user_date", ["userId", "reportDate"]),
+  }).index("by_app_date", ["appId", "reportDate"]),
 
   // Track active sync sessions to prevent concurrent syncs
   syncStatus: defineTable({
-    userId: v.id("users"),
+    appId: v.optional(v.id("apps")),
     startedAt: v.number(),
     status: v.union(v.literal("active"), v.literal("completed"), v.literal("cancelled")),
-  }).index("by_user_status", ["userId", "status"]),
+  }).index("by_app_status", ["appId", "status"]),
+
+  // Exchange rates for currency conversion
+  exchangeRates: defineTable({
+    fromCurrency: v.string(), // e.g. "USD"
+    toCurrency: v.string(), // e.g. "EUR"
+    rate: v.number(), // e.g. 0.85
+    timestamp: v.number(), // when this rate was fetched
+  }).index("by_pair", ["fromCurrency", "toCurrency"]),
 });
 

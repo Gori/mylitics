@@ -2,9 +2,69 @@ import { v } from "convex/values";
 import { mutation, query, internalMutation } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
 
+// Helper to convert currency and round to 2 decimals
+// This is the single source of truth for all currency conversions and rounding
+async function convertAndRoundCurrency(ctx: any, amount: number, fromCurrency: string, toCurrency: string): Promise<number> {
+  const from = fromCurrency.toUpperCase();
+  const to = toCurrency.toUpperCase();
+  
+  // No conversion needed - same currency, just round
+  if (from === to) {
+    return Math.round((amount + Number.EPSILON) * 100) / 100;
+  }
+  
+  // Get exchange rate
+  const rate = await ctx.db
+    .query("exchangeRates")
+    .withIndex("by_pair", (q: any) => q.eq("fromCurrency", from).eq("toCurrency", to))
+    .order("desc")
+    .first();
+  
+  if (rate) {
+    const converted = amount * rate.rate;
+    return Math.round((converted + Number.EPSILON) * 100) / 100;
+  }
+  
+  // Try inverse rate
+  const inverseRate = await ctx.db
+    .query("exchangeRates")
+    .withIndex("by_pair", (q: any) => q.eq("fromCurrency", to).eq("toCurrency", from))
+    .order("desc")
+    .first();
+  
+  if (inverseRate) {
+    const converted = amount / inverseRate.rate;
+    return Math.round((converted + Number.EPSILON) * 100) / 100;
+  }
+  
+  // If both currencies are not USD, try converting through USD
+  if (from !== "USD" && to !== "USD") {
+    const fromUSD = await ctx.db
+      .query("exchangeRates")
+      .withIndex("by_pair", (q: any) => q.eq("fromCurrency", "USD").eq("toCurrency", from))
+      .order("desc")
+      .first();
+    
+    const toUSD = await ctx.db
+      .query("exchangeRates")
+      .withIndex("by_pair", (q: any) => q.eq("fromCurrency", "USD").eq("toCurrency", to))
+      .order("desc")
+      .first();
+    
+    if (fromUSD && toUSD) {
+      const amountInUSD = amount / fromUSD.rate;
+      const converted = amountInUSD * toUSD.rate;
+      return Math.round((converted + Number.EPSILON) * 100) / 100;
+    }
+  }
+  
+  // No rate found - throw error to prevent bad data
+  throw new Error(`Exchange rate not found for ${from} -> ${to}. Please fetch exchange rates first by clicking "Fetch Rates" in the dashboard.`);
+}
+
 export const processAndStoreMetrics = internalMutation({
   args: {
-    userId: v.id("users"),
+    appId: v.id("apps"),
     platform: v.union(
       v.literal("appstore"),
       v.literal("googleplay"),
@@ -40,9 +100,13 @@ export const processAndStoreMetrics = internalMutation({
     ),
     snapshotDate: v.optional(v.string()),
   },
-  handler: async (ctx, { userId, platform, subscriptions, revenueEvents, snapshotDate }) => {
+  handler: async (ctx, { appId, platform, subscriptions, revenueEvents, snapshotDate }) => {
     const now = new Date();
     const today = snapshotDate || now.toISOString().split("T")[0];
+
+    // Get app's preferred currency
+    const app = await ctx.db.get(appId);
+    const userCurrency = app?.currency || "USD";
 
     // Store raw subscription data
     console.log(`[Metrics ${platform}] Storing ${subscriptions.length} subscriptions...`);
@@ -64,7 +128,7 @@ export const processAndStoreMetrics = internalMutation({
         });
       } else {
         await ctx.db.insert("subscriptions", {
-          userId,
+          appId,
           platform,
           ...sub,
         });
@@ -87,7 +151,7 @@ export const processAndStoreMetrics = internalMutation({
     // Get all subscriptions for this user/platform for debugging
     const allSubs = await ctx.db
       .query("subscriptions")
-      .withIndex("by_user_platform", (q) => q.eq("userId", userId).eq("platform", platform))
+      .withIndex("by_app_platform", (q) => q.eq("appId", appId).eq("platform", platform))
       .collect();
     console.log(`[Metrics ${platform}] Found ${allSubs.length} subscriptions in database for matching`);
     if (allSubs.length > 0 && allSubs.length <= 5) {
@@ -97,7 +161,7 @@ export const processAndStoreMetrics = internalMutation({
     // Load all existing revenue events for this user/platform ONCE to avoid repeated queries
     const existingRevenue = await ctx.db
       .query("revenueEvents")
-      .withIndex("by_user_platform", (q) => q.eq("userId", userId).eq("platform", platform))
+      .withIndex("by_app_platform", (q) => q.eq("appId", appId).eq("platform", platform))
       .collect();
     
     // Create a Set for fast duplicate checking: "subId_timestamp_amount"
@@ -118,7 +182,7 @@ export const processAndStoreMetrics = internalMutation({
         
         if (!existingKeys.has(key)) {
           await ctx.db.insert("revenueEvents", {
-            userId,
+            appId,
             platform,
             subscriptionId: sub._id,
             eventType: event.eventType,
@@ -194,9 +258,11 @@ export const processAndStoreMetrics = internalMutation({
         const raw = JSON.parse(s.rawData);
         const unit = raw?.items?.data?.[0]?.price?.unit_amount;
         const interval = raw?.items?.data?.[0]?.price?.recurring?.interval;
+        const currency = raw?.items?.data?.[0]?.price?.currency || "usd";
         if (typeof unit === "number") {
-          if (interval === "year") mrr += unit / 100 / 12;
-          else mrr += unit / 100;
+          const monthlyAmount = interval === "year" ? unit / 100 / 12 : unit / 100;
+          const convertedAmount = await convertAndRoundCurrency(ctx, monthlyAmount, currency, userCurrency);
+          mrr += convertedAmount;
         }
       } catch {}
     }
@@ -221,12 +287,14 @@ export const processAndStoreMetrics = internalMutation({
     }
     
     for (const e of todayRevenue) {
+      const convertedAmount = await convertAndRoundCurrency(ctx, e.amount, e.currency, userCurrency);
+      
       if (e.eventType === "refund") {
-        monthlyRevenueGross -= e.amount;
-        monthlyRevenueNet -= e.amount * 0.85;
+        monthlyRevenueGross -= convertedAmount;
+        monthlyRevenueNet -= convertedAmount * 0.85;
       } else {
-        monthlyRevenueGross += e.amount;
-        monthlyRevenueNet += e.amount * 0.85;
+        monthlyRevenueGross += convertedAmount;
+        monthlyRevenueNet += convertedAmount * 0.85;
       }
     }
     
@@ -242,14 +310,14 @@ export const processAndStoreMetrics = internalMutation({
     // Store snapshot
     const existingSnapshot = await ctx.db
       .query("metricsSnapshots")
-      .withIndex("by_user_platform", (q) =>
-        q.eq("userId", userId).eq("platform", platform)
+      .withIndex("by_app_platform", (q) =>
+        q.eq("appId", appId).eq("platform", platform)
       )
       .filter((q) => q.eq(q.field("date"), today))
       .first();
 
     const snapshotData = {
-      userId,
+      appId,
       date: today,
       platform,
       activeSubscribers,
@@ -284,21 +352,21 @@ export const processAndStoreMetrics = internalMutation({
 
 export const createUnifiedSnapshot = internalMutation({
   args: {
-    userId: v.id("users"),
+    appId: v.id("apps"),
   },
-  handler: async (ctx, { userId }) => {
+  handler: async (ctx, { appId }) => {
     const today = new Date().toISOString().split("T")[0];
 
     const platformSnapshots = await ctx.db
       .query("metricsSnapshots")
-      .withIndex("by_user_date", (q) => q.eq("userId", userId).eq("date", today))
+      .withIndex("by_app_date", (q) => q.eq("appId", appId).eq("date", today))
       .filter((q) => q.neq(q.field("platform"), "unified"))
       .collect();
 
     if (platformSnapshots.length === 0) return;
 
     const unified = {
-      userId,
+      appId,
       date: today,
       platform: "unified" as const,
       activeSubscribers: platformSnapshots.reduce((acc, s) => acc + s.activeSubscribers, 0),
@@ -310,18 +378,18 @@ export const createUnifiedSnapshot = internalMutation({
       paybacks: platformSnapshots.reduce((acc, s) => acc + s.paybacks, 0),
       firstPayments: platformSnapshots.reduce((acc, s) => acc + s.firstPayments, 0),
       renewals: platformSnapshots.reduce((acc, s) => acc + s.renewals, 0),
-      mrr: platformSnapshots.reduce((acc, s) => acc + s.mrr, 0),
-      weeklyRevenue: platformSnapshots.reduce((acc, s) => acc + (s.weeklyRevenue || s.monthlyRevenueNet || 0), 0),
-      monthlyRevenueGross: platformSnapshots.reduce((acc, s) => acc + s.monthlyRevenueGross, 0),
-      monthlyRevenueNet: platformSnapshots.reduce((acc, s) => acc + s.monthlyRevenueNet, 0),
+      mrr: Math.round((platformSnapshots.reduce((acc, s) => acc + s.mrr, 0) + Number.EPSILON) * 100) / 100,
+      weeklyRevenue: Math.round((platformSnapshots.reduce((acc, s) => acc + (s.weeklyRevenue || s.monthlyRevenueNet || 0), 0) + Number.EPSILON) * 100) / 100,
+      monthlyRevenueGross: Math.round((platformSnapshots.reduce((acc, s) => acc + s.monthlyRevenueGross, 0) + Number.EPSILON) * 100) / 100,
+      monthlyRevenueNet: Math.round((platformSnapshots.reduce((acc, s) => acc + s.monthlyRevenueNet, 0) + Number.EPSILON) * 100) / 100,
       monthlySubscribers: platformSnapshots.reduce((acc, s) => acc + (s.monthlySubscribers || 0), 0),
       yearlySubscribers: platformSnapshots.reduce((acc, s) => acc + (s.yearlySubscribers || 0), 0),
     };
 
     const existingUnified = await ctx.db
       .query("metricsSnapshots")
-      .withIndex("by_user_platform", (q) =>
-        q.eq("userId", userId).eq("platform", "unified")
+      .withIndex("by_app_platform", (q) =>
+        q.eq("appId", appId).eq("platform", "unified")
       )
       .filter((q) => q.eq(q.field("date"), today))
       .first();
@@ -336,7 +404,7 @@ export const createUnifiedSnapshot = internalMutation({
 
 export const generateHistoricalSnapshots = internalMutation({
   args: {
-    userId: v.id("users"),
+    appId: v.id("apps"),
     platform: v.union(
       v.literal("appstore"),
       v.literal("googleplay"),
@@ -345,17 +413,21 @@ export const generateHistoricalSnapshots = internalMutation({
     startMs: v.number(),
     endMs: v.number(),
   },
-  handler: async (ctx, { userId, platform, startMs, endMs }) => {
+  handler: async (ctx, { appId, platform, startMs, endMs }) => {
     const oneDayMs = 24 * 60 * 60 * 1000;
+
+    // Get app's preferred currency
+    const app = await ctx.db.get(appId);
+    const userCurrency = app?.currency || "USD";
 
     const subs = await ctx.db
       .query("subscriptions")
-      .withIndex("by_user_platform", (q) => q.eq("userId", userId).eq("platform", platform))
+      .withIndex("by_app_platform", (q) => q.eq("appId", appId).eq("platform", platform))
       .collect();
 
     const revenue = await ctx.db
       .query("revenueEvents")
-      .withIndex("by_user_platform", (q) => q.eq("userId", userId).eq("platform", platform))
+      .withIndex("by_app_platform", (q) => q.eq("appId", appId).eq("platform", platform))
       .collect();
     
     console.log(`[Historical ${platform}] Found ${subs.length} subscriptions and ${revenue.length} revenue events in database for historical calculation`);
@@ -389,9 +461,11 @@ export const generateHistoricalSnapshots = internalMutation({
           if (!s.isTrial && (s.status === "active" || s.status === "trialing")) {
             const unit = raw?.items?.data?.[0]?.price?.unit_amount;
             const interval = raw?.items?.data?.[0]?.price?.recurring?.interval;
+            const currency = raw?.items?.data?.[0]?.price?.currency || "usd";
             if (typeof unit === "number") {
-              if (interval === "year") mrr += unit / 100 / 12;
-              else mrr += unit / 100;
+              const monthlyAmount = interval === "year" ? unit / 100 / 12 : unit / 100;
+              const convertedAmount = await convertAndRoundCurrency(ctx, monthlyAmount, currency, userCurrency);
+              mrr += convertedAmount;
             }
           }
         } catch {}
@@ -433,12 +507,14 @@ export const generateHistoricalSnapshots = internalMutation({
       let monthlyRevenueGross = 0;
       let monthlyRevenueNet = 0;
       for (const e of dayRevenue) {
+        const convertedAmount = await convertAndRoundCurrency(ctx, e.amount, e.currency, userCurrency);
+        
         if (e.eventType === "refund") {
-          monthlyRevenueGross -= e.amount;
-          monthlyRevenueNet -= e.amount * 0.85;
+          monthlyRevenueGross -= convertedAmount;
+          monthlyRevenueNet -= convertedAmount * 0.85;
         } else {
-          monthlyRevenueGross += e.amount;
-          monthlyRevenueNet += e.amount * 0.85;
+          monthlyRevenueGross += convertedAmount;
+          monthlyRevenueNet += convertedAmount * 0.85;
         }
       }
       monthlyRevenueGross = Math.round((monthlyRevenueGross + Number.EPSILON) * 100) / 100;
@@ -447,12 +523,12 @@ export const generateHistoricalSnapshots = internalMutation({
 
       const existing = await ctx.db
         .query("metricsSnapshots")
-        .withIndex("by_user_platform", (q) => q.eq("userId", userId).eq("platform", platform))
+        .withIndex("by_app_platform", (q) => q.eq("appId", appId).eq("platform", platform))
         .filter((q) => q.eq(q.field("date"), date))
         .first();
 
       const snapshot = {
-        userId,
+        appId,
         date,
         platform,
         activeSubscribers,
@@ -487,7 +563,7 @@ export const generateHistoricalSnapshots = internalMutation({
 
 export const processAppStoreReport = internalMutation({
   args: {
-    userId: v.id("users"),
+    appId: v.id("apps"),
     date: v.string(), // YYYY-MM-DD
     tsv: v.string(),
     eventData: v.optional(v.object({
@@ -496,18 +572,22 @@ export const processAppStoreReport = internalMutation({
       cancellations: v.number(),
     })),
   },
-  handler: async (ctx, { userId, date, tsv, eventData }) => {
+  handler: async (ctx, { appId, date, tsv, eventData }) => {
     const lines = tsv.trim().split(/\r?\n/);
     if (lines.length < 2) {
       console.log(`[App Store ${date}] Empty TSV - no data`);
       return;
     }
 
+    // Get app's preferred currency
+    const app = await ctx.db.get(appId);
+    const userCurrency = app?.currency || "USD";
+
     // Get previous day's snapshot to calculate cancellations
     const prevDate = new Date(new Date(date).getTime() - 24 * 60 * 60 * 1000).toISOString().split("T")[0];
     const prevSnapshot = await ctx.db
       .query("metricsSnapshots")
-      .withIndex("by_user_platform", (q) => q.eq("userId", userId).eq("platform", "appstore"))
+      .withIndex("by_app_platform", (q) => q.eq("appId", appId).eq("platform", "appstore"))
       .filter((q) => q.eq(q.field("date"), prevDate))
       .first();
 
@@ -681,8 +761,12 @@ export const processAppStoreReport = internalMutation({
       const netRaw = proceedsIdx >= 0 ? Number(cols[proceedsIdx] || 0) : null;
       const net = netRaw === null || isNaN(netRaw) ? gross * 0.85 : netRaw;
       
-      monthlyRevenueGross += gross;
-      monthlyRevenueNet += net;
+      // App Store reports are in USD, convert to user's preferred currency
+      const convertedGross = await convertAndRoundCurrency(ctx, gross, "USD", userCurrency);
+      const convertedNet = await convertAndRoundCurrency(ctx, net, "USD", userCurrency);
+      
+      monthlyRevenueGross += convertedGross;
+      monthlyRevenueNet += convertedNet;
     }
 
     console.log(`[App Store ${date}] ===== PARSING SUMMARY =====`);
@@ -766,7 +850,7 @@ export const processAppStoreReport = internalMutation({
     const weeklyRevenue = Math.round((monthlyRevenueNet + Number.EPSILON) * 100) / 100;
     
     const snapshot = {
-      userId,
+      appId,
       date,
       platform: "appstore" as const,
       activeSubscribers: finalActiveSubscribers,
@@ -792,7 +876,7 @@ export const processAppStoreReport = internalMutation({
 
     const existing = await ctx.db
       .query("metricsSnapshots")
-      .withIndex("by_user_platform", (q) => q.eq("userId", userId).eq("platform", "appstore"))
+      .withIndex("by_app_platform", (q) => q.eq("appId", appId).eq("platform", "appstore"))
       .filter((q) => q.eq(q.field("date"), date))
       .first();
 
@@ -803,11 +887,11 @@ export const processAppStoreReport = internalMutation({
 
 export const processAppStoreSubscriberReport = internalMutation({
   args: {
-    userId: v.id("users"),
+    appId: v.id("apps"),
     date: v.string(), // YYYY-MM-DD
     tsv: v.string(),
   },
-  handler: async (ctx, { userId, date, tsv }) => {
+  handler: async (ctx, { appId, date, tsv }) => {
     const lines = tsv.trim().split(/\r?\n/);
     if (lines.length < 2) {
       console.log(`[App Store Subscriber ${date}] Empty TSV - no event data`);
@@ -898,7 +982,7 @@ export const processAppStoreSubscriberReport = internalMutation({
 
 export const storeAppStoreReport = internalMutation({
   args: {
-    userId: v.id("users"),
+    appId: v.id("apps"),
     reportType: v.string(),
     reportSubType: v.string(),
     frequency: v.string(),
@@ -917,10 +1001,10 @@ export const storeAppStoreReport = internalMutation({
 
 export const generateUnifiedHistoricalSnapshots = internalMutation({
   args: {
-    userId: v.id("users"),
+    appId: v.id("apps"),
     daysBack: v.number(),
   },
-  handler: async (ctx, { userId, daysBack }) => {
+  handler: async (ctx, { appId, daysBack }) => {
     const today = Date.now();
     const oneDayMs = 24 * 60 * 60 * 1000;
     let created = 0;
@@ -933,7 +1017,7 @@ export const generateUnifiedHistoricalSnapshots = internalMutation({
       // Get all platform snapshots for this date
       const platformSnapshots = await ctx.db
         .query("metricsSnapshots")
-        .withIndex("by_user_date", (q) => q.eq("userId", userId).eq("date", dateStr))
+        .withIndex("by_app_date", (q) => q.eq("appId", appId).eq("date", dateStr))
         .filter((q) => q.neq(q.field("platform"), "unified"))
         .collect();
 
@@ -942,7 +1026,7 @@ export const generateUnifiedHistoricalSnapshots = internalMutation({
 
       // Sum up all platforms
       const unified = {
-        userId,
+        appId,
         date: dateStr,
         platform: "unified" as const,
         activeSubscribers: platformSnapshots.reduce((acc, s) => acc + s.activeSubscribers, 0),
@@ -954,10 +1038,10 @@ export const generateUnifiedHistoricalSnapshots = internalMutation({
         paybacks: platformSnapshots.reduce((acc, s) => acc + s.paybacks, 0),
         firstPayments: platformSnapshots.reduce((acc, s) => acc + s.firstPayments, 0),
         renewals: platformSnapshots.reduce((acc, s) => acc + s.renewals, 0),
-        mrr: platformSnapshots.reduce((acc, s) => acc + s.mrr, 0),
-        weeklyRevenue: platformSnapshots.reduce((acc, s) => acc + (s.weeklyRevenue || s.monthlyRevenueNet || 0), 0),
-        monthlyRevenueGross: platformSnapshots.reduce((acc, s) => acc + s.monthlyRevenueGross, 0),
-        monthlyRevenueNet: platformSnapshots.reduce((acc, s) => acc + s.monthlyRevenueNet, 0),
+        mrr: Math.round((platformSnapshots.reduce((acc, s) => acc + s.mrr, 0) + Number.EPSILON) * 100) / 100,
+        weeklyRevenue: Math.round((platformSnapshots.reduce((acc, s) => acc + (s.weeklyRevenue || s.monthlyRevenueNet || 0), 0) + Number.EPSILON) * 100) / 100,
+        monthlyRevenueGross: Math.round((platformSnapshots.reduce((acc, s) => acc + s.monthlyRevenueGross, 0) + Number.EPSILON) * 100) / 100,
+        monthlyRevenueNet: Math.round((platformSnapshots.reduce((acc, s) => acc + s.monthlyRevenueNet, 0) + Number.EPSILON) * 100) / 100,
         monthlySubscribers: platformSnapshots.reduce((acc, s) => acc + (s.monthlySubscribers || 0), 0),
         yearlySubscribers: platformSnapshots.reduce((acc, s) => acc + (s.yearlySubscribers || 0), 0),
       };
@@ -965,8 +1049,8 @@ export const generateUnifiedHistoricalSnapshots = internalMutation({
       // Check if unified snapshot already exists for this date
       const existingUnified = await ctx.db
         .query("metricsSnapshots")
-        .withIndex("by_user_date", (q) =>
-          q.eq("userId", userId).eq("date", dateStr)
+        .withIndex("by_app_date", (q) =>
+          q.eq("appId", appId).eq("date", dateStr)
         )
         .filter((q) => q.eq(q.field("platform"), "unified"))
         .first();
@@ -986,15 +1070,15 @@ export const generateUnifiedHistoricalSnapshots = internalMutation({
 
 export const createAppStoreSnapshotFromPrevious = internalMutation({
   args: {
-    userId: v.id("users"),
+    appId: v.id("apps"),
     date: v.string(),
     previousSnapshot: v.any(), // Accept any object and extract what we need
   },
-  handler: async (ctx, { userId, date, previousSnapshot }) => {
+  handler: async (ctx, { appId, date, previousSnapshot }) => {
     // Create snapshot with same subscriber counts but 0 revenue/events (no sales today)
     // Since no actual sales report, we can't calculate flow metrics from day-to-day
     const snapshot = {
-      userId,
+      appId,
       date,
       platform: "appstore" as const,
       activeSubscribers: previousSnapshot.activeSubscribers,
@@ -1016,12 +1100,81 @@ export const createAppStoreSnapshotFromPrevious = internalMutation({
 
     const existing = await ctx.db
       .query("metricsSnapshots")
-      .withIndex("by_user_platform", (q) => q.eq("userId", userId).eq("platform", "appstore"))
+      .withIndex("by_app_platform", (q) => q.eq("appId", appId).eq("platform", "appstore"))
       .filter((q) => q.eq(q.field("date"), date))
       .first();
 
     if (existing) await ctx.db.patch(existing._id, snapshot);
     else await ctx.db.insert("metricsSnapshots", snapshot);
+  },
+});
+
+export const processGooglePlayFinancialReport = internalMutation({
+  args: {
+    appId: v.id("apps"),
+    revenueByDate: v.any(), // Record<string, { gross: number; net: number; transactions: number }>
+  },
+  handler: async (ctx, { appId, revenueByDate }) => {
+    // Get app's preferred currency
+    const app = await ctx.db.get(appId);
+    const userCurrency = app?.currency || "USD";
+
+    let snapshotsCreated = 0;
+    let snapshotsUpdated = 0;
+
+    console.log(`[Google Play] Processing ${Object.keys(revenueByDate).length} days of revenue data`);
+
+    for (const [date, data] of Object.entries(revenueByDate)) {
+      const { gross, net, transactions } = data as { gross: number; net: number; transactions: number };
+
+      // Convert to user's preferred currency (Google Play reports are typically in USD)
+      const convertedGross = await convertAndRoundCurrency(ctx, gross, "USD", userCurrency);
+      const convertedNet = await convertAndRoundCurrency(ctx, net, "USD", userCurrency);
+
+      // Google Play reports are transaction-focused, not subscriber snapshots
+      // We can only provide revenue data accurately
+      const snapshot = {
+        appId,
+        date,
+        platform: "googleplay" as const,
+        // Subscriber metrics - set to 0 (not available from financial reports)
+        activeSubscribers: 0,
+        trialSubscribers: 0,
+        paidSubscribers: 0,
+        cancellations: 0,
+        churn: 0,
+        graceEvents: 0,
+        paybacks: 0,
+        firstPayments: 0,
+        renewals: 0,
+        mrr: 0,
+        // Revenue metrics - accurate from financial reports
+        weeklyRevenue: Math.round((convertedNet + Number.EPSILON) * 100) / 100,
+        monthlyRevenueGross: Math.round((convertedGross + Number.EPSILON) * 100) / 100,
+        monthlyRevenueNet: Math.round((convertedNet + Number.EPSILON) * 100) / 100,
+        monthlySubscribers: 0,
+        yearlySubscribers: 0,
+      };
+
+      // Check if snapshot already exists for this date
+      const existing = await ctx.db
+        .query("metricsSnapshots")
+        .withIndex("by_app_platform", (q) => q.eq("appId", appId).eq("platform", "googleplay"))
+        .filter((q) => q.eq(q.field("date"), date))
+        .first();
+
+      if (existing) {
+        await ctx.db.patch(existing._id, snapshot);
+        snapshotsUpdated++;
+      } else {
+        await ctx.db.insert("metricsSnapshots", snapshot);
+        snapshotsCreated++;
+      }
+    }
+
+    console.log(`[Google Play] Created ${snapshotsCreated} snapshots, updated ${snapshotsUpdated} snapshots`);
+
+    return { snapshotsCreated, snapshotsUpdated };
   },
 });
 
