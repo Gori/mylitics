@@ -249,37 +249,3 @@ function parseFinancialReportCSV(
 
   return revenueByDate;
 }
-
-// Legacy function kept for backwards compatibility - returns empty data
-export async function fetchGoogle(
-  serviceAccountJson: string,
-  packageName: string,
-  startDate?: number,
-  endDate?: number
-) {
-  console.warn('[Google Play] Legacy fetchGoogle called - use fetchGooglePlayFromGCS instead');
-  
-  const subscriptions: Array<{
-    externalId: string;
-    customerId: string;
-    status: string;
-    productId: string;
-    startDate: number;
-    endDate?: number;
-    isTrial: boolean;
-    willCancel: boolean;
-    isInGrace: boolean;
-    rawData: string;
-  }> = [];
-
-  const revenueEvents: Array<{
-    subscriptionExternalId: string;
-    eventType: "first_payment" | "renewal" | "refund";
-    amount: number;
-    currency: string;
-    timestamp: number;
-    rawData: string;
-  }> = [];
-
-  return { subscriptions, revenueEvents };
-}

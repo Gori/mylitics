@@ -58,25 +58,25 @@ export default function SettingsPage() {
 
   return (
     <div className="p-4 md:p-8">
-      <div className="max-w-4xl mx-auto space-y-6">
-        <h1 className="text-2xl font-semibold">Settings - {appName}</h1>
+      <div className="max-w-6xl mx-auto space-y-6">
+        <h1 className="text-4xl font-semibold">Settings - {appName}</h1>
 
         <Card>
           <CardHeader>
             <CardTitle>Currency</CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-sm text-gray-600 mb-4">
+            <p className="text-base text-gray-600 mb-4">
               Select your preferred currency. All revenue data will be converted to this currency.
             </p>
             <div className="max-w-xs">
-              <label className="block text-sm font-medium mb-2">
+              <label className="block text-base font-medium mb-2">
                 Preferred Currency
               </label>
               <select
                 value={selectedCurrency}
                 onChange={(e) => handleCurrencyChange(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
+                className="w-full px-3 py-2 border border-gray-300 rounded text-base"
               >
                 {CURRENCIES.map((curr) => (
                   <option key={curr.code} value={curr.code}>
@@ -226,7 +226,7 @@ function PlatformSection({
   return (
     <div className="border border-gray-200 rounded p-6">
       <div className="flex justify-between items-center mb-4">
-        <div className="flex items-center gap-2 font-semibold">
+        <div className="flex items-center gap-2 font-semibold text-lg">
           {hasConnection ? (
             <CheckCircle2 className="w-5 h-5 text-green-600" />
           ) : (
@@ -238,13 +238,13 @@ function PlatformSection({
           <div className="flex gap-2">
             <button
               onClick={handleShowForm}
-              className="px-3 py-1 text-sm border border-gray-300 rounded"
+              className="px-3 py-1 text-base border border-gray-300 rounded"
             >
               Update
             </button>
             <button
               onClick={handleRemove}
-              className="px-3 py-1 text-sm border border-gray-300 rounded text-red-600"
+              className="px-3 py-1 text-base border border-gray-300 rounded text-red-600"
             >
               Remove
             </button>
@@ -252,7 +252,7 @@ function PlatformSection({
         ) : (
           <button
             onClick={handleShowForm}
-            className="px-3 py-1 text-sm bg-black text-white rounded"
+            className="px-3 py-1 text-base bg-black text-white rounded"
           >
             Connect
           </button>
@@ -264,8 +264,8 @@ function PlatformSection({
           {platform === "stripe" && (
             <>
               <div className="bg-gray-50 border border-gray-200 rounded p-4 mb-4">
-                <h3 className="font-semibold text-sm mb-2">How to find your API Key:</h3>
-                <ol className="text-xs text-gray-700 space-y-1 list-decimal list-inside">
+                <h3 className="font-semibold text-base mb-2">How to find your API Key:</h3>
+                <ol className="text-sm text-gray-700 space-y-1 list-decimal list-inside">
                   <li>Go to <a href="https://dashboard.stripe.com" target="_blank" rel="noopener noreferrer" className="text-blue-600 underline">dashboard.stripe.com</a> and sign in</li>
                   <li>Click "Developers" in the top menu</li>
                   <li>Click "API keys" in the left sidebar</li>
@@ -280,7 +280,7 @@ function PlatformSection({
                 onChange={(e) =>
                   setFormData({ ...formData, apiKey: e.target.value })
                 }
-                className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
+                className="w-full px-3 py-2 border border-gray-300 rounded text-base"
                 required
               />
             </>
@@ -288,8 +288,8 @@ function PlatformSection({
           {platform === "appstore" && (
             <>
               <div className="bg-gray-50 border border-gray-200 rounded p-4 mb-4">
-                <h3 className="font-semibold text-sm mb-2">How to find your App Store credentials:</h3>
-                <ol className="text-xs text-gray-700 space-y-1 list-decimal list-inside">
+                <h3 className="font-semibold text-base mb-2">How to find your App Store credentials:</h3>
+                <ol className="text-sm text-gray-700 space-y-1 list-decimal list-inside">
                   <li>Go to <a href="https://appstoreconnect.apple.com" target="_blank" rel="noopener noreferrer" className="text-blue-600 underline">appstoreconnect.apple.com</a> and sign in</li>
                   <li>Click "Users and Access" → "Keys"</li>
                   <li>Click "+" to create a new key, select "App Manager" role</li>
@@ -309,7 +309,7 @@ function PlatformSection({
                 onChange={(e) =>
                   setFormData({ ...formData, issuerId: e.target.value })
                 }
-                className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
+                className="w-full px-3 py-2 border border-gray-300 rounded text-base"
                 required
               />
               <input
@@ -319,7 +319,7 @@ function PlatformSection({
                 onChange={(e) =>
                   setFormData({ ...formData, keyId: e.target.value })
                 }
-                className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
+                className="w-full px-3 py-2 border border-gray-300 rounded text-base"
                 required
               />
               <input
@@ -329,7 +329,7 @@ function PlatformSection({
                 onChange={(e) =>
                   setFormData({ ...formData, bundleId: e.target.value })
                 }
-                className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
+                className="w-full px-3 py-2 border border-gray-300 rounded text-base"
                 required
               />
               <input
@@ -339,7 +339,7 @@ function PlatformSection({
                 onChange={(e) =>
                   setFormData({ ...formData, vendorNumber: e.target.value })
                 }
-                className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
+                className="w-full px-3 py-2 border border-gray-300 rounded text-base"
                 required
               />
               <textarea
@@ -348,7 +348,7 @@ function PlatformSection({
                 onChange={(e) =>
                   setFormData({ ...formData, privateKey: e.target.value })
                 }
-                className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
+                className="w-full px-3 py-2 border border-gray-300 rounded text-base"
                 rows={4}
                 required
               />
@@ -357,8 +357,8 @@ function PlatformSection({
           {platform === "googleplay" && (
             <>
               <div className="bg-gray-50 border border-gray-200 rounded p-4 mb-4">
-                <h3 className="font-semibold text-sm mb-2">How to find your Google Play credentials:</h3>
-                <ol className="text-xs text-gray-700 space-y-1 list-decimal list-inside">
+                <h3 className="font-semibold text-base mb-2">How to find your Google Play credentials:</h3>
+                <ol className="text-sm text-gray-700 space-y-1 list-decimal list-inside">
                   <li>Go to <a href="https://play.google.com/console" target="_blank" rel="noopener noreferrer" className="text-blue-600 underline">play.google.com/console</a> and sign in</li>
                   <li><strong>Package Name:</strong> Go to "App Content" → "App Information", copy your "Package name" (e.g., com.example.app)</li>
                   <li>Go to <a href="https://console.cloud.google.com" target="_blank" rel="noopener noreferrer" className="text-blue-600 underline">console.cloud.google.com</a></li>
@@ -383,7 +383,7 @@ function PlatformSection({
                 onChange={(e) =>
                   setFormData({ ...formData, packageName: e.target.value })
                 }
-                className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
+                className="w-full px-3 py-2 border border-gray-300 rounded text-base"
                 required
               />
               <input
@@ -393,7 +393,7 @@ function PlatformSection({
                 onChange={(e) =>
                   setFormData({ ...formData, gcsBucketName: e.target.value })
                 }
-                className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
+                className="w-full px-3 py-2 border border-gray-300 rounded text-base"
                 required
               />
               <input
@@ -403,7 +403,7 @@ function PlatformSection({
                 onChange={(e) =>
                   setFormData({ ...formData, gcsReportPrefix: e.target.value })
                 }
-                className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
+                className="w-full px-3 py-2 border border-gray-300 rounded text-base"
               />
               <textarea
                 placeholder="Service Account JSON"
@@ -414,7 +414,7 @@ function PlatformSection({
                     serviceAccountJson: e.target.value,
                   })
                 }
-                className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
+                className="w-full px-3 py-2 border border-gray-300 rounded text-base"
                 rows={4}
                 required
               />
@@ -423,7 +423,7 @@ function PlatformSection({
           <div className="flex gap-2">
             <button
               type="submit"
-              className="px-4 py-2 bg-black text-white rounded text-sm"
+              className="px-4 py-2 bg-black text-white rounded text-base"
             >
               Save
             </button>
@@ -433,7 +433,7 @@ function PlatformSection({
                 setShowForm(null);
                 setFormData({});
               }}
-              className="px-4 py-2 border border-gray-300 rounded text-sm"
+              className="px-4 py-2 border border-gray-300 rounded text-base"
             >
               Cancel
             </button>

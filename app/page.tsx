@@ -1,6 +1,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import { Button } from "@/components/ui/button";
+import { CircularText } from "@/components/CircularText";
 import { ArrowRight, BarChart3, TrendingUp, Zap, Users, DollarSign, TrendingDown, RefreshCw, Shield, Clock, LucideIcon } from "lucide-react";
 
 export default function Home() {
@@ -98,21 +99,29 @@ export default function Home() {
       </header>
 
       {/* Hero Section */}
-      <section className="max-w-7xl mx-auto px-4 md:px-8 py-32 md:py-40">
+      <section className="max-w-7xl mx-auto px-4 md:px-8 py-32 md:py-40 min-h-screen flex items-center justify-center">
         <div className="text-center max-w-4xl mx-auto">
-          <div className="flex justify-center mb-8">
+          <div className="flex justify-center mb-36 relative mx-auto items-center justify-center">
+            <div className="absolute">
+              <CircularText
+                text="ANALYTICS • METRICS • REVENUE • TRACKING • "
+                spinDuration={8}
+                className=""
+                radius={152}
+              />
+            </div>
             <video
               autoPlay
               loop
               muted
               playsInline
-              className="w-[189px] h-[190px] object-cover bg-white"
+              className="w-[189px] h-[190px] object-cover bg-white relative z-10"
             >
               <source src="/images/logo.mp4" type="video/mp4" />
             </video>
           </div>
           <h1 className="text-4xl md:text-5xl font-bold mb-6 text-gray-900">
-          Simple subscription analytics
+            Simple subscription analytics
           </h1>
           <p className="text-lg md:text-3xl font-medium text-gray-500 mb-12">
             Track metrics across App Store, Google Play, and Stripe in one dashboard.
@@ -134,8 +143,8 @@ export default function Home() {
         </div>
       </section>
 
-            {/* Platforms Section */}
-            <section className="max-w-7xl mx-auto px-4 md:px-8 py-12">
+      {/* Platforms Section */}
+      <section className="max-w-7xl mx-auto px-4 md:px-8 py-12">
         <h2 className="text-xl md:text-3xl font-medium text-center mb-14 text-gray-900">
           Connect. <span className="text-gray-500">Integrate with App Store, Google Play, and Stripe.</span>
         </h2>

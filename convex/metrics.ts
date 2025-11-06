@@ -111,12 +111,13 @@ export const processAndStoreMetrics = internalMutation({
     // Store raw subscription data
     console.log(`[Metrics ${platform}] Storing ${subscriptions.length} subscriptions...`);
     for (const sub of subscriptions) {
-      const existing = await ctx.db
-        .query("subscriptions")
-        .withIndex("by_external_id", (q) =>
-          q.eq("platform", platform).eq("externalId", sub.externalId)
-        )
-        .first();
+    const existing = await ctx.db
+      .query("subscriptions")
+      .withIndex("by_external_id", (q) =>
+        q.eq("platform", platform).eq("externalId", sub.externalId)
+      )
+      .filter((q) => q.eq(q.field("appId"), appId))
+      .first();
 
       if (existing) {
         await ctx.db.patch(existing._id, {
@@ -415,6 +416,11 @@ export const generateHistoricalSnapshots = internalMutation({
   },
   handler: async (ctx, { appId, platform, startMs, endMs }) => {
     const oneDayMs = 24 * 60 * 60 * 1000;
+    const totalDays = Math.floor((endMs - startMs) / oneDayMs) + 1;
+    const chunkStartTime = Date.now();
+    console.log(
+      `[Metrics ${platform}] Historical generation starting: ${new Date(startMs).toISOString()} → ${new Date(endMs).toISOString()} (${totalDays} days)`
+    );
 
     // Get app's preferred currency
     const app = await ctx.db.get(appId);
@@ -438,6 +444,7 @@ export const generateHistoricalSnapshots = internalMutation({
     }
 
     let daysProcessed = 0;
+    let lastProcessedDate: string | null = null;
 
     for (let dayStart = startMs; dayStart <= endMs; dayStart += oneDayMs) {
       const dayDate = new Date(dayStart);
@@ -555,9 +562,13 @@ export const generateHistoricalSnapshots = internalMutation({
       if (daysProcessed % 30 === 0) {
         console.log(`[Metrics ${platform}] Generated ${daysProcessed} daily snapshots so far...`);
       }
+      lastProcessedDate = date;
     }
 
-    console.log(`[Metrics ${platform}] Historical generation complete: ${daysProcessed} days processed`);
+    const durationMs = Date.now() - chunkStartTime;
+    console.log(
+      `[Metrics ${platform}] Historical generation complete: ${daysProcessed} of ${totalDays} days processed, lastDate=${lastProcessedDate}, duration=${durationMs}ms`
+    );
   },
 });
 

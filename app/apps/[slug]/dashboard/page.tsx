@@ -4,21 +4,29 @@ import { useQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useApp } from "@/app/apps/[slug]/layout";
 import { useMemo, useState, useEffect } from "react";
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, ResponsiveContainer } from "recharts";
 import { Card, CardContent } from "@/components/ui/card";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
+import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { useRouter } from "next/navigation";
 import { DebugDataTable } from "@/app/dashboard/components/DebugDataTable";
+import { MetricsDefinitions } from "@/app/dashboard/components/MetricsDefinitions";
+import { ChatSidebar } from "@/app/dashboard/components/chat/ChatSidebar";
+import { SidebarProvider, SidebarInset, SidebarTrigger } from "@/components/ui/sidebar";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { CalendarDays, ChevronDown, Loader2 } from "lucide-react";
 
 export default function DashboardPage() {
   const router = useRouter();
-  const { appId, currency } = useApp();
+  const { appId, currency, appName } = useApp();
   const metrics = useQuery(api.queries.getLatestMetrics, { appId });
   const userPreferences = useQuery(api.queries.getUserPreferences, { appId });
   const debugData = useQuery(api.queries.getAllDebugData, { appId });
   const logs = useQuery(api.queries.getSyncLogs, { appId, limit: 50 });
   const activeSyncStatus = useQuery(api.syncHelpers.getActiveSyncStatus, { appId });
+  const chatContext = useQuery(api.queries.getChatContext, { appId });
   const triggerSync = useMutation(api.syncHelpers.triggerSync);
   const cancelSync = useMutation(api.syncHelpers.cancelSync);
   const triggerExchangeRates = useMutation(api.syncHelpers.triggerExchangeRatesFetch);
@@ -77,7 +85,10 @@ export default function DashboardPage() {
 
   const formatDate = (timestamp: number | null) => {
     if (!timestamp) return "Never";
-    return new Date(timestamp).toLocaleString();
+    return new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(new Date(timestamp));
   };
 
   const formatCurrency = (amount: number) => {
@@ -89,43 +100,84 @@ export default function DashboardPage() {
     }).format(amount);
   };
 
+  const connectedPlatforms = useMemo(() => {
+    if (!metrics?.platformMap) return [];
+    return Object.keys(metrics.platformMap).filter(platform => {
+      const platformData = metrics.platformMap[platform];
+      if (!platformData) return false;
+      // Check if platform has any non-zero values
+      return Object.values(platformData).some(value => typeof value === 'number' && value > 0);
+    });
+  }, [metrics]);
+
   const platformCounts = {
     appstore: metrics?.platformMap?.appstore?.activeSubscribers ?? 0,
     googleplay: metrics?.platformMap?.googleplay?.activeSubscribers ?? 0,
     stripe: metrics?.platformMap?.stripe?.activeSubscribers ?? 0,
   };
 
+  const platformLabels: Record<string, string> = {
+    appstore: "App Store",
+    googleplay: "Google Play",
+    stripe: "Stripe",
+  };
+
   const rightBlock = (key: string, isCurrency = false) => {
     const pick = (platform: string) => {
       return metrics?.platformMap?.[platform]?.[key] ?? 0;
     };
-    const a = pick("appstore");
-    const g = pick("googleplay");
-    const s = pick("stripe");
+    
     return (
       <div className="text-xs text-right text-gray-500 leading-4">
-        <div>App Store: {isCurrency ? formatCurrency(a) : a}</div>
-        <div>Google Play: {isCurrency ? formatCurrency(g) : g}</div>
-        <div>Stripe: {isCurrency ? formatCurrency(s) : s}</div>
+        {connectedPlatforms.map((platform) => {
+          const value = pick(platform);
+          return (
+            <div key={platform}>
+              {platformLabels[platform]}: {isCurrency ? formatCurrency(value) : value}
+            </div>
+          );
+        })}
       </div>
     );
   };
 
+  const syncMenuItems = [
+    {
+      label: "Sync Now",
+      description: "Refresh the latest updates",
+      action: () => handleSync(false),
+    },
+    {
+      label: "Full Sync",
+      description: "Fetch 365 days of history",
+      action: () => handleSync(true),
+    },
+    ...(["stripe", "appstore", "googleplay"] as const).map((platform) => ({
+      label: `Full Sync: ${platform === "appstore" ? "App Store" : platform === "googleplay" ? "Google Play" : "Stripe"}`,
+      description: `Only ${platform === "appstore" ? "App Store" : platform === "googleplay" ? "Google Play" : "Stripe"} data`,
+      action: () => handleSync(true, platform),
+    })),
+  ];
+
   return (
-    <div className="p-4 md:p-8">
-      <div className="max-w-6xl mx-auto">
-        {/* Sync Controls */}
-        <div className="mb-6 pb-4 border-b">
-          <div className="flex items-center justify-between flex-wrap gap-4">
-            <div className="text-sm text-muted-foreground">
-              {metrics?.lastSync ? formatDate(metrics.lastSync) : "No sync yet"}
-            </div>
-            <div className="flex items-center gap-2 flex-wrap">
-              {syncError && (
-                <div className="text-sm text-red-600 bg-red-50 px-3 py-1 rounded">
-                  {syncError}
+    <SidebarProvider defaultOpen={false}>
+      <SidebarInset>
+        <div className="px-4 pt-16">
+          <div className="max-w-6xl mx-auto space-y-6">
+          <h1 className="text-4xl font-semibold text-foreground">{appName}</h1>
+        <div className="sticky top-0 z-50 flex flex-col mb-2 bg-white/80 backdrop-blur-sm py-4 -mx-4 px-4">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="flex flex-col gap-2">
+              
+              <div className="flex flex-col gap-1">
+                <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Last Sync</span>
+                <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+                  <CalendarDays className="h-4 w-4 text-muted-foreground" />
+                  <span>{metrics?.lastSync ? formatDate(metrics.lastSync) : "No sync yet"}</span>
                 </div>
-              )}
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
               <Button
                 onClick={handleFetchExchangeRates}
                 disabled={fetchingRates}
@@ -136,66 +188,49 @@ export default function DashboardPage() {
                 {fetchingRates ? "Fetching..." : "Fetch Rates"}
               </Button>
               {syncing ? (
-                <Button
-                  onClick={handleCancelSync}
-                  variant="destructive"
-                  size="sm"
-                >
+                <Button onClick={handleCancelSync} variant="destructive" size="sm">
                   Stop Sync
                 </Button>
               ) : (
-                <Button
-                  onClick={() => handleSync(false)}
-                  disabled={syncing}
-                  variant="default"
-                  size="sm"
-                >
-                  Sync
-                </Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button size="sm" className="gap-2">
+                      Sync
+                      <ChevronDown className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-56">
+                    {syncMenuItems.map((item) => (
+                      <DropdownMenuItem
+                        key={item.label}
+                        className="flex flex-col items-start gap-1"
+                        onSelect={() => {
+                          void item.action();
+                        }}
+                      >
+                        <span className="text-sm font-medium text-foreground">{item.label}</span>
+                        <span className="text-xs text-muted-foreground">{item.description}</span>
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
               )}
-              <Button
-                onClick={() => handleSync(true)}
-                disabled={syncing}
-                variant="outline"
-                size="sm"
-                title="Force full historical sync (365 days)"
-              >
-                Full Sync
-              </Button>
-              <div className="flex items-center gap-2">
-                <Button
-                  onClick={() => handleSync(true, "stripe")}
-                  disabled={syncing}
-                  variant="outline"
-                  size="sm"
-                  title="Full Sync: Stripe"
-                >
-                  Stripe
-                </Button>
-                <Button
-                  onClick={() => handleSync(true, "appstore")}
-                  disabled={syncing}
-                  variant="outline"
-                  size="sm"
-                  title="Full Sync: App Store"
-                >
-                  App Store
-                </Button>
-                <Button
-                  onClick={() => handleSync(true, "googleplay")}
-                  disabled={syncing}
-                  variant="outline"
-                  size="sm"
-                  title="Full Sync: Google Play"
-                >
-                  Google Play
-                </Button>
-              </div>
+              <SidebarTrigger />
             </div>
           </div>
+          {syncError && (
+            <div className="flex items-center gap-2 rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-sm text-red-600">
+              {syncError}
+            </div>
+          )}
         </div>
 
-        {!metrics?.unified ? (
+        {metrics === undefined ? (
+          <div className="text-center py-12">
+            <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4 text-gray-600" />
+            <p className="text-gray-600">Loading metrics...</p>
+          </div>
+        ) : !metrics?.unified ? (
           <div className="text-center py-12">
             <p className="text-gray-600 mb-4">No data yet</p>
             <Button onClick={() => router.push("./settings")}>
@@ -210,11 +245,14 @@ export default function DashboardPage() {
                 value={metrics.unified.activeSubscribers}
                 metricKey="activeSubscribers"
                 appId={appId}
+                connectedPlatforms={connectedPlatforms}
                 right={
                   <div className="text-xs text-right text-gray-500 leading-4">
-                    <div>App Store: {platformCounts.appstore}</div>
-                    <div>Google Play: {platformCounts.googleplay}</div>
-                    <div>Stripe: {platformCounts.stripe}</div>
+                    {connectedPlatforms.map((platform) => (
+                      <div key={platform}>
+                        {platformLabels[platform]}: {platformCounts[platform as keyof typeof platformCounts]}
+                      </div>
+                    ))}
                   </div>
                 }
               />
@@ -223,6 +261,7 @@ export default function DashboardPage() {
                 value={metrics.unified.trialSubscribers}
                 metricKey="trialSubscribers"
                 appId={appId}
+                connectedPlatforms={connectedPlatforms}
                 right={rightBlock("trialSubscribers")}
               />
               <MetricCard
@@ -230,6 +269,7 @@ export default function DashboardPage() {
                 value={metrics.unified.paidSubscribers}
                 metricKey="paidSubscribers"
                 appId={appId}
+                connectedPlatforms={connectedPlatforms}
                 right={rightBlock("paidSubscribers")}
               />
               <MetricCard
@@ -237,6 +277,7 @@ export default function DashboardPage() {
                 value={metrics.unified.monthlySubscribers}
                 metricKey="monthlySubscribers"
                 appId={appId}
+                connectedPlatforms={connectedPlatforms}
                 right={rightBlock("monthlySubscribers")}
               />
               <MetricCard
@@ -244,6 +285,7 @@ export default function DashboardPage() {
                 value={metrics.unified.yearlySubscribers}
                 metricKey="yearlySubscribers"
                 appId={appId}
+                connectedPlatforms={connectedPlatforms}
                 right={rightBlock("yearlySubscribers")}
               />
               <MetricCard
@@ -251,6 +293,7 @@ export default function DashboardPage() {
                 value={metrics.unified.cancellations}
                 metricKey="cancellations"
                 appId={appId}
+                connectedPlatforms={connectedPlatforms}
                 right={rightBlock("cancellations")}
               />
               <MetricCard
@@ -258,6 +301,7 @@ export default function DashboardPage() {
                 value={metrics.unified.graceEvents}
                 metricKey="graceEvents"
                 appId={appId}
+                connectedPlatforms={connectedPlatforms}
                 right={rightBlock("graceEvents")}
               />
               <MetricCard
@@ -265,6 +309,7 @@ export default function DashboardPage() {
                 value={metrics.unified.firstPayments}
                 metricKey="firstPayments"
                 appId={appId}
+                connectedPlatforms={connectedPlatforms}
                 right={rightBlock("firstPayments")}
               />
               <MetricCard
@@ -272,6 +317,7 @@ export default function DashboardPage() {
                 value={metrics.unified.renewals}
                 metricKey="renewals"
                 appId={appId}
+                connectedPlatforms={connectedPlatforms}
                 right={rightBlock("renewals")}
               />
               <MetricCard
@@ -279,6 +325,7 @@ export default function DashboardPage() {
                 value={formatCurrency(metrics.unified.mrr)}
                 metricKey="mrr"
                 appId={appId}
+                connectedPlatforms={connectedPlatforms}
                 right={rightBlock("mrr", true)}
               />
               <MetricCard
@@ -286,6 +333,7 @@ export default function DashboardPage() {
                 value={formatCurrency(metrics.unified.monthlyRevenueGross)}
                 metricKey="monthlyRevenueGross"
                 appId={appId}
+                connectedPlatforms={connectedPlatforms}
                 right={rightBlock("monthlyRevenueGross", true)}
               />
               <MetricCard
@@ -293,6 +341,7 @@ export default function DashboardPage() {
                 value={formatCurrency(metrics.unified.monthlyRevenueNet)}
                 metricKey="monthlyRevenueNet"
                 appId={appId}
+                connectedPlatforms={connectedPlatforms}
                 right={rightBlock("monthlyRevenueNet", true)}
               />
             </div>
@@ -306,13 +355,12 @@ export default function DashboardPage() {
                   logs.map((l) => (
                     <div key={l._id} className="py-1">
                       <span
-                        className={`mr-2 ${
-                          l.level === "error"
-                            ? "text-red-600"
-                            : l.level === "success"
+                        className={`mr-2 ${l.level === "error"
+                          ? "text-red-600"
+                          : l.level === "success"
                             ? "text-green-600"
                             : "text-gray-700"
-                        }`}
+                          }`}
                       >
                         [{new Date(l.timestamp).toLocaleTimeString()}]
                       </span>
@@ -323,16 +371,46 @@ export default function DashboardPage() {
               </div>
             </div>
 
+            <MetricsDefinitions />
+
+            <div className="mt-8 flex gap-4">
+              <Button
+                onClick={() => router.push("./settings")}
+                variant="outline"
+              >
+                Settings
+              </Button>
+            </div>
+
             <div className="mt-12">
               <h2 className="text-xl font-semibold mb-4">Debug: All Metrics Data</h2>
               <DebugDataTable debugData={debugData} userCurrency={currency} />
             </div>
           </>
         )}
-      </div>
-    </div>
+          </div>
+        </div>
+      </SidebarInset>
+      <ChatSidebar
+        chatContext={chatContext}
+        debugData={debugData}
+      />
+    </SidebarProvider>
   );
 }
+
+
+const FLOW_METRICS = new Set([
+  "cancellations",
+  "graceEvents",
+  "firstPayments",
+  "renewals",
+  "monthlyRevenueGross",
+  "monthlyRevenueNet",
+]);
+
+const parseWeekDate = (week: string) => new Date(`${week}T00:00:00Z`);
+const subtractDays = (date: Date, days: number) => new Date(date.getTime() - days * 86_400_000);
 
 function MetricCard({
   label,
@@ -340,39 +418,94 @@ function MetricCard({
   metricKey,
   appId,
   right,
+  connectedPlatforms,
 }: {
   label: string;
   value: string | number;
   metricKey: string;
   appId: any;
   right?: React.ReactNode;
+  connectedPlatforms: string[];
 }) {
   const chartData = useQuery(api.queries.getWeeklyMetricsHistory, { appId, metric: metricKey });
 
   const change = useMemo(() => {
-    if (!chartData || chartData.length < 2) return null;
-    const latest = chartData[0]?.unified ?? 0;
-    const previous = chartData[1]?.unified ?? 0;
-    if (previous === 0) return null;
-    const percentChange = ((latest - previous) / previous) * 100;
+    if (!chartData || chartData.length === 0) return null;
+
+    const sorted = [...chartData].sort((a, b) => a.week.localeCompare(b.week));
+    const latestPoint = sorted[sorted.length - 1];
+    if (!latestPoint) return null;
+
+    const latestValue = latestPoint.unified ?? 0;
+    const latestWeekDate = parseWeekDate(latestPoint.week);
+
+    if (FLOW_METRICS.has(metricKey)) {
+      const currentWindowStart = subtractDays(latestWeekDate, 28);
+      const previousWindowEnd = subtractDays(currentWindowStart, 1);
+      const previousWindowStart = subtractDays(previousWindowEnd, 28);
+
+      const sumRange = (start: Date, end: Date) =>
+        sorted.reduce((sum, point) => {
+          const weekDate = parseWeekDate(point.week);
+          if (weekDate > start && weekDate <= end) {
+            return sum + (point.unified ?? 0);
+          }
+          return sum;
+        }, 0);
+
+      const currentSum = sumRange(currentWindowStart, latestWeekDate);
+      const previousSum = sumRange(previousWindowStart, previousWindowEnd);
+      if (previousSum === 0) return null;
+
+      const percentChange = ((currentSum - previousSum) / previousSum) * 100;
+      return {
+        value: percentChange,
+        type: percentChange >= 0 ? "positive" : "negative",
+        formatted: `${percentChange >= 0 ? "+" : ""}${percentChange.toFixed(1)}%`,
+      };
+    }
+
+    const targetDate = subtractDays(latestWeekDate, 30);
+    const previousPoint = [...sorted]
+      .reverse()
+      .find((point) => parseWeekDate(point.week) <= targetDate);
+    if (!previousPoint) return null;
+
+    const previousValue = previousPoint.unified ?? 0;
+    if (previousValue === 0) return null;
+
+    const percentChange = ((latestValue - previousValue) / previousValue) * 100;
     return {
       value: percentChange,
       type: percentChange >= 0 ? "positive" : "negative",
       formatted: `${percentChange >= 0 ? "+" : ""}${percentChange.toFixed(1)}%`,
     };
-  }, [chartData]);
+  }, [chartData, metricKey]);
 
   return (
     <Card className="p-0 gap-0">
       <CardContent className="p-6">
         <dd className="flex items-start justify-between space-x-2">
-          <span className="truncate text-sm text-muted-foreground">
+          <div className="truncate font-medium text-sm text-muted-foreground">
             {label}
-          </span>
+
+            <HoverCard>
+              <HoverCardTrigger asChild>
+                <div className="text-4xl font-semibold text-foreground cursor-help">
+                  {value}
+                </div>
+              </HoverCardTrigger>
+              {right && (
+                <HoverCardContent side="right" align="center" className="w-auto">
+                  {right}
+                </HoverCardContent>
+              )}
+            </HoverCard>
+          </div>
           {change && (
             <span
               className={cn(
-                "text-sm font-medium",
+                "text-xl font-medium",
                 change.type === "positive"
                   ? "text-emerald-700 dark:text-emerald-500"
                   : "text-red-700 dark:text-red-500"
@@ -382,29 +515,37 @@ function MetricCard({
             </span>
           )}
         </dd>
-        <dd className="mt-1 text-3xl font-semibold text-foreground">
-          {value}
-        </dd>
-        {right && (
-          <div className="mt-2">
-            {right}
-          </div>
-        )}
-        {chartData && chartData.length > 0 && (
-          <div className="h-32 mt-4">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartData}>
-                <XAxis dataKey="week" hide />
-                <YAxis hide />
-                <Tooltip />
-                <Line type="monotone" dataKey="unified" stroke="#000000" strokeWidth={2} dot={false} name="Total" />
-                <Line type="monotone" dataKey="appstore" stroke="#0071e3" strokeWidth={1} dot={false} name="App Store" />
-                <Line type="monotone" dataKey="googleplay" stroke="#34a853" strokeWidth={1} dot={false} name="Google Play" />
-                <Line type="monotone" dataKey="stripe" stroke="#635bff" strokeWidth={1} dot={false} name="Stripe" />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        )}
+
+        <ChartContainer
+          className="h-32 mt-4 !aspect-auto"
+          config={{
+            unified: { label: "Total", color: "#000000" },
+            appstore: { label: "App Store", color: "#0071e3" },
+            googleplay: { label: "Google Play", color: "#34a853" },
+            stripe: { label: "Stripe", color: "#635bff" },
+          } satisfies ChartConfig}
+        >
+          {chartData && chartData.length > 0 ? (
+            <LineChart data={chartData}>
+              <CartesianGrid vertical={false} />
+              <XAxis dataKey="week" hide />
+              <YAxis hide />
+              <ChartTooltip cursor={false} content={<ChartTooltipContent hideLabel />} />
+              <Line type="linear" dataKey="unified" stroke="var(--color-unified)" strokeWidth={2} dot={false} isAnimationActive={false} />
+              {connectedPlatforms.includes("appstore") && (
+                <Line type="linear" dataKey="appstore" stroke="var(--color-appstore)" strokeWidth={1} dot={false} isAnimationActive={false} />
+              )}
+              {connectedPlatforms.includes("googleplay") && (
+                <Line type="linear" dataKey="googleplay" stroke="var(--color-googleplay)" strokeWidth={1} dot={false} isAnimationActive={false} />
+              )}
+              {connectedPlatforms.includes("stripe") && (
+                <Line type="linear" dataKey="stripe" stroke="var(--color-stripe)" strokeWidth={1} dot={false} isAnimationActive={false} />
+              )}
+            </LineChart>
+          ) : (
+            <div />
+          )}
+        </ChartContainer>
       </CardContent>
     </Card>
   );
