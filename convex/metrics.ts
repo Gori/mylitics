@@ -1120,13 +1120,171 @@ export const createAppStoreSnapshotFromPrevious = internalMutation({
   },
 });
 
-export const processGooglePlayFinancialReport = internalMutation({
+// New comprehensive Google Play processor that handles both revenue and subscription data
+export const processGooglePlayReports = internalMutation({
   args: {
     appId: v.id("apps"),
     revenueByDate: v.any(), // Record<string, { gross: number; net: number; transactions: number }>
+    subscriptionMetricsByDate: v.any(), // Record<string, { active, trial, paid, monthly, yearly, newSubscriptions, canceledSubscriptions, renewals }>
+    discoveredReportTypes: v.array(v.string()),
+  },
+  handler: async (ctx, { appId, revenueByDate, subscriptionMetricsByDate, discoveredReportTypes }) => {
+    const app = await ctx.db.get(appId);
+    const userCurrency = app?.currency || "USD";
+
+    let snapshotsCreated = 0;
+    let snapshotsUpdated = 0;
+
+    const hasSubscriptionData = Object.keys(subscriptionMetricsByDate || {}).length > 0;
+    const hasRevenueData = Object.keys(revenueByDate || {}).length > 0;
+
+    console.log(`[Google Play] Processing reports - Revenue: ${hasRevenueData}, Subscriptions: ${hasSubscriptionData}`);
+    console.log(`[Google Play] Report types: ${discoveredReportTypes.join(', ')}`);
+    
+    // Log a sample of what data we have
+    if (hasSubscriptionData) {
+      const sampleDate = Object.keys(subscriptionMetricsByDate)[0];
+      const sample = subscriptionMetricsByDate[sampleDate];
+      console.log(`[Google Play] Sample subscription data (${sampleDate}):`, JSON.stringify(sample));
+    }
+
+    // Get all unique dates from both revenue and subscription data
+    const allDates = new Set([
+      ...Object.keys(revenueByDate || {}),
+      ...Object.keys(subscriptionMetricsByDate || {})
+    ]);
+
+    console.log(`[Google Play] Processing ${allDates.size} unique dates`);
+
+    // OPTIMIZATION: Pre-fetch exchange rate once for all conversions
+    // Google Play reports are in USD, so we only need one rate lookup
+    let exchangeRate = 1.0;
+    if (userCurrency.toUpperCase() !== "USD") {
+      const rate = await ctx.db
+        .query("exchangeRates")
+        .withIndex("by_pair", (q: any) => q.eq("fromCurrency", "USD").eq("toCurrency", userCurrency.toUpperCase()))
+        .order("desc")
+        .first();
+      
+      if (rate) {
+        exchangeRate = rate.rate;
+        console.log(`[Google Play] Using exchange rate USD -> ${userCurrency}: ${exchangeRate}`);
+      } else {
+        // Try inverse
+        const inverseRate = await ctx.db
+          .query("exchangeRates")
+          .withIndex("by_pair", (q: any) => q.eq("fromCurrency", userCurrency.toUpperCase()).eq("toCurrency", "USD"))
+          .order("desc")
+          .first();
+        
+        if (inverseRate) {
+          exchangeRate = 1 / inverseRate.rate;
+          console.log(`[Google Play] Using inverse exchange rate USD -> ${userCurrency}: ${exchangeRate}`);
+        } else {
+          console.warn(`[Google Play] No exchange rate found for USD -> ${userCurrency}, using 1:1`);
+        }
+      }
+    }
+
+    // Helper function for fast conversion using cached rate
+    const convertCurrency = (amount: number): number => {
+      const converted = amount * exchangeRate;
+      return Math.round((converted + Number.EPSILON) * 100) / 100;
+    };
+
+    // OPTIMIZATION: Pre-fetch all existing snapshots to avoid 362 individual queries
+    const existingSnapshots = await ctx.db
+      .query("metricsSnapshots")
+      .withIndex("by_app_platform", (q) => q.eq("appId", appId).eq("platform", "googleplay"))
+      .collect();
+    
+    const existingByDate = new Map(
+      existingSnapshots.map(s => [s.date, s])
+    );
+    console.log(`[Google Play] Found ${existingByDate.size} existing snapshots`);
+
+    for (const date of Array.from(allDates).sort()) {
+      const revenueData = revenueByDate?.[date];
+      const subMetrics = subscriptionMetricsByDate?.[date];
+
+      // Convert revenue to user's preferred currency using cached rate
+      let convertedGross = 0;
+      let convertedNet = 0;
+      let weeklyRevenue = 0;
+
+      if (revenueData) {
+        convertedGross = convertCurrency(revenueData.gross);
+        convertedNet = convertCurrency(revenueData.net);
+        weeklyRevenue = Math.round((convertedNet + Number.EPSILON) * 100) / 100;
+      }
+
+      // Extract subscription metrics if available
+      const activeSubscribers = subMetrics?.active || 0;
+      const trialSubscribers = subMetrics?.trial || 0;
+      const paidSubscribers = subMetrics?.paid || (activeSubscribers > 0 && trialSubscribers > 0 ? activeSubscribers - trialSubscribers : 0);
+      const monthlySubscribers = subMetrics?.monthly || 0;
+      const yearlySubscribers = subMetrics?.yearly || 0;
+      const newSubscriptions = subMetrics?.newSubscriptions || 0;
+      const canceledSubscriptions = subMetrics?.canceledSubscriptions || 0;
+      const renewals = subMetrics?.renewals || 0;
+
+      // Calculate MRR if we have active subscribers (rough estimate)
+      // This is a placeholder - ideally we'd need pricing data
+      let mrr = 0;
+      if (activeSubscribers > 0 && convertedNet > 0) {
+        // Estimate MRR based on daily revenue * 30
+        mrr = Math.round((convertedNet * 30 + Number.EPSILON) * 100) / 100;
+      }
+
+      const snapshot = {
+        appId,
+        date,
+        platform: "googleplay" as const,
+        // Subscription metrics - from subscription reports or 0
+        activeSubscribers,
+        trialSubscribers,
+        paidSubscribers,
+        cancellations: canceledSubscriptions,
+        churn: activeSubscribers > 0 ? Math.round((canceledSubscriptions / activeSubscribers) * 10000) / 100 : 0,
+        graceEvents: 0, // Not available in standard reports
+        paybacks: 0, // Not available
+        firstPayments: newSubscriptions,
+        renewals,
+        mrr,
+        // Revenue metrics - from financial reports
+        weeklyRevenue,
+        monthlyRevenueGross: Math.round((convertedGross + Number.EPSILON) * 100) / 100,
+        monthlyRevenueNet: Math.round((convertedNet + Number.EPSILON) * 100) / 100,
+        monthlySubscribers,
+        yearlySubscribers,
+      };
+
+      // Check if snapshot already exists for this date (using pre-fetched map)
+      const existing = existingByDate.get(date);
+
+      if (existing) {
+        await ctx.db.patch(existing._id, snapshot);
+        snapshotsUpdated++;
+      } else {
+        await ctx.db.insert("metricsSnapshots", snapshot);
+        snapshotsCreated++;
+      }
+    }
+
+    console.log(`[Google Play] Created ${snapshotsCreated} snapshots, updated ${snapshotsUpdated} snapshots`);
+
+    return { snapshotsCreated, snapshotsUpdated };
+  },
+});
+
+// Legacy function kept for backwards compatibility
+export const processGooglePlayFinancialReport = internalMutation({
+  args: {
+    appId: v.id("apps"),
+    revenueByDate: v.any(),
   },
   handler: async (ctx, { appId, revenueByDate }) => {
-    // Get app's preferred currency
+    // Call the new processor directly with the same logic
     const app = await ctx.db.get(appId);
     const userCurrency = app?.currency || "USD";
 
@@ -1138,17 +1296,13 @@ export const processGooglePlayFinancialReport = internalMutation({
     for (const [date, data] of Object.entries(revenueByDate)) {
       const { gross, net, transactions } = data as { gross: number; net: number; transactions: number };
 
-      // Convert to user's preferred currency (Google Play reports are typically in USD)
       const convertedGross = await convertAndRoundCurrency(ctx, gross, "USD", userCurrency);
       const convertedNet = await convertAndRoundCurrency(ctx, net, "USD", userCurrency);
 
-      // Google Play reports are transaction-focused, not subscriber snapshots
-      // We can only provide revenue data accurately
       const snapshot = {
         appId,
         date,
         platform: "googleplay" as const,
-        // Subscriber metrics - set to 0 (not available from financial reports)
         activeSubscribers: 0,
         trialSubscribers: 0,
         paidSubscribers: 0,
@@ -1159,7 +1313,6 @@ export const processGooglePlayFinancialReport = internalMutation({
         firstPayments: 0,
         renewals: 0,
         mrr: 0,
-        // Revenue metrics - accurate from financial reports
         weeklyRevenue: Math.round((convertedNet + Number.EPSILON) * 100) / 100,
         monthlyRevenueGross: Math.round((convertedGross + Number.EPSILON) * 100) / 100,
         monthlyRevenueNet: Math.round((convertedNet + Number.EPSILON) * 100) / 100,
@@ -1167,7 +1320,6 @@ export const processGooglePlayFinancialReport = internalMutation({
         yearlySubscribers: 0,
       };
 
-      // Check if snapshot already exists for this date
       const existing = await ctx.db
         .query("metricsSnapshots")
         .withIndex("by_app_platform", (q) => q.eq("appId", appId).eq("platform", "googleplay"))

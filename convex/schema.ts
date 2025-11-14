@@ -13,6 +13,7 @@ export default defineSchema({
     name: v.string(),
     slug: v.string(),
     currency: v.optional(v.string()),
+    weekStartDay: v.optional(v.union(v.literal("monday"), v.literal("sunday"))),
     createdAt: v.number(),
     updatedAt: v.number(),
   })

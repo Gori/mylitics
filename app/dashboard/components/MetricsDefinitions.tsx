@@ -23,7 +23,11 @@ export function MetricsDefinitions() {
       monthlyYearly: "SUBSCRIPTION_SUMMARY: Product ID patterns (month/year/annual) + Subscription Duration column",
     },
     googleplay: {
-      all: "Not implemented yet; planned via Android Publisher purchases (subscriptionsV2) and RTDN",
+      stock: "GCS Reports: Subscription metrics from subscription reports (if available in bucket)",
+      revenue: "GCS Reports: Financial/earnings reports with transaction-level revenue data",
+      subscriptionMetrics: "GCS Reports: Active/trial/paid counts, monthly/yearly split from subscription reports",
+      flowMetrics: "GCS Reports: New subscriptions, cancellations, renewals from subscription reports",
+      limited: "Note: Availability depends on report types in your auto-managed GCS bucket (gs://pubsite_prod_rev_XXX)",
     },
   } as const;
 
@@ -36,7 +40,7 @@ export function MetricsDefinitions() {
       sources: {
         stripe: SRC.stripe.stock,
         appstore: SRC.appstore.stock,
-        googleplay: SRC.googleplay.all,
+        googleplay: SRC.googleplay.subscriptionMetrics,
       },
     },
     {
@@ -47,7 +51,7 @@ export function MetricsDefinitions() {
       sources: {
         stripe: SRC.stripe.stock,
         appstore: SRC.appstore.stock,
-        googleplay: SRC.googleplay.all,
+        googleplay: SRC.googleplay.subscriptionMetrics,
       },
     },
     {
@@ -58,7 +62,7 @@ export function MetricsDefinitions() {
       sources: {
         stripe: SRC.stripe.stock,
         appstore: SRC.appstore.stock,
-        googleplay: SRC.googleplay.all,
+        googleplay: SRC.googleplay.subscriptionMetrics,
       },
     },
     {
@@ -69,7 +73,7 @@ export function MetricsDefinitions() {
       sources: {
         stripe: SRC.stripe.monthlyYearly,
         appstore: SRC.appstore.monthlyYearly,
-        googleplay: SRC.googleplay.all,
+        googleplay: SRC.googleplay.subscriptionMetrics,
       },
     },
     {
@@ -80,7 +84,7 @@ export function MetricsDefinitions() {
       sources: {
         stripe: SRC.stripe.monthlyYearly,
         appstore: SRC.appstore.monthlyYearly,
-        googleplay: SRC.googleplay.all,
+        googleplay: SRC.googleplay.subscriptionMetrics,
       },
     },
     {
@@ -91,7 +95,7 @@ export function MetricsDefinitions() {
       sources: {
         stripe: SRC.stripe.cancellations,
         appstore: SRC.appstore.cancellations,
-        googleplay: SRC.googleplay.all,
+        googleplay: SRC.googleplay.flowMetrics,
       },
     },
     {
@@ -102,7 +106,7 @@ export function MetricsDefinitions() {
       sources: {
         stripe: SRC.stripe.grace,
         appstore: SRC.appstore.grace,
-        googleplay: SRC.googleplay.all,
+        googleplay: "Not available in standard GCS reports",
       },
     },
     {
@@ -113,7 +117,7 @@ export function MetricsDefinitions() {
       sources: {
         stripe: SRC.stripe.firstPayments,
         appstore: SRC.appstore.firstPayments,
-        googleplay: SRC.googleplay.all,
+        googleplay: SRC.googleplay.flowMetrics,
       },
     },
     {
@@ -124,7 +128,7 @@ export function MetricsDefinitions() {
       sources: {
         stripe: SRC.stripe.renewals,
         appstore: SRC.appstore.renewals,
-        googleplay: SRC.googleplay.all,
+        googleplay: SRC.googleplay.flowMetrics,
       },
     },
     {
@@ -135,7 +139,7 @@ export function MetricsDefinitions() {
       sources: {
         stripe: SRC.stripe.mrr,
         appstore: SRC.appstore.mrr,
-        googleplay: SRC.googleplay.all,
+        googleplay: "Estimated from daily revenue × 30 (if subscription data available)",
       },
     },
     {
@@ -146,7 +150,7 @@ export function MetricsDefinitions() {
       sources: {
         stripe: SRC.stripe.revenue,
         appstore: SRC.appstore.revenue,
-        googleplay: SRC.googleplay.all,
+        googleplay: SRC.googleplay.revenue,
       },
     },
     {
@@ -157,7 +161,7 @@ export function MetricsDefinitions() {
       sources: {
         stripe: SRC.stripe.revenue,
         appstore: SRC.appstore.revenue,
-        googleplay: SRC.googleplay.all,
+        googleplay: SRC.googleplay.revenue,
       },
     },
   ];
@@ -172,7 +176,16 @@ export function MetricsDefinitions() {
           <li><strong>Flow Metrics:</strong> Accumulated over time (e.g., total cancellations). Shows sum over 30 days.</li>
         </ul>
         <p className="mt-2 text-xs text-gray-600">
-          Note: Charts only display weeks with complete data from all active platforms. Incomplete weeks are filtered out to ensure accuracy.
+          Note: Incomplete weeks (including the current week or weeks with missing platform data) are shown with dashed lines. Complete weeks use solid lines.
+        </p>
+      </div>
+      <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded text-sm">
+        <p className="font-medium mb-1">Google Play Data Availability:</p>
+        <p className="text-xs text-gray-700">
+          Google Play metrics depend on what report types exist in your auto-managed GCS bucket (gs://pubsite_prod_rev_XXX). 
+          <strong> Revenue data</strong> is typically available from financial/earnings reports. 
+          <strong> Subscription metrics</strong> (active, trial, paid counts, cancellations, renewals) are available only if subscription reports exist in your bucket.
+          Check sync logs after connecting to see which report types were discovered.
         </p>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

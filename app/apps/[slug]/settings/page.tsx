@@ -5,6 +5,8 @@ import { useQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useApp } from "@/app/apps/[slug]/layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { CheckCircle2, XCircle } from "lucide-react";
 
 const CURRENCIES = [
@@ -32,20 +34,43 @@ const CURRENCIES = [
 ];
 
 export default function SettingsPage() {
-  const { appId, appName, currency } = useApp();
+  const { appId, appName, currency, weekStartDay } = useApp();
   const connections = useQuery(api.queries.getPlatformConnections, { appId });
   const addConnection = useMutation(api.mutations.addPlatformConnection);
   const removeConnection = useMutation(api.mutations.removePlatformConnection);
   const updateCurrency = useMutation(api.mutations.updateAppCurrency);
+  const updateApp = useMutation(api.apps.updateApp);
   
   const [showForm, setShowForm] = useState<string | null>(null);
   const [selectedCurrency, setSelectedCurrency] = useState(currency);
+  const [selectedWeekStartDay, setSelectedWeekStartDay] = useState<"monday" | "sunday">(weekStartDay);
+  const [appNameInput, setAppNameInput] = useState(appName);
+  const [isSavingAppName, setIsSavingAppName] = useState(false);
 
   useEffect(() => {
     if (currency) {
       setSelectedCurrency(currency);
     }
   }, [currency]);
+
+  useEffect(() => {
+    setSelectedWeekStartDay(weekStartDay);
+  }, [weekStartDay]);
+
+  useEffect(() => {
+    setAppNameInput(appName);
+  }, [appName]);
+
+  const handleRenameApp = async () => {
+    if (appNameInput.trim() && appNameInput !== appName) {
+      setIsSavingAppName(true);
+      try {
+        await updateApp({ appId, name: appNameInput.trim() });
+      } finally {
+        setIsSavingAppName(false);
+      }
+    }
+  };
 
   const hasConnection = (platform: string): boolean => {
     return !!connections?.some((c: any) => c.platform === platform);
@@ -56,10 +81,38 @@ export default function SettingsPage() {
     await updateCurrency({ appId, currency: newCurrency });
   };
 
+  const handleWeekStartDayChange = async (newWeekStartDay: "monday" | "sunday") => {
+    setSelectedWeekStartDay(newWeekStartDay);
+    await updateApp({ appId, weekStartDay: newWeekStartDay });
+  };
+
   return (
-    <div className="p-4 md:p-8">
+    <div className="p-4 pt-16">
       <div className="max-w-6xl mx-auto space-y-6">
-        <h1 className="text-4xl font-semibold">Settings - {appName}</h1>
+        <h1 className="text-4xl font-semibold">Settings</h1>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>App Name</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4 max-w-xs">
+              <Input
+                type="text"
+                value={appNameInput}
+                onChange={(e) => setAppNameInput(e.target.value)}
+                placeholder="Enter app name"
+                className="text-base"
+              />
+              <Button
+                onClick={handleRenameApp}
+                disabled={isSavingAppName || !appNameInput.trim() || appNameInput === appName}
+              >
+                {isSavingAppName ? "Saving..." : "Save"}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
 
         <Card>
           <CardHeader>
@@ -84,6 +137,41 @@ export default function SettingsPage() {
                   </option>
                 ))}
               </select>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Week Start Day</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-base text-gray-600 mb-4">
+              Choose which day your week starts on. This affects how weekly data is grouped in charts and reports.
+            </p>
+            <div className="space-y-3">
+              <label className="flex items-center gap-3 cursor-pointer">
+                <input
+                  type="radio"
+                  name="weekStartDay"
+                  value="sunday"
+                  checked={selectedWeekStartDay === "sunday"}
+                  onChange={(e) => handleWeekStartDayChange(e.target.value as "sunday" | "monday")}
+                  className="w-4 h-4"
+                />
+                <span className="text-base">Sunday</span>
+              </label>
+              <label className="flex items-center gap-3 cursor-pointer">
+                <input
+                  type="radio"
+                  name="weekStartDay"
+                  value="monday"
+                  checked={selectedWeekStartDay === "monday"}
+                  onChange={(e) => handleWeekStartDayChange(e.target.value as "sunday" | "monday")}
+                  className="w-4 h-4"
+                />
+                <span className="text-base">Monday (recommended)</span>
+              </label>
             </div>
           </CardContent>
         </Card>
@@ -357,25 +445,58 @@ function PlatformSection({
           {platform === "googleplay" && (
             <>
               <div className="bg-gray-50 border border-gray-200 rounded p-4 mb-4">
-                <h3 className="font-semibold text-base mb-2">How to find your Google Play credentials:</h3>
+                <h3 className="font-semibold text-base mb-2">How to find your Google Play credentials (2025 method):</h3>
                 <ol className="text-sm text-gray-700 space-y-1 list-decimal list-inside">
                   <li>Go to <a href="https://play.google.com/console" target="_blank" rel="noopener noreferrer" className="text-blue-600 underline">play.google.com/console</a> and sign in</li>
                   <li><strong>Package Name:</strong> Go to "App Content" → "App Information", copy your "Package name" (e.g., com.example.app)</li>
+                  <li><strong>Find Report Bucket:</strong> Go to "Download reports" → "Financial reports" (or Subscriptions)</li>
+                  <li>Click any report and copy the "Direct report URI" (e.g., gs://pubsite_prod_rev_XXXXXXXXXXXX/earnings/earnings_2024_11.csv)</li>
+                  <li><strong>Extract Bucket Name:</strong> The bucket name is the part after gs:// and before the first / (e.g., pubsite_prod_rev_XXXXXXXXXXXX)</li>
                   <li>Go to <a href="https://console.cloud.google.com" target="_blank" rel="noopener noreferrer" className="text-blue-600 underline">console.cloud.google.com</a></li>
-                  <li>Create or select a project</li>
                   <li>Go to "IAM & Admin" → "Service Accounts"</li>
                   <li>Click "Create Service Account", name it (e.g., "play-reports"), click "Create and Continue"</li>
-                  <li>Grant role: "Storage Object Viewer", click "Continue" then "Done"</li>
+                  <li>Skip role assignment (we'll add it next), click "Continue" then "Done"</li>
                   <li>Click the created service account → "Keys" tab → "Add Key" → "Create new key" → Select "JSON" → Download</li>
-                  <li><strong>Service Account JSON:</strong> Open the downloaded JSON file, copy the entire content</li>
-                  <li>Go to "Cloud Storage" → "Buckets" → "Create Bucket"</li>
-                  <li>Name your bucket (e.g., my-app-play-reports), choose location, click "Create"</li>
-                  <li><strong>GCS Bucket Name:</strong> Copy the bucket name</li>
-                  <li>Go back to Play Console → "Settings" → "Cloud Storage"</li>
-                  <li>Link your GCS bucket, enable "Earnings" report export</li>
-                  <li><strong>GCS Report Prefix:</strong> Usually "earnings/" (leave blank to use default)</li>
+                  <li><strong>Service Account JSON:</strong> Open the downloaded JSON file, copy the entire content (you'll paste it below)</li>
+                  <li>Go to "IAM & Admin" → "IAM" (not Service Accounts)</li>
+                  <li>Click "Grant Access", paste your service account email (from the JSON: "client_email" field)</li>
+                  <li>Grant role: "Storage Object Viewer", click "Save"</li>
+                  <li><strong>GCS Bucket Name:</strong> Paste the bucket name you extracted (pubsite_prod_rev_XXXXXXXXXXXX)</li>
+                  <li><strong>GCS Report Prefix:</strong> Try "earnings/" first, or leave blank to scan all report types</li>
                 </ol>
+                <div className="mt-3 p-2 bg-blue-50 border border-blue-200 rounded text-sm">
+                  <strong>Note:</strong> Google Play's auto-managed bucket may contain subscription metrics reports in addition to financial reports. We'll attempt to extract all available data including subscriber counts, cancellations, and revenue.
+                </div>
               </div>
+              <input
+                type="text"
+                placeholder="Direct Report URI (gs://pubsite_prod_rev_XXX/... - optional helper)"
+                value={formData.directReportUri || ""}
+                onChange={(e) => {
+                  const uri = e.target.value;
+                  setFormData({ ...formData, directReportUri: uri });
+                  
+                  // Auto-parse bucket and prefix if it's a valid gs:// URI
+                  const match = uri.match(/^gs:\/\/([^\/]+)\/(.+)/);
+                  if (match) {
+                    const [, bucket, path] = match;
+                    const prefix = path.includes('/') ? path.substring(0, path.lastIndexOf('/') + 1) : '';
+                    setFormData({ 
+                      ...formData, 
+                      directReportUri: uri,
+                      gcsBucketName: bucket,
+                      gcsReportPrefix: prefix 
+                    });
+                  }
+                }}
+                className="w-full px-3 py-2 border border-gray-300 rounded text-base"
+              />
+              {formData.directReportUri && formData.gcsBucketName && (
+                <div className="text-sm text-gray-600 bg-green-50 border border-green-200 rounded p-2">
+                  ✓ Parsed: Bucket = <code className="bg-white px-1">{formData.gcsBucketName}</code>
+                  {formData.gcsReportPrefix && <>, Prefix = <code className="bg-white px-1">{formData.gcsReportPrefix}</code></>}
+                </div>
+              )}
               <input
                 type="text"
                 placeholder="Package Name (e.g. com.example.app)"
@@ -388,17 +509,23 @@ function PlatformSection({
               />
               <input
                 type="text"
-                placeholder="GCS Bucket Name (e.g. my-app-play-reports)"
+                placeholder="GCS Bucket Name (e.g. pubsite_prod_rev_XXXXXXXXXXXX)"
                 value={formData.gcsBucketName || ""}
-                onChange={(e) =>
-                  setFormData({ ...formData, gcsBucketName: e.target.value })
-                }
+                onChange={(e) => {
+                  const bucket = e.target.value;
+                  setFormData({ ...formData, gcsBucketName: bucket });
+                }}
                 className="w-full px-3 py-2 border border-gray-300 rounded text-base"
                 required
               />
+              {formData.gcsBucketName && !formData.gcsBucketName.startsWith('pubsite_prod_rev_') && (
+                <div className="text-sm text-yellow-700 bg-yellow-50 border border-yellow-200 rounded p-2">
+                  ⚠️ Warning: Bucket name doesn't match the expected Google Play format (pubsite_prod_rev_XXX). Make sure this is correct.
+                </div>
+              )}
               <input
                 type="text"
-                placeholder="GCS Report Prefix (default: earnings/)"
+                placeholder="GCS Report Prefix (try 'earnings/' or leave blank to scan all)"
                 value={formData.gcsReportPrefix || ""}
                 onChange={(e) =>
                   setFormData({ ...formData, gcsReportPrefix: e.target.value })
@@ -406,7 +533,7 @@ function PlatformSection({
                 className="w-full px-3 py-2 border border-gray-300 rounded text-base"
               />
               <textarea
-                placeholder="Service Account JSON"
+                placeholder="Service Account JSON (paste entire JSON content from downloaded file)"
                 value={formData.serviceAccountJson || ""}
                 onChange={(e) =>
                   setFormData({
@@ -414,8 +541,8 @@ function PlatformSection({
                     serviceAccountJson: e.target.value,
                   })
                 }
-                className="w-full px-3 py-2 border border-gray-300 rounded text-base"
-                rows={4}
+                className="w-full px-3 py-2 border border-gray-300 rounded text-base font-mono text-xs"
+                rows={6}
                 required
               />
             </>

@@ -15,6 +15,7 @@ interface AppContextType {
   appSlug: string;
   appName: string;
   currency: string;
+  weekStartDay: "monday" | "sunday";
 }
 
 const AppContext = createContext<AppContextType | null>(null);
@@ -54,6 +55,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
     appSlug: app.slug,
     appName: app.name,
     currency: app.currency || "USD",
+    weekStartDay: app.weekStartDay || "monday",
   };
 
   const isActive = (path: string) => pathname === path;

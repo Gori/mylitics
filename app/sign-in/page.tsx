@@ -89,7 +89,7 @@ export default function SignInPage() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-white">
       <div className="w-full max-w-md p-8">
-        <h1 className="text-2xl font-semibold mb-6">Sign in to Milytics</h1>
+        <h1 className="text-2xl font-semibold mb-6">Sign in to Metry</h1>
 
         {error && (
           <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded text-red-600 text-sm">

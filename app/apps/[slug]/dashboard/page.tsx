@@ -7,7 +7,7 @@ import { useMemo, useState, useEffect } from "react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, ResponsiveContainer } from "recharts";
 import { Card, CardContent } from "@/components/ui/card";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
-import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart";
+import { ChartContainer, ChartTooltip, ChartTooltipContent, ChartFooter, type ChartConfig } from "@/components/ui/chart";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { useRouter } from "next/navigation";
@@ -122,18 +122,41 @@ export default function DashboardPage() {
     stripe: "Stripe",
   };
 
+  // Check if Google Play has subscription data or just revenue
+  const googlePlayHasSubscriptionData = useMemo(() => {
+    if (!metrics?.platformMap?.googleplay) return false;
+    const gp = metrics.platformMap.googleplay;
+    // If active subscribers > 0, we have subscription data
+    return (gp.activeSubscribers ?? 0) > 0;
+  }, [metrics]);
+
   const rightBlock = (key: string, isCurrency = false) => {
     const pick = (platform: string) => {
       return metrics?.platformMap?.[platform]?.[key] ?? 0;
     };
     
+    // For non-revenue metrics, check if Google Play has data
+    const isRevenueMetric = key === 'monthlyRevenueGross' || key === 'monthlyRevenueNet' || key === 'weeklyRevenue';
+    
     return (
       <div className="text-xs text-right text-gray-500 leading-4">
         {connectedPlatforms.map((platform) => {
           const value = pick(platform);
+          const showWarning = platform === 'googleplay' && !isRevenueMetric && !googlePlayHasSubscriptionData && value === 0;
+          
           return (
-            <div key={platform}>
-              {platformLabels[platform]}: {isCurrency ? formatCurrency(value) : value}
+            <div key={platform} className="flex items-center justify-end gap-1">
+              <span>
+                {platformLabels[platform]}: {isCurrency ? formatCurrency(value) : value}
+              </span>
+              {showWarning && (
+                <span 
+                  className="text-yellow-600 cursor-help" 
+                  title="Google Play subscription metrics not available - only revenue data found in bucket"
+                >
+                  ⓘ
+                </span>
+              )}
             </div>
           );
         })}
@@ -164,8 +187,8 @@ export default function DashboardPage() {
       <SidebarInset>
         <div className="px-4 pt-16">
           <div className="max-w-6xl mx-auto space-y-6">
-          <h1 className="text-4xl font-semibold text-foreground">{appName}</h1>
-        <div className="sticky top-0 z-50 flex flex-col mb-2 bg-white/80 backdrop-blur-sm py-4 -mx-4 px-4">
+          <h1 className="text-5xl font-bold text-foreground">{appName}</h1>
+        <div className="sticky top-0 z-40 flex flex-col mb-2 bg-white/80 backdrop-blur-sm py-4 -mx-4 px-4">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="flex flex-col gap-2">
               
@@ -239,111 +262,140 @@ export default function DashboardPage() {
           </div>
         ) : (
           <>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
-              <MetricCard
-                label="Active Subscribers"
-                value={metrics.unified.activeSubscribers}
-                metricKey="activeSubscribers"
-                appId={appId}
-                connectedPlatforms={connectedPlatforms}
-                right={
-                  <div className="text-xs text-right text-gray-500 leading-4">
-                    {connectedPlatforms.map((platform) => (
-                      <div key={platform}>
-                        {platformLabels[platform]}: {platformCounts[platform as keyof typeof platformCounts]}
-                      </div>
-                    ))}
-                  </div>
-                }
-              />
-              <MetricCard
-                label="Trial Subscribers"
-                value={metrics.unified.trialSubscribers}
-                metricKey="trialSubscribers"
-                appId={appId}
-                connectedPlatforms={connectedPlatforms}
-                right={rightBlock("trialSubscribers")}
-              />
-              <MetricCard
-                label="Paid Subscribers"
-                value={metrics.unified.paidSubscribers}
-                metricKey="paidSubscribers"
-                appId={appId}
-                connectedPlatforms={connectedPlatforms}
-                right={rightBlock("paidSubscribers")}
-              />
-              <MetricCard
-                label="Monthly Subs"
-                value={metrics.unified.monthlySubscribers}
-                metricKey="monthlySubscribers"
-                appId={appId}
-                connectedPlatforms={connectedPlatforms}
-                right={rightBlock("monthlySubscribers")}
-              />
-              <MetricCard
-                label="Yearly Subs"
-                value={metrics.unified.yearlySubscribers}
-                metricKey="yearlySubscribers"
-                appId={appId}
-                connectedPlatforms={connectedPlatforms}
-                right={rightBlock("yearlySubscribers")}
-              />
-              <MetricCard
-                label="Cancellations"
-                value={metrics.unified.cancellations}
-                metricKey="cancellations"
-                appId={appId}
-                connectedPlatforms={connectedPlatforms}
-                right={rightBlock("cancellations")}
-              />
-              <MetricCard
-                label="Grace Events"
-                value={metrics.unified.graceEvents}
-                metricKey="graceEvents"
-                appId={appId}
-                connectedPlatforms={connectedPlatforms}
-                right={rightBlock("graceEvents")}
-              />
-              <MetricCard
-                label="First Payments"
-                value={metrics.unified.firstPayments}
-                metricKey="firstPayments"
-                appId={appId}
-                connectedPlatforms={connectedPlatforms}
-                right={rightBlock("firstPayments")}
-              />
-              <MetricCard
-                label="Renewals"
-                value={metrics.unified.renewals}
-                metricKey="renewals"
-                appId={appId}
-                connectedPlatforms={connectedPlatforms}
-                right={rightBlock("renewals")}
-              />
-              <MetricCard
-                label="MRR"
-                value={formatCurrency(metrics.unified.mrr)}
-                metricKey="mrr"
-                appId={appId}
-                connectedPlatforms={connectedPlatforms}
-                right={rightBlock("mrr", true)}
-              />
-              <MetricCard
-                label="Monthly Rev. (Gross)"
-                value={formatCurrency(metrics.unified.monthlyRevenueGross)}
-                metricKey="monthlyRevenueGross"
-                appId={appId}
-                connectedPlatforms={connectedPlatforms}
-                right={rightBlock("monthlyRevenueGross", true)}
-              />
-              <MetricCard
-                label="Monthly Rev. (Net)"
-                value={formatCurrency(metrics.unified.monthlyRevenueNet)}
-                metricKey="monthlyRevenueNet"
-                appId={appId}
-                connectedPlatforms={connectedPlatforms}
-                right={rightBlock("monthlyRevenueNet", true)}
-              />
+            <div className="space-y-4 mb-8">
+              <div className="grid grid-cols-1 md:grid-cols-1 gap-4">
+                <MetricCard
+                  label="Active Subscribers"
+                  value={metrics.unified.activeSubscribers}
+                  metricKey="activeSubscribers"
+                  appId={appId}
+                  connectedPlatforms={connectedPlatforms}
+                  right={
+                    <div className="text-xs text-right text-gray-500 leading-4">
+                      {connectedPlatforms.map((platform) => {
+                        const count = platformCounts[platform as keyof typeof platformCounts];
+                        const showWarning = platform === 'googleplay' && !googlePlayHasSubscriptionData && count === 0;
+                        
+                        return (
+                          <div key={platform} className="flex items-center justify-end gap-1">
+                            <span>
+                              {platformLabels[platform]}: {count}
+                            </span>
+                            {showWarning && (
+                              <span 
+                                className="text-yellow-600 cursor-help" 
+                                title="Google Play subscription metrics not available - only revenue data found in bucket"
+                              >
+                                ⓘ
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  }
+                />
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <MetricCard
+                  label="Trial Subscribers"
+                  value={metrics.unified.trialSubscribers}
+                  metricKey="trialSubscribers"
+                  appId={appId}
+                  connectedPlatforms={connectedPlatforms}
+                  right={rightBlock("trialSubscribers")}
+                />
+                <MetricCard
+                  label="Paid Subscribers"
+                  value={metrics.unified.paidSubscribers}
+                  metricKey="paidSubscribers"
+                  appId={appId}
+                  connectedPlatforms={connectedPlatforms}
+                  right={rightBlock("paidSubscribers")}
+                />
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <MetricCard
+                  label="Monthly Subs"
+                  value={metrics.unified.monthlySubscribers}
+                  metricKey="monthlySubscribers"
+                  appId={appId}
+                  connectedPlatforms={connectedPlatforms}
+                  right={rightBlock("monthlySubscribers")}
+                />
+                <MetricCard
+                  label="Yearly Subs"
+                  value={metrics.unified.yearlySubscribers}
+                  metricKey="yearlySubscribers"
+                  appId={appId}
+                  connectedPlatforms={connectedPlatforms}
+                  right={rightBlock("yearlySubscribers")}
+                />
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <MetricCard
+                  label="Cancellations"
+                  value={metrics.unified.cancellations}
+                  metricKey="cancellations"
+                  appId={appId}
+                  connectedPlatforms={connectedPlatforms}
+                  right={rightBlock("cancellations")}
+                />
+                <MetricCard
+                  label="Grace Events"
+                  value={metrics.unified.graceEvents}
+                  metricKey="graceEvents"
+                  appId={appId}
+                  connectedPlatforms={connectedPlatforms}
+                  right={rightBlock("graceEvents")}
+                />
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <MetricCard
+                  label="First Payments"
+                  value={metrics.unified.firstPayments}
+                  metricKey="firstPayments"
+                  appId={appId}
+                  connectedPlatforms={connectedPlatforms}
+                  right={rightBlock("firstPayments")}
+                />
+                <MetricCard
+                  label="Renewals"
+                  value={metrics.unified.renewals}
+                  metricKey="renewals"
+                  appId={appId}
+                  connectedPlatforms={connectedPlatforms}
+                  right={rightBlock("renewals")}
+                />
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <MetricCard
+                  label="Monthly Rev. (Gross)"
+                  value={formatCurrency(metrics.unified.monthlyRevenueGross)}
+                  metricKey="monthlyRevenueGross"
+                  appId={appId}
+                  connectedPlatforms={connectedPlatforms}
+                  right={rightBlock("monthlyRevenueGross", true)}
+                />
+                <MetricCard
+                  label="Monthly Rev. (Net)"
+                  value={formatCurrency(metrics.unified.monthlyRevenueNet)}
+                  metricKey="monthlyRevenueNet"
+                  appId={appId}
+                  connectedPlatforms={connectedPlatforms}
+                  right={rightBlock("monthlyRevenueNet", true)}
+                />
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-1 gap-4">
+                <MetricCard
+                  label="MRR"
+                  value={formatCurrency(metrics.unified.mrr)}
+                  metricKey="mrr"
+                  appId={appId}
+                  connectedPlatforms={connectedPlatforms}
+                  right={rightBlock("mrr", true)}
+                />
+              </div>
             </div>
 
             <div className="mt-8">
@@ -484,9 +536,9 @@ function MetricCard({
 
   return (
     <Card className="p-0 gap-0">
-      <CardContent className="p-6">
+      <CardContent className="p-6 pb-5">
         <dd className="flex items-start justify-between space-x-2">
-          <div className="truncate font-medium text-sm text-muted-foreground">
+          <div className="truncate font-medium text-base text-muted-foreground">
             {label}
 
             <HoverCard>
@@ -519,19 +571,36 @@ function MetricCard({
         <ChartContainer
           className="h-32 mt-4 !aspect-auto"
           config={{
-            unified: { label: "Total", color: "#000000" },
-            appstore: { label: "App Store", color: "#0071e3" },
-            googleplay: { label: "Google Play", color: "#34a853" },
-            stripe: { label: "Stripe", color: "#635bff" },
+            appstore: { label: "iOS App Store", color: "var(--color-platform-appstore)" },
+            googleplay: { label: "Google Play", color: "var(--color-platform-googleplay)" },
+            stripe: { label: "Stripe", color: "var(--color-platform-stripe)" },
           } satisfies ChartConfig}
         >
           {chartData && chartData.length > 0 ? (
-            <LineChart data={chartData}>
+            <LineChart data={chartData} margin={{ left: 0, right: 0, top: 5, bottom: 5 }}>
               <CartesianGrid vertical={false} />
-              <XAxis dataKey="week" hide />
+              <XAxis 
+                dataKey="week" 
+                hide={false}
+                tickMargin={8}
+                minTickGap={16}
+                tickFormatter={(value) => {
+                  try {
+                    const date = new Date(value)
+                    if (!isNaN(date.getTime())) {
+                      return date.toLocaleDateString("en-US", {
+                        month: "short",
+                        year: "numeric",
+                      })
+                    }
+                  } catch {
+                    // fallback
+                  }
+                  return value
+                }}
+              />
               <YAxis hide />
-              <ChartTooltip cursor={false} content={<ChartTooltipContent hideLabel />} />
-              <Line type="linear" dataKey="unified" stroke="var(--color-unified)" strokeWidth={2} dot={false} isAnimationActive={false} />
+              <ChartTooltip cursor={false} content={<ChartTooltipContent />} />
               {connectedPlatforms.includes("appstore") && (
                 <Line type="linear" dataKey="appstore" stroke="var(--color-appstore)" strokeWidth={1} dot={false} isAnimationActive={false} />
               )}

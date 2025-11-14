@@ -18,6 +18,27 @@ async function validateAppOwnership(ctx: any, appId: string) {
   return app;
 }
 
+export const deleteMetricsSnapshot = mutation({
+  args: {
+    snapshotId: v.id("metricsSnapshots"),
+  },
+  handler: async (ctx, { snapshotId }) => {
+    await getUserId(ctx);
+    await ctx.db.delete(snapshotId);
+    return { success: true };
+  },
+});
+
+export const deleteMetricsSnapshotInternal = internalMutation({
+  args: {
+    snapshotId: v.id("metricsSnapshots"),
+  },
+  handler: async (ctx, { snapshotId }) => {
+    await ctx.db.delete(snapshotId);
+    return { success: true };
+  },
+});
+
 export const addPlatformConnection = mutation({
   args: {
     appId: v.id("apps"),

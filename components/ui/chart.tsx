@@ -190,7 +190,7 @@ function ChartTooltipContent({
               <div
                 key={item.dataKey}
                 className={cn(
-                  "[&>svg]:text-muted-foreground flex w-full flex-wrap items-stretch gap-2 [&>svg]:h-2.5 [&>svg]:w-2.5",
+                  "[&>svg]:text-muted-foreground flex items-stretch gap-2 [&>svg]:h-2.5 [&>svg]:w-2.5",
                   indicator === "dot" && "items-center"
                 )}
               >
@@ -251,6 +251,22 @@ function ChartTooltipContent({
 }
 
 const ChartLegend = RechartsPrimitive.Legend
+
+function ChartFooter({
+  className,
+  children,
+}: React.ComponentProps<"div">) {
+  return (
+    <div
+      className={cn(
+        "text-xs text-gray-700 dark:text-gray-300 mt-2",
+        className
+      )}
+    >
+      {children}
+    </div>
+  )
+}
 
 function ChartLegendContent({
   className,
@@ -353,5 +369,6 @@ export {
   ChartTooltipContent,
   ChartLegend,
   ChartLegendContent,
+  ChartFooter,
   ChartStyle,
 }

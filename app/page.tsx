@@ -26,7 +26,7 @@ export default function Home() {
     details: string;
     imageSize?: number;
   }) => (
-    <div className="rounded-xl p-8 border-4 border-gray-700 text-center">
+    <div className="rounded-xl p-8 border-2 border-gray-700 text-center">
       <div className="w-14 h-14 rounded-xl mb-4 flex items-center justify-center mx-auto">
         <Image
           src={imageSrc}
@@ -81,7 +81,7 @@ export default function Home() {
       <header className="sticky top-0 z-50 bg-white/80 backdrop-blur-sm">
         <div className="max-w-7xl mx-auto px-4 md:px-8 py-4 flex items-center justify-between">
           <Link href="/" className="text-3xl font-semibold">
-            Milytics
+            Metry
           </Link>
           <div className="flex items-center gap-4">
             <Link href="/sign-in">
@@ -220,7 +220,7 @@ export default function Home() {
         <div className="max-w-7xl mx-auto px-4 md:px-8">
           <div className="flex flex-col md:flex-row justify-between items-center gap-4">
             <div className="text-sm text-gray-600">
-              © 2025 Milytics
+              © 2025 Metry
             </div>
             <div className="flex gap-6">
               <Link href="/sign-in" className="text-sm text-gray-600 hover:text-gray-900">

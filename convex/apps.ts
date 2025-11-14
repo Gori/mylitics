@@ -94,6 +94,7 @@ export const createApp = mutation({
       name,
       slug,
       currency: currency || "USD",
+      weekStartDay: "monday",
       createdAt: now,
       updatedAt: now,
     });
@@ -108,8 +109,9 @@ export const updateApp = mutation({
     appId: v.id("apps"),
     name: v.optional(v.string()),
     currency: v.optional(v.string()),
+    weekStartDay: v.optional(v.union(v.literal("monday"), v.literal("sunday"))),
   },
-  handler: async (ctx, { appId, name, currency }) => {
+  handler: async (ctx, { appId, name, currency, weekStartDay }) => {
     await validateAppOwnership(ctx, appId);
     
     const updates: any = {
@@ -118,6 +120,7 @@ export const updateApp = mutation({
     
     if (name !== undefined) updates.name = name;
     if (currency !== undefined) updates.currency = currency;
+    if (weekStartDay !== undefined) updates.weekStartDay = weekStartDay;
     
     await ctx.db.patch(appId, updates);
     

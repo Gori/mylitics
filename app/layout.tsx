@@ -22,7 +22,7 @@ const hafferMono = localFont({
 });
 
 export const metadata: Metadata = {
-  title: "Milytics",
+  title: "Metry",
   description: "Subscription analytics platform",
 };
 

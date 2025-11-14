@@ -18,6 +18,18 @@ async function validateAppOwnership(ctx: any, appId: string) {
   return app;
 }
 
+function getWeekStart(date: Date, weekStartDay: "monday" | "sunday"): Date {
+  const weekStart = new Date(date);
+  if (weekStartDay === "monday") {
+    const dayOfWeek = date.getDay();
+    const daysFromMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+    weekStart.setDate(date.getDate() - daysFromMonday);
+  } else {
+    weekStart.setDate(date.getDate() - date.getDay());
+  }
+  return weekStart;
+}
+
 export const getLatestMetrics = query({
   args: { appId: v.id("apps") },
   handler: async (ctx, { appId }) => {
@@ -103,45 +115,50 @@ export const getLatestMetrics = query({
     // Build platformMap with correct values for each metric type
     const platformMap: Record<string, any> = {};
     for (const platform of ["appstore", "googleplay", "stripe"]) {
-      const latest = latestByPlatform[platform] || {};
-      const flowSums = flowSumsByPlatform[platform] || {};
+      const latest = latestByPlatform[platform];
+      const flowSums = flowSumsByPlatform[platform];
+      
+      // Only include platform in map if it has at least one snapshot
+      if (!latest && !flowSums) {
+        continue;
+      }
       
       // Stock metrics from latest snapshot, flow metrics from 30-day sums
       platformMap[platform] = {
-        activeSubscribers: latest.activeSubscribers || 0,
-        trialSubscribers: latest.trialSubscribers || 0,
-        paidSubscribers: latest.paidSubscribers || 0,
-        mrr: latest.mrr || 0,
-        cancellations: flowSums.cancellations || 0,
-        churn: flowSums.churn || 0,
-        graceEvents: flowSums.graceEvents || 0,
-        firstPayments: flowSums.firstPayments || 0,
-        renewals: flowSums.renewals || 0,
-        weeklyRevenue: flowSums.weeklyRevenue || 0,
-        monthlyRevenueGross: flowSums.monthlyRevenueGross || 0,
-        monthlyRevenueNet: flowSums.monthlyRevenueNet || 0,
-        monthlySubscribers: latest.monthlySubscribers || 0,
-        yearlySubscribers: latest.yearlySubscribers || 0,
+        activeSubscribers: latest?.activeSubscribers || 0,
+        trialSubscribers: latest?.trialSubscribers || 0,
+        paidSubscribers: latest?.paidSubscribers || 0,
+        mrr: latest?.mrr || 0,
+        cancellations: flowSums?.cancellations || 0,
+        churn: flowSums?.churn || 0,
+        graceEvents: flowSums?.graceEvents || 0,
+        firstPayments: flowSums?.firstPayments || 0,
+        renewals: flowSums?.renewals || 0,
+        weeklyRevenue: flowSums?.weeklyRevenue || 0,
+        monthlyRevenueGross: flowSums?.monthlyRevenueGross || 0,
+        monthlyRevenueNet: flowSums?.monthlyRevenueNet || 0,
+        monthlySubscribers: latest?.monthlySubscribers || 0,
+        yearlySubscribers: latest?.yearlySubscribers || 0,
       };
     }
 
-    // Calculate unified by summing all platforms
+    // Calculate unified by summing all platforms (use 0 if platform not in map)
     const unified = {
-      activeSubscribers: platformMap.appstore.activeSubscribers + platformMap.googleplay.activeSubscribers + platformMap.stripe.activeSubscribers,
-      trialSubscribers: platformMap.appstore.trialSubscribers + platformMap.googleplay.trialSubscribers + platformMap.stripe.trialSubscribers,
-      paidSubscribers: platformMap.appstore.paidSubscribers + platformMap.googleplay.paidSubscribers + platformMap.stripe.paidSubscribers,
-      cancellations: platformMap.appstore.cancellations + platformMap.googleplay.cancellations + platformMap.stripe.cancellations,
-      churn: platformMap.appstore.churn + platformMap.googleplay.churn + platformMap.stripe.churn,
-      graceEvents: platformMap.appstore.graceEvents + platformMap.googleplay.graceEvents + platformMap.stripe.graceEvents,
+      activeSubscribers: (platformMap.appstore?.activeSubscribers || 0) + (platformMap.googleplay?.activeSubscribers || 0) + (platformMap.stripe?.activeSubscribers || 0),
+      trialSubscribers: (platformMap.appstore?.trialSubscribers || 0) + (platformMap.googleplay?.trialSubscribers || 0) + (platformMap.stripe?.trialSubscribers || 0),
+      paidSubscribers: (platformMap.appstore?.paidSubscribers || 0) + (platformMap.googleplay?.paidSubscribers || 0) + (platformMap.stripe?.paidSubscribers || 0),
+      cancellations: (platformMap.appstore?.cancellations || 0) + (platformMap.googleplay?.cancellations || 0) + (platformMap.stripe?.cancellations || 0),
+      churn: (platformMap.appstore?.churn || 0) + (platformMap.googleplay?.churn || 0) + (platformMap.stripe?.churn || 0),
+      graceEvents: (platformMap.appstore?.graceEvents || 0) + (platformMap.googleplay?.graceEvents || 0) + (platformMap.stripe?.graceEvents || 0),
       paybacks: 0,
-      firstPayments: platformMap.appstore.firstPayments + platformMap.googleplay.firstPayments + platformMap.stripe.firstPayments,
-      renewals: platformMap.appstore.renewals + platformMap.googleplay.renewals + platformMap.stripe.renewals,
-      weeklyRevenue: Math.round((platformMap.appstore.weeklyRevenue + platformMap.googleplay.weeklyRevenue + platformMap.stripe.weeklyRevenue + Number.EPSILON) * 100) / 100,
-      mrr: Math.round((platformMap.appstore.mrr + platformMap.googleplay.mrr + platformMap.stripe.mrr + Number.EPSILON) * 100) / 100,
-      monthlyRevenueGross: Math.round((platformMap.appstore.monthlyRevenueGross + platformMap.googleplay.monthlyRevenueGross + platformMap.stripe.monthlyRevenueGross + Number.EPSILON) * 100) / 100,
-      monthlyRevenueNet: Math.round((platformMap.appstore.monthlyRevenueNet + platformMap.googleplay.monthlyRevenueNet + platformMap.stripe.monthlyRevenueNet + Number.EPSILON) * 100) / 100,
-      monthlySubscribers: platformMap.appstore.monthlySubscribers + platformMap.googleplay.monthlySubscribers + platformMap.stripe.monthlySubscribers,
-      yearlySubscribers: platformMap.appstore.yearlySubscribers + platformMap.googleplay.yearlySubscribers + platformMap.stripe.yearlySubscribers,
+      firstPayments: (platformMap.appstore?.firstPayments || 0) + (platformMap.googleplay?.firstPayments || 0) + (platformMap.stripe?.firstPayments || 0),
+      renewals: (platformMap.appstore?.renewals || 0) + (platformMap.googleplay?.renewals || 0) + (platformMap.stripe?.renewals || 0),
+      weeklyRevenue: Math.round(((platformMap.appstore?.weeklyRevenue || 0) + (platformMap.googleplay?.weeklyRevenue || 0) + (platformMap.stripe?.weeklyRevenue || 0) + Number.EPSILON) * 100) / 100,
+      mrr: Math.round(((platformMap.appstore?.mrr || 0) + (platformMap.googleplay?.mrr || 0) + (platformMap.stripe?.mrr || 0) + Number.EPSILON) * 100) / 100,
+      monthlyRevenueGross: Math.round(((platformMap.appstore?.monthlyRevenueGross || 0) + (platformMap.googleplay?.monthlyRevenueGross || 0) + (platformMap.stripe?.monthlyRevenueGross || 0) + Number.EPSILON) * 100) / 100,
+      monthlyRevenueNet: Math.round(((platformMap.appstore?.monthlyRevenueNet || 0) + (platformMap.googleplay?.monthlyRevenueNet || 0) + (platformMap.stripe?.monthlyRevenueNet || 0) + Number.EPSILON) * 100) / 100,
+      monthlySubscribers: (platformMap.appstore?.monthlySubscribers || 0) + (platformMap.googleplay?.monthlySubscribers || 0) + (platformMap.stripe?.monthlySubscribers || 0),
+      yearlySubscribers: (platformMap.appstore?.yearlySubscribers || 0) + (platformMap.googleplay?.yearlySubscribers || 0) + (platformMap.stripe?.yearlySubscribers || 0),
     };
 
     return {
@@ -226,18 +243,25 @@ export const getWeeklyMetricsHistory = query({
     metric: v.string(),
   },
   handler: async (ctx, { appId, metric }) => {
-    await validateAppOwnership(ctx, appId);
+    const app = await validateAppOwnership(ctx, appId);
 
     const oneYearAgo = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
     
-    // Get active platform connections to determine which platforms should have data
-    const connections = await ctx.db
-      .query("platformConnections")
-      .withIndex("by_app", (q) => q.eq("appId", appId))
-      .filter((q) => q.eq(q.field("isActive"), true))
+    // Determine which platforms actually have data by checking for snapshots
+    // (not just active connections, since a platform might be connected but not synced yet)
+    const allSnapshots = await ctx.db
+      .query("metricsSnapshots")
+      .withIndex("by_app_date", (q) => q.eq("appId", appId))
+      .filter((q) => q.gte(q.field("date"), oneYearAgo))
       .collect();
     
-    const activePlatforms = new Set(connections.map((c) => c.platform));
+    const platformsWithData = new Set(
+      allSnapshots
+        .filter((s) => s.platform !== "unified")
+        .map((s) => s.platform)
+    );
+    
+    const activePlatforms = platformsWithData;
     
     // Determine if this is a flow metric (sum weekly) or stock metric (last value)
     const flowMetrics = [
@@ -252,12 +276,8 @@ export const getWeeklyMetricsHistory = query({
     ];
     const isFlowMetric = flowMetrics.includes(metric);
 
-    // Get all snapshots from past year
-    const snapshots = await ctx.db
-      .query("metricsSnapshots")
-      .withIndex("by_app_date", (q) => q.eq("appId", appId))
-      .filter((q) => q.gte(q.field("date"), oneYearAgo))
-      .collect();
+    // Use the snapshots we already fetched
+    const snapshots = allSnapshots;
 
     // Group by week and platform
     const weeklyData: Record<string, Record<string, { sum: number; last: number; lastDate: string }>> = {};
@@ -267,8 +287,7 @@ export const getWeeklyMetricsHistory = query({
       if (snap.platform === "unified") continue;
 
       const date = new Date(snap.date);
-      const weekStart = new Date(date);
-      weekStart.setDate(date.getDate() - date.getDay());
+      const weekStart = getWeekStart(date, app.weekStartDay || "monday");
       const weekKey = weekStart.toISOString().split("T")[0];
       
       if (!weeklyData[weekKey]) weeklyData[weekKey] = {} as any;
@@ -291,15 +310,18 @@ export const getWeeklyMetricsHistory = query({
         const hasAllPlatforms = Array.from(activePlatforms).every((p) => platformsInWeek.has(p));
         
         // For flow metrics, use sum of all days in the week; for stock metrics, use last day
-        const val = (p?: { sum: number; last: number; lastDate: string }) => (p ? (isFlowMetric ? p.sum : p.last) : 0);
+        // Return null if platform has no data for this week (so chart line stops instead of dropping to 0)
+        const val = (p?: { sum: number; last: number; lastDate: string }) => (p ? (isFlowMetric ? p.sum : p.last) : null);
         const appstore = val((platforms as any).appstore);
         const googleplay = val((platforms as any).googleplay);
         const stripe = val((platforms as any).stripe);
         // Round currency values to 2 decimals
         const isCurrencyMetric = ["mrr", "weeklyRevenue", "monthlyRevenueGross", "monthlyRevenueNet"].includes(metric);
+        // Sum only platforms that have data (null values are excluded)
+        const sum = (appstore ?? 0) + (googleplay ?? 0) + (stripe ?? 0);
         const unified = isCurrencyMetric 
-          ? Math.round((appstore + googleplay + stripe + Number.EPSILON) * 100) / 100
-          : appstore + googleplay + stripe;
+          ? Math.round((sum + Number.EPSILON) * 100) / 100
+          : sum;
         return {
           week,
           appstore,
@@ -309,7 +331,15 @@ export const getWeeklyMetricsHistory = query({
           hasAllPlatforms,
         };
       })
-      .filter((w) => w.hasAllPlatforms) // Only include weeks with complete data
+      .map((w) => {
+        // Check if week is incomplete: missing platforms OR current/future week
+        const weekEnd = new Date(w.week);
+        weekEnd.setDate(weekEnd.getDate() + 6); // End of week
+        const isCurrentOrFutureWeek = weekEnd >= new Date();
+        const isIncomplete = !w.hasAllPlatforms || isCurrentOrFutureWeek;
+        
+        return { ...w, isIncomplete };
+      })
       .sort((a, b) => a.week.localeCompare(b.week))
       .slice(-52); // Keep last 52 weeks
 
@@ -362,7 +392,7 @@ export const getExchangeRate = query({
 export const getAllDebugData = query({
   args: { appId: v.id("apps") },
   handler: async (ctx, { appId }) => {
-    await validateAppOwnership(ctx, appId);
+    const app = await validateAppOwnership(ctx, appId);
 
     const metrics = [
       "activeSubscribers",
@@ -469,8 +499,7 @@ export const getAllDebugData = query({
         if (snap.platform === "unified") continue;
 
         const date = new Date(snap.date);
-        const weekStart = new Date(date);
-        weekStart.setDate(date.getDate() - date.getDay());
+        const weekStart = getWeekStart(date, app.weekStartDay || "monday");
         const weekKey = weekStart.toISOString().split("T")[0];
 
         if (!weeklyData[weekKey]) weeklyData[weekKey] = {} as any;
@@ -492,14 +521,25 @@ export const getAllDebugData = query({
           const hasAllPlatforms = Array.from(activePlatforms).every((p) => platformsInWeek.has(p));
           
           // For flow metrics, use sum of all days in the week; for stock metrics, use last day
-          const val = (p?: { sum: number; last: number; lastDate: string }) => (p ? (isFlowMetric ? p.sum : p.last) : 0);
+          // Return null if platform has no data for this week (consistent with getWeeklyMetricsHistory)
+          const val = (p?: { sum: number; last: number; lastDate: string }) => (p ? (isFlowMetric ? p.sum : p.last) : null);
           const appstore = val((platforms as any).appstore);
           const googleplay = val((platforms as any).googleplay);
           const stripe = val((platforms as any).stripe);
-          const unified = appstore + googleplay + stripe;
+          // Sum only platforms that have data (null values are excluded)
+          const sum = (appstore ?? 0) + (googleplay ?? 0) + (stripe ?? 0);
+          const unified = sum;
           return { week, appstore, googleplay, stripe, unified, hasAllPlatforms };
         })
-        .filter((w) => w.hasAllPlatforms) // Only include weeks with complete data
+        .map((w) => {
+          // Check if week is incomplete: missing platforms OR current/future week
+          const weekEnd = new Date(w.week);
+          weekEnd.setDate(weekEnd.getDate() + 6); // End of week
+          const isCurrentOrFutureWeek = weekEnd >= new Date();
+          const isIncomplete = !w.hasAllPlatforms || isCurrentOrFutureWeek;
+          
+          return { ...w, isIncomplete };
+        })
         .sort((a, b) => a.week.localeCompare(b.week))
         .slice(-52);
 
@@ -596,8 +636,7 @@ export const getChatContext = query({
         if (snap.platform === "unified") continue;
 
         const date = new Date(snap.date);
-        const weekStart = new Date(date);
-        weekStart.setDate(date.getDate() - date.getDay());
+        const weekStart = getWeekStart(date, app.weekStartDay || "monday");
         const weekKey = weekStart.toISOString().split("T")[0];
 
         if (!weeklyDataMap[weekKey]) weeklyDataMap[weekKey] = {} as any;
