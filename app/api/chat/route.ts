@@ -1,5 +1,5 @@
 import { openai } from '@ai-sdk/openai';
-import { streamText, convertToModelMessages, UIMessage } from 'ai';
+import { streamText, convertToModelMessages, UIMessage, stepCountIs } from 'ai';
 import { tools } from '@/app/dashboard/components/chat/tools';
 
 export async function POST(request: Request) {
@@ -127,7 +127,7 @@ Answer ONLY using these numbers and the data date range specified above. Be dire
     system: systemMessage,
     messages: convertToModelMessages(cleanMessages),
     tools,
-    maxSteps: 5,
+    stopWhen: stepCountIs(5),
   });
 
   return result.toUIMessageStreamResponse();
