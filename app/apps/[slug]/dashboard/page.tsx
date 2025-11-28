@@ -16,6 +16,7 @@ import { MetricsDefinitions } from "@/app/dashboard/components/MetricsDefinition
 import { ChatSidebar } from "@/app/dashboard/components/chat/ChatSidebar";
 import { SidebarProvider, SidebarInset, SidebarTrigger } from "@/components/ui/sidebar";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { CalendarDays, ChevronDown, Loader2 } from "lucide-react";
 
 export default function DashboardPage() {
@@ -40,6 +41,7 @@ export default function DashboardPage() {
   const [syncError, setSyncError] = useState<string | null>(null);
   const [cleanupResult, setCleanupResult] = useState<any>(null);
   const [appStoreFixResult, setAppStoreFixResult] = useState<any>(null);
+  const [viewMode, setViewMode] = useState<"monthly" | "weekly">("monthly");
 
   // Monitor logs for sync completion or cancellation
   useEffect(() => {
@@ -220,20 +222,22 @@ export default function DashboardPage() {
   return (
     <SidebarProvider defaultOpen={false}>
       <SidebarInset>
-        <div className="px-4 pt-16">
+        <div className="px-4 pt-14">
           <div className="max-w-6xl mx-auto space-y-6">
-          <h1 className="text-5xl font-bold text-foreground">{appName}</h1>
+          <h1 className="text-5xl font-bold text-foreground mb-1">{appName}</h1>
+          <div className="flex items-center gap-2 text-sm font-medium text-foreground pb-2">
+            <CalendarDays className="h-4 w-4 text-muted-foreground" />
+            <span>{metrics?.lastSync ? formatDate(metrics.lastSync) : "No sync yet"}</span>
+          </div>
         <div className="sticky top-0 z-40 flex flex-col mb-2 bg-white/80 backdrop-blur-sm py-4 -mx-4 px-4">
           <div className="flex flex-wrap items-center justify-between gap-4">
-            <div className="flex flex-col gap-2">
-              
-              <div className="flex flex-col gap-1">
-                <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Last Sync</span>
-                <div className="flex items-center gap-2 text-sm font-medium text-foreground">
-                  <CalendarDays className="h-4 w-4 text-muted-foreground" />
-                  <span>{metrics?.lastSync ? formatDate(metrics.lastSync) : "No sync yet"}</span>
-                </div>
-              </div>
+            <div className="flex items-center gap-6">
+              <Tabs value={viewMode} onValueChange={(v) => setViewMode(v as "monthly" | "weekly")}>
+                <TabsList>
+                  <TabsTrigger value="monthly">Monthly</TabsTrigger>
+                  <TabsTrigger value="weekly">Weekly</TabsTrigger>
+                </TabsList>
+              </Tabs>
             </div>
             <div className="flex items-center gap-2">
               <Button
@@ -305,6 +309,7 @@ export default function DashboardPage() {
                   metricKey="activeSubscribers"
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
+                  viewMode={viewMode}
                   right={
                     <div className="text-xs text-right text-gray-500 leading-4">
                       {connectedPlatforms.map((platform) => {
@@ -338,6 +343,7 @@ export default function DashboardPage() {
                   metricKey="trialSubscribers"
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
+                  viewMode={viewMode}
                   right={rightBlock("trialSubscribers")}
                 />
                 <MetricCard
@@ -346,6 +352,7 @@ export default function DashboardPage() {
                   metricKey="paidSubscribers"
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
+                  viewMode={viewMode}
                   right={rightBlock("paidSubscribers")}
                 />
               </div>
@@ -356,6 +363,7 @@ export default function DashboardPage() {
                   metricKey="monthlySubscribers"
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
+                  viewMode={viewMode}
                   right={rightBlock("monthlySubscribers")}
                 />
                 <MetricCard
@@ -364,6 +372,7 @@ export default function DashboardPage() {
                   metricKey="yearlySubscribers"
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
+                  viewMode={viewMode}
                   right={rightBlock("yearlySubscribers")}
                 />
               </div>
@@ -374,6 +383,7 @@ export default function DashboardPage() {
                   metricKey="cancellations"
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
+                  viewMode={viewMode}
                   right={rightBlock("cancellations")}
                 />
                 <MetricCard
@@ -382,6 +392,7 @@ export default function DashboardPage() {
                   metricKey="graceEvents"
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
+                  viewMode={viewMode}
                   right={rightBlock("graceEvents")}
                 />
               </div>
@@ -392,6 +403,7 @@ export default function DashboardPage() {
                   metricKey="firstPayments"
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
+                  viewMode={viewMode}
                   right={rightBlock("firstPayments")}
                 />
                 <MetricCard
@@ -400,25 +412,28 @@ export default function DashboardPage() {
                   metricKey="renewals"
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
+                  viewMode={viewMode}
                   right={rightBlock("renewals")}
                 />
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <MetricCard
-                  label="Monthly Rev. (Gross)"
-                  value={formatCurrency(metrics.unified.monthlyRevenueGross)}
-                  metricKey="monthlyRevenueGross"
+                  label={viewMode === "monthly" ? "Monthly Rev. (Gross)" : "Weekly Rev. (Gross)"}
+                  value={formatCurrency(viewMode === "monthly" ? metrics.unified.monthlyRevenueGross : metrics.unified.weeklyRevenue)}
+                  metricKey={viewMode === "monthly" ? "monthlyRevenueGross" : "weeklyRevenue"}
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
-                  right={rightBlock("monthlyRevenueGross", true)}
+                  viewMode={viewMode}
+                  right={rightBlock(viewMode === "monthly" ? "monthlyRevenueGross" : "weeklyRevenue", true)}
                 />
                 <MetricCard
-                  label="Monthly Rev. (Net)"
-                  value={formatCurrency(metrics.unified.monthlyRevenueNet)}
-                  metricKey="monthlyRevenueNet"
+                  label={viewMode === "monthly" ? "Monthly Rev. (Net)" : "Weekly Rev. (Net)"}
+                  value={formatCurrency(viewMode === "monthly" ? metrics.unified.monthlyRevenueNet : metrics.unified.weeklyRevenue)}
+                  metricKey={viewMode === "monthly" ? "monthlyRevenueNet" : "weeklyRevenue"}
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
-                  right={rightBlock("monthlyRevenueNet", true)}
+                  viewMode={viewMode}
+                  right={rightBlock(viewMode === "monthly" ? "monthlyRevenueNet" : "weeklyRevenue", true)}
                 />
               </div>
               <div className="grid grid-cols-1 md:grid-cols-1 gap-4">
@@ -428,6 +443,7 @@ export default function DashboardPage() {
                   metricKey="mrr"
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
+                  viewMode={viewMode}
                   right={rightBlock("mrr", true)}
                 />
               </div>
@@ -647,8 +663,13 @@ export default function DashboardPage() {
             )}
 
             <div className="mt-12">
-              <h2 className="text-xl font-semibold mb-4">Debug: All Metrics Data</h2>
-              <DebugDataTable debugData={debugData} userCurrency={currency} />
+              <h2 className="text-xl font-semibold mb-4">Debug: Monthly Metrics Data</h2>
+              <DebugDataTable debugData={debugData} userCurrency={currency} periodType="monthly" />
+            </div>
+
+            <div className="mt-12">
+              <h2 className="text-xl font-semibold mb-4">Debug: Weekly Metrics Data</h2>
+              <DebugDataTable debugData={debugData} userCurrency={currency} periodType="weekly" />
             </div>
           </>
         )}
@@ -664,18 +685,6 @@ export default function DashboardPage() {
 }
 
 
-const FLOW_METRICS = new Set([
-  "cancellations",
-  "graceEvents",
-  "firstPayments",
-  "renewals",
-  "monthlyRevenueGross",
-  "monthlyRevenueNet",
-]);
-
-const parseWeekDate = (week: string) => new Date(`${week}T00:00:00Z`);
-const subtractDays = (date: Date, days: number) => new Date(date.getTime() - days * 86_400_000);
-
 function MetricCard({
   label,
   value,
@@ -683,6 +692,7 @@ function MetricCard({
   appId,
   right,
   connectedPlatforms,
+  viewMode,
 }: {
   label: string;
   value: string | number;
@@ -690,61 +700,40 @@ function MetricCard({
   appId: any;
   right?: React.ReactNode;
   connectedPlatforms: string[];
+  viewMode: "monthly" | "weekly";
 }) {
-  const chartData = useQuery(api.queries.getWeeklyMetricsHistory, { appId, metric: metricKey });
+  const weeklyData = useQuery(api.queries.getWeeklyMetricsHistory, { appId, metric: metricKey });
+  const monthlyData = useQuery(api.queries.getMonthlyMetricsHistory, { appId, metric: metricKey });
+  
+  const chartData = viewMode === "monthly" ? monthlyData : weeklyData;
+  const dateKey = viewMode === "monthly" ? "month" : "week";
 
   const change = useMemo(() => {
-    if (!chartData || chartData.length === 0) return null;
+    if (!chartData || chartData.length < 2) return null;
 
-    const sorted = [...chartData].sort((a, b) => a.week.localeCompare(b.week));
-    const latestPoint = sorted[sorted.length - 1];
-    if (!latestPoint) return null;
+    // Sort by date (oldest to newest)
+    const sorted = [...chartData].sort((a, b) => {
+      const aKey = (a as any)[dateKey];
+      const bKey = (b as any)[dateKey];
+      return aKey.localeCompare(bKey);
+    });
 
-    const latestValue = latestPoint.unified ?? 0;
-    const latestWeekDate = parseWeekDate(latestPoint.week);
+    // Get current (latest) and previous period values
+    const currentPoint = sorted[sorted.length - 1];
+    const previousPoint = sorted[sorted.length - 2];
+    if (!currentPoint || !previousPoint) return null;
 
-    if (FLOW_METRICS.has(metricKey)) {
-      const currentWindowStart = subtractDays(latestWeekDate, 28);
-      const previousWindowEnd = subtractDays(currentWindowStart, 1);
-      const previousWindowStart = subtractDays(previousWindowEnd, 28);
-
-      const sumRange = (start: Date, end: Date) =>
-        sorted.reduce((sum, point) => {
-          const weekDate = parseWeekDate(point.week);
-          if (weekDate > start && weekDate <= end) {
-            return sum + (point.unified ?? 0);
-          }
-          return sum;
-        }, 0);
-
-      const currentSum = sumRange(currentWindowStart, latestWeekDate);
-      const previousSum = sumRange(previousWindowStart, previousWindowEnd);
-      if (previousSum === 0) return null;
-
-      const percentChange = ((currentSum - previousSum) / previousSum) * 100;
-      return {
-        value: percentChange,
-        type: percentChange >= 0 ? "positive" : "negative",
-        formatted: `${percentChange >= 0 ? "+" : ""}${percentChange.toFixed(1)}%`,
-      };
-    }
-
-    const targetDate = subtractDays(latestWeekDate, 30);
-    const previousPoint = [...sorted]
-      .reverse()
-      .find((point) => parseWeekDate(point.week) <= targetDate);
-    if (!previousPoint) return null;
-
+    const currentValue = currentPoint.unified ?? 0;
     const previousValue = previousPoint.unified ?? 0;
     if (previousValue === 0) return null;
 
-    const percentChange = ((latestValue - previousValue) / previousValue) * 100;
+    const percentChange = ((currentValue - previousValue) / previousValue) * 100;
     return {
       value: percentChange,
       type: percentChange >= 0 ? "positive" : "negative",
       formatted: `${percentChange >= 0 ? "+" : ""}${percentChange.toFixed(1)}%`,
     };
-  }, [chartData, metricKey]);
+  }, [chartData, dateKey]);
 
   return (
     <Card className="p-0 gap-0">
@@ -792,23 +781,32 @@ function MetricCard({
             <LineChart data={chartData} margin={{ left: 0, right: 0, top: 5, bottom: 5 }}>
               <CartesianGrid vertical={false} />
               <XAxis 
-                dataKey="week" 
+                dataKey={dateKey}
                 hide={false}
                 tickMargin={8}
                 minTickGap={16}
                 tickFormatter={(value) => {
                   try {
-                    const date = new Date(value)
-                    if (!isNaN(date.getTime())) {
+                    if (viewMode === "monthly") {
+                      // Format YYYY-MM as "Jan 2024"
+                      const [year, month] = value.split("-");
+                      const date = new Date(parseInt(year), parseInt(month) - 1, 1);
                       return date.toLocaleDateString("en-US", {
                         month: "short",
                         year: "numeric",
-                      })
+                      });
+                    }
+                    const date = new Date(value);
+                    if (!isNaN(date.getTime())) {
+                      return date.toLocaleDateString("en-US", {
+                        month: "short",
+                        day: "numeric",
+                      });
                     }
                   } catch {
                     // fallback
                   }
-                  return value
+                  return value;
                 }}
               />
               <YAxis hide />

@@ -21,17 +21,18 @@ type DebugRow = {
   metricName: string;
   platform: string;
   total: number;
-  weeks: Record<string, number>;
+  periods: Record<string, number | null>;
 };
 
 type DebugDataTableProps = {
   debugData: any;
   userCurrency?: string;
+  periodType: "weekly" | "monthly";
 };
 
-export function DebugDataTable({ debugData, userCurrency = "USD" }: DebugDataTableProps) {
-  const { rows, weekHeaders } = useMemo(() => {
-    if (!debugData || !debugData.latestByPlatform) return { rows: [], weekHeaders: [] };
+export function DebugDataTable({ debugData, userCurrency = "USD", periodType }: DebugDataTableProps) {
+  const { rows, periodHeaders } = useMemo(() => {
+    if (!debugData || !debugData.latestByPlatform) return { rows: [], periodHeaders: [] };
 
     const metricLabels: Record<string, string> = {
       activeSubscribers: "Active Subscribers",
@@ -44,6 +45,7 @@ export function DebugDataTable({ debugData, userCurrency = "USD" }: DebugDataTab
       firstPayments: "First Payments",
       renewals: "Renewals",
       mrr: "MRR",
+      weeklyRevenue: "Weekly Revenue",
       monthlyRevenueGross: "Monthly Rev. (Gross)",
       monthlyRevenueNet: "Monthly Rev. (Net)",
     };
@@ -52,25 +54,32 @@ export function DebugDataTable({ debugData, userCurrency = "USD" }: DebugDataTab
     const flowMetrics = debugData.flowMetrics || [];
     const rows: DebugRow[] = [];
 
-    // Get all unique weeks across all metrics
-    const allWeeks = new Set<string>();
+    const dataByMetric = periodType === "monthly" 
+      ? debugData.monthlyDataByMetric 
+      : debugData.weeklyDataByMetric;
+
+    if (!dataByMetric) return { rows: [], periodHeaders: [] };
+
+    const allPeriods = new Set<string>();
     for (const metric of metrics) {
-      const weeklyData = debugData.weeklyDataByMetric[metric] || [];
-      weeklyData.forEach((w: any) => allWeeks.add(w.week));
+      const periodData = dataByMetric[metric] || [];
+      periodData.forEach((p: any) => {
+        const key = periodType === "monthly" ? p.month : p.week;
+        if (key) allPeriods.add(key);
+      });
     }
-    const sortedWeeks = Array.from(allWeeks).sort();
+    const sortedPeriods = Array.from(allPeriods).sort();
 
     for (const metric of metrics) {
-      const weeklyData = debugData.weeklyDataByMetric[metric] || [];
+      const periodData = dataByMetric[metric] || [];
       const isFlowMetric = flowMetrics.includes(metric);
 
-      // Create week lookup for this metric
-      const weekLookup: Record<string, any> = {};
-      weeklyData.forEach((w: any) => {
-        weekLookup[w.week] = w;
+      const periodLookup: Record<string, any> = {};
+      periodData.forEach((p: any) => {
+        const key = periodType === "monthly" ? p.month : p.week;
+        if (key) periodLookup[key] = p;
       });
 
-      // Platform rows - calculate these first so we can sum them for unified
       const platforms = ["appstore", "googleplay", "stripe"];
       const platformLabels: Record<string, string> = {
         appstore: "App Store",
@@ -80,7 +89,6 @@ export function DebugDataTable({ debugData, userCurrency = "USD" }: DebugDataTab
 
       const platformTotals: Record<string, number> = {};
 
-      // For flow metrics: use 30-day sum; for stock metrics: use latest value
       for (const platform of platforms) {
         const platformTotal = isFlowMetric
           ? debugData.flowSumsByPlatform?.[platform]?.[metric] || 0
@@ -88,57 +96,59 @@ export function DebugDataTable({ debugData, userCurrency = "USD" }: DebugDataTab
         platformTotals[platform] = platformTotal;
       }
 
-      // Unified row - always calculate as sum of platforms
       const unifiedTotal = 
         platformTotals.appstore + 
         platformTotals.googleplay + 
         platformTotals.stripe;
 
-      const unifiedWeeks: Record<string, number> = {};
-      sortedWeeks.forEach((week) => {
-        unifiedWeeks[week] = weekLookup[week]?.unified || 0;
+      const unifiedPeriods: Record<string, number | null> = {};
+      sortedPeriods.forEach((period) => {
+        const value = periodLookup[period]?.unified;
+        unifiedPeriods[period] = value !== undefined ? value : null;
       });
 
       rows.push({
         metricName: metricLabels[metric],
         platform: "Unified",
         total: unifiedTotal,
-        weeks: unifiedWeeks,
+        periods: unifiedPeriods,
       });
 
-      // Add platform rows
       for (const platform of platforms) {
-        const platformWeeks: Record<string, number> = {};
-        sortedWeeks.forEach((week) => {
-          platformWeeks[week] = weekLookup[week]?.[platform] || 0;
+        const platformPeriods: Record<string, number | null> = {};
+        sortedPeriods.forEach((period) => {
+          const value = periodLookup[period]?.[platform];
+          platformPeriods[period] = value !== undefined ? value : null;
         });
 
         rows.push({
           metricName: metricLabels[metric],
           platform: platformLabels[platform],
           total: platformTotals[platform],
-          weeks: platformWeeks,
+          periods: platformPeriods,
         });
       }
     }
 
-    return { rows, weekHeaders: sortedWeeks };
-  }, [debugData]);
+    return { rows, periodHeaders: sortedPeriods };
+  }, [debugData, periodType]);
 
   const downloadData = () => {
     if (!rows || rows.length === 0) return;
 
-    // Create CSV content
-    const headers = ["Metric", "Platform", "Total", ...weekHeaders];
+    const headers = ["Metric", "Platform", "Total", ...periodHeaders];
     const csvRows = [headers.join(",")];
 
     for (const row of rows) {
-      const weekValues = weekHeaders.map((week) => row.weeks[week] || 0);
+      const periodValues = periodHeaders.map((period) => {
+        const value = row.periods[period];
+        return value === null ? "" : value;
+      });
       csvRows.push([
-        `"${row.metricName}"`,
+        '"' + row.metricName + '"',
         row.platform,
         row.total,
-        ...weekValues,
+        ...periodValues,
       ].join(","));
     }
 
@@ -147,7 +157,7 @@ export function DebugDataTable({ debugData, userCurrency = "USD" }: DebugDataTab
     const link = document.createElement("a");
     const url = URL.createObjectURL(blob);
     link.setAttribute("href", url);
-    link.setAttribute("download", `metrics-debug-${new Date().toISOString().split("T")[0]}.csv`);
+    link.setAttribute("download", "metrics-debug-" + periodType + "-" + new Date().toISOString().split("T")[0] + ".csv");
     link.style.visibility = "hidden";
     document.body.appendChild(link);
     link.click();
@@ -155,7 +165,7 @@ export function DebugDataTable({ debugData, userCurrency = "USD" }: DebugDataTab
   };
 
   const formatValue = (metricName: string, value: number) => {
-    const currencyMetrics = ["MRR", "Monthly Rev. (Gross)", "Monthly Rev. (Net)"];
+    const currencyMetrics = ["MRR", "Monthly Rev. (Gross)", "Monthly Rev. (Net)", "Weekly Revenue"];
     if (currencyMetrics.includes(metricName)) {
       return new Intl.NumberFormat("en-US", {
         style: "currency",
@@ -202,10 +212,19 @@ export function DebugDataTable({ debugData, userCurrency = "USD" }: DebugDataTab
       },
     ];
 
-    const weekColumns: ColumnDef<DebugRow>[] = weekHeaders.map((week, idx) => ({
-      id: `week-${week}`,
+    const periodColumns: ColumnDef<DebugRow>[] = periodHeaders.map((period) => ({
+      id: "period-" + period,
       header: () => {
-        const date = new Date(week);
+        if (periodType === "monthly") {
+          const [year, month] = period.split("-");
+          const date = new Date(parseInt(year), parseInt(month) - 1, 1);
+          return (
+            <div className="text-xs whitespace-nowrap">
+              {date.toLocaleDateString("en-US", { month: "short", year: "2-digit" })}
+            </div>
+          );
+        }
+        const date = new Date(period);
         return (
           <div className="text-xs whitespace-nowrap">
             {date.toLocaleDateString("en-US", { month: "short", day: "numeric" })}
@@ -214,17 +233,17 @@ export function DebugDataTable({ debugData, userCurrency = "USD" }: DebugDataTab
       },
       cell: (info) => {
         const row = info.row.original;
-        const value = row.weeks[week] || 0;
+        const value = row.periods[period];
         return (
-          <div className="text-xs whitespace-nowrap">
-            {formatValue(row.metricName, value)}
+          <div className="text-xs whitespace-nowrap text-gray-400">
+            {value === null ? "—" : formatValue(row.metricName, value)}
           </div>
         );
       },
     }));
 
-    return [...baseColumns, ...weekColumns];
-  }, [weekHeaders]);
+    return [...baseColumns, ...periodColumns];
+  }, [periodHeaders, periodType]);
 
   const table = useReactTable({
     data: rows,
@@ -278,24 +297,33 @@ export function DebugDataTable({ debugData, userCurrency = "USD" }: DebugDataTab
               ))}
             </TableHeader>
             <TableBody>
-              {table.getRowModel().rows.map((row, rowIndex) => {
-                const isOddRow = rowIndex % 2 === 1;
-                const rowBg = isOddRow ? "bg-gray-50" : "bg-white";
+              {table.getRowModel().rows.map((row) => {
+                const platform = row.original.platform;
+                let platformBg = "bg-white";
+                
+                if (platform === "App Store") {
+                  platformBg = "bg-blue-50";
+                } else if (platform === "Google Play") {
+                  platformBg = "bg-green-50";
+                } else if (platform === "Stripe") {
+                  platformBg = "bg-purple-50";
+                }
+                
                 return (
                   <TableRow 
                     key={row.id}
-                    className={isOddRow ? "bg-gray-50" : ""}
+                    className={platformBg}
                   >
                     {row.getVisibleCells().map((cell, idx) => (
                       <TableCell
                         key={cell.id}
                         className={
                           idx === 0
-                            ? `sticky left-0 z-10 ${rowBg} border-r min-w-[180px]`
+                            ? "sticky left-0 z-10 " + platformBg + " border-r min-w-[180px]"
                             : idx === 1
-                            ? `sticky left-[180px] z-10 ${rowBg} border-r min-w-[120px]`
+                            ? "sticky left-[180px] z-10 " + platformBg + " border-r min-w-[120px]"
                             : idx === 2
-                            ? `sticky left-[300px] z-10 ${rowBg} border-r min-w-[120px]`
+                            ? "sticky left-[300px] z-10 " + platformBg + " border-r min-w-[120px]"
                             : "min-w-[100px]"
                         }
                       >
@@ -315,4 +343,3 @@ export function DebugDataTable({ debugData, userCurrency = "USD" }: DebugDataTab
     </div>
   );
 }
-

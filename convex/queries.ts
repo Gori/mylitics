@@ -670,69 +670,78 @@ export const getAllDebugData = query({
 
     // Calculate weekly data for each metric
     const weeklyDataByMetric: Record<string, any[]> = {};
+    // Calculate monthly data for each metric
+    const monthlyDataByMetric: Record<string, any[]> = {};
+
+    // Stock metrics that should show null when value is 0 for Google Play
+    const stockMetrics = [
+      "activeSubscribers",
+      "trialSubscribers", 
+      "paidSubscribers",
+      "monthlySubscribers",
+      "yearlySubscribers",
+      "mrr",
+    ];
 
     for (const metric of metrics) {
       const weeklyData: Record<string, Record<string, { sum: number; last: number; lastDate: string }>> = {};
+      const monthlyData: Record<string, Record<string, { sum: number; last: number; lastDate: string }>> = {};
       const isFlowMetric = flowMetrics.includes(metric);
+      const isStockMetric = stockMetrics.includes(metric);
 
       for (const snap of snapshots) {
-        // Skip unified platform - we'll calculate it from the sum of platforms
         if (snap.platform === "unified") continue;
 
         const date = new Date(snap.date);
         const weekStart = getWeekStart(date, app.weekStartDay || "monday");
         const weekKey = weekStart.toISOString().split("T")[0];
+        const monthKey = snap.date.substring(0, 7); // YYYY-MM
 
-        if (!weeklyData[weekKey]) weeklyData[weekKey] = {} as any;
         const value = (snap as any)[metric] || 0;
-        const entry = weeklyData[weekKey][snap.platform] || { sum: 0, last: 0, lastDate: "" };
-        entry.sum += value;
-        // Only update last if this is a more recent date
-        if (snap.date >= entry.lastDate) {
-          entry.last = value;
-          entry.lastDate = snap.date;
+
+        // Weekly aggregation
+        if (!weeklyData[weekKey]) weeklyData[weekKey] = {} as any;
+        const weekEntry = weeklyData[weekKey][snap.platform] || { sum: 0, last: 0, lastDate: "" };
+        weekEntry.sum += value;
+        if (snap.date >= weekEntry.lastDate) {
+          weekEntry.last = value;
+          weekEntry.lastDate = snap.date;
         }
-        weeklyData[weekKey][snap.platform] = entry;
+        weeklyData[weekKey][snap.platform] = weekEntry;
+
+        // Monthly aggregation
+        if (!monthlyData[monthKey]) monthlyData[monthKey] = {} as any;
+        const monthEntry = monthlyData[monthKey][snap.platform] || { sum: 0, last: 0, lastDate: "" };
+        monthEntry.sum += value;
+        if (snap.date >= monthEntry.lastDate) {
+          monthEntry.last = value;
+          monthEntry.lastDate = snap.date;
+        }
+        monthlyData[monthKey][snap.platform] = monthEntry;
       }
 
-      // Stock metrics that should show null when value is 0 for Google Play
-      const stockMetrics = [
-        "activeSubscribers",
-        "trialSubscribers", 
-        "paidSubscribers",
-        "monthlySubscribers",
-        "yearlySubscribers",
-        "mrr",
-      ];
-      const isStockMetric = stockMetrics.includes(metric);
-
-      const result = Object.entries(weeklyData)
+      // Process weekly data
+      const weeklyResult = Object.entries(weeklyData)
         .map(([week, platforms]) => {
-          // Check if all active platforms have data for this week
           const platformsInWeek = new Set(Object.keys(platforms));
           const hasAllPlatforms = Array.from(activePlatforms).every((p) => platformsInWeek.has(p));
           
-          // For flow metrics, use sum of all days in the week; for stock metrics, use last day
-          // Return null if platform has no data for this week (consistent with getWeeklyMetricsHistory)
           const val = (p?: { sum: number; last: number; lastDate: string }) => (p ? (isFlowMetric ? p.sum : p.last) : null);
           const appstore = val((platforms as any).appstore);
           let googleplay = val((platforms as any).googleplay);
           const stripe = val((platforms as any).stripe);
           
-          // For Google Play stock metrics, treat 0 as null (no data) so line stops
           if (isStockMetric && googleplay === 0) {
             googleplay = null;
           }
           
-          // Sum only platforms that have data (null values are excluded)
           const sum = (appstore ?? 0) + (googleplay ?? 0) + (stripe ?? 0);
           const unified = sum;
           return { week, appstore, googleplay, stripe, unified, hasAllPlatforms };
         })
         .map((w) => {
-          // Check if week is incomplete: missing platforms OR current/future week
           const weekEnd = new Date(w.week);
-          weekEnd.setDate(weekEnd.getDate() + 6); // End of week
+          weekEnd.setDate(weekEnd.getDate() + 6);
           const isCurrentOrFutureWeek = weekEnd >= new Date();
           const isIncomplete = !w.hasAllPlatforms || isCurrentOrFutureWeek;
           
@@ -741,11 +750,45 @@ export const getAllDebugData = query({
         .sort((a, b) => a.week.localeCompare(b.week))
         .slice(-52);
 
-      weeklyDataByMetric[metric] = result;
+      weeklyDataByMetric[metric] = weeklyResult;
+
+      // Process monthly data
+      const now = new Date();
+      const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+      const monthlyResult = Object.entries(monthlyData)
+        .map(([month, platforms]) => {
+          const platformsInMonth = new Set(Object.keys(platforms));
+          const hasAllPlatforms = Array.from(activePlatforms).every((p) => platformsInMonth.has(p));
+          
+          const val = (p?: { sum: number; last: number; lastDate: string }) => (p ? (isFlowMetric ? p.sum : p.last) : null);
+          const appstore = val((platforms as any).appstore);
+          let googleplay = val((platforms as any).googleplay);
+          const stripe = val((platforms as any).stripe);
+          
+          if (isStockMetric && googleplay === 0) {
+            googleplay = null;
+          }
+          
+          const sum = (appstore ?? 0) + (googleplay ?? 0) + (stripe ?? 0);
+          const unified = sum;
+          return { month, appstore, googleplay, stripe, unified, hasAllPlatforms };
+        })
+        .map((m) => {
+          const isCurrentMonth = m.month === currentMonth;
+          const isIncomplete = !m.hasAllPlatforms || isCurrentMonth;
+          
+          return { ...m, isIncomplete };
+        })
+        .sort((a, b) => a.month.localeCompare(b.month))
+        .slice(-12);
+
+      monthlyDataByMetric[metric] = monthlyResult;
     }
 
     return {
       weeklyDataByMetric,
+      monthlyDataByMetric,
       latestByPlatform,
       flowSumsByPlatform,
       flowMetrics,
