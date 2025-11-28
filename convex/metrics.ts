@@ -308,14 +308,14 @@ export const processAndStoreMetrics = internalMutation({
     console.log(`[Metrics ${platform}] Calculated - Active: ${activeSubscribers}, Trial: ${trialSubscribers}, Paid: ${paidSubscribers}, Cancellations: ${cancellations}, Churn: ${churn}, Grace: ${graceEvents}, First: ${firstPayments}, Renewals: ${renewals}, MRR: ${mrr}, Revenue: ${weeklyRevenue}`);
     console.log(`[Metrics ${platform}] Revenue breakdown - Gross: ${monthlyRevenueGross}, Net: ${monthlyRevenueNet}, Weekly: ${weeklyRevenue}`);
 
-    // Store snapshot
-    const existingSnapshot = await ctx.db
+    // Store snapshot - find ALL existing snapshots for this date/platform
+    const existingSnapshots = await ctx.db
       .query("metricsSnapshots")
       .withIndex("by_app_platform", (q) =>
         q.eq("appId", appId).eq("platform", platform)
       )
       .filter((q) => q.eq(q.field("date"), today))
-      .first();
+      .collect();
 
     const snapshotData = {
       appId,
@@ -338,8 +338,13 @@ export const processAndStoreMetrics = internalMutation({
       yearlySubscribers,
     };
 
-    if (existingSnapshot) {
-      await ctx.db.patch(existingSnapshot._id, snapshotData);
+    if (existingSnapshots.length > 0) {
+      // Update the first one and delete any duplicates
+      await ctx.db.patch(existingSnapshots[0]._id, snapshotData);
+      for (let i = 1; i < existingSnapshots.length; i++) {
+        console.log(`[Metrics ${platform}] Removing duplicate snapshot for ${today}`);
+        await ctx.db.delete(existingSnapshots[i]._id);
+      }
     } else {
       await ctx.db.insert("metricsSnapshots", snapshotData);
     }
@@ -393,10 +398,14 @@ export const createUnifiedSnapshot = internalMutation({
         q.eq("appId", appId).eq("platform", "unified")
       )
       .filter((q) => q.eq(q.field("date"), today))
-      .first();
+      .collect();
 
-    if (existingUnified) {
-      await ctx.db.patch(existingUnified._id, unified);
+    if (existingUnified.length > 0) {
+      await ctx.db.patch(existingUnified[0]._id, unified);
+      // Clean up any duplicates
+      for (let i = 1; i < existingUnified.length; i++) {
+        await ctx.db.delete(existingUnified[i]._id);
+      }
     } else {
       await ctx.db.insert("metricsSnapshots", unified);
     }
@@ -528,11 +537,12 @@ export const generateHistoricalSnapshots = internalMutation({
       monthlyRevenueNet = Math.round((monthlyRevenueNet + Number.EPSILON) * 100) / 100;
       const weeklyRevenue = monthlyRevenueNet;
 
-      const existing = await ctx.db
+      // Find ALL existing snapshots for this date/platform
+      const existingSnapshots = await ctx.db
         .query("metricsSnapshots")
         .withIndex("by_app_platform", (q) => q.eq("appId", appId).eq("platform", platform))
         .filter((q) => q.eq(q.field("date"), date))
-        .first();
+        .collect();
 
       const snapshot = {
         appId,
@@ -555,8 +565,15 @@ export const generateHistoricalSnapshots = internalMutation({
         yearlySubscribers,
       } as const;
 
-      if (existing) await ctx.db.patch(existing._id, snapshot);
-      else await ctx.db.insert("metricsSnapshots", snapshot);
+      if (existingSnapshots.length > 0) {
+        // Update the first one and delete any duplicates
+        await ctx.db.patch(existingSnapshots[0]._id, snapshot);
+        for (let i = 1; i < existingSnapshots.length; i++) {
+          await ctx.db.delete(existingSnapshots[i]._id);
+        }
+      } else {
+        await ctx.db.insert("metricsSnapshots", snapshot);
+      }
 
       daysProcessed += 1;
       if (daysProcessed % 30 === 0) {
@@ -581,6 +598,8 @@ export const processAppStoreReport = internalMutation({
       renewals: v.number(),
       firstPayments: v.number(),
       cancellations: v.number(),
+      revenueGross: v.optional(v.number()),
+      revenueNet: v.optional(v.number()),
     })),
   },
   handler: async (ctx, { appId, date, tsv, eventData }) => {
@@ -767,17 +786,20 @@ export const processAppStoreReport = internalMutation({
         }
       }
       
-      // Extract revenue
-      const gross = customerPriceIdx >= 0 ? Number(cols[customerPriceIdx] || 0) : 0;
-      const netRaw = proceedsIdx >= 0 ? Number(cols[proceedsIdx] || 0) : null;
-      const net = netRaw === null || isNaN(netRaw) ? gross * 0.85 : netRaw;
+      // DO NOT extract revenue from SUMMARY reports!
+      // The SUMMARY report shows SNAPSHOT data (current subscription states), not transactions.
+      // The "Customer Price" column is the subscription tier price, not actual revenue collected.
+      // Summing these values would give total ARR/MRR value, not daily revenue.
+      // Revenue should only come from SUBSCRIBER reports (event-based) or Server Notifications.
       
-      // App Store reports are in USD, convert to user's preferred currency
-      const convertedGross = await convertAndRoundCurrency(ctx, gross, "USD", userCurrency);
-      const convertedNet = await convertAndRoundCurrency(ctx, net, "USD", userCurrency);
-      
-      monthlyRevenueGross += convertedGross;
-      monthlyRevenueNet += convertedNet;
+      // NOTE: Commented out to prevent incorrect revenue calculation
+      // const gross = customerPriceIdx >= 0 ? Number(cols[customerPriceIdx] || 0) : 0;
+      // const netRaw = proceedsIdx >= 0 ? Number(cols[proceedsIdx] || 0) : null;
+      // const net = netRaw === null || isNaN(netRaw) ? gross * 0.85 : netRaw;
+      // const convertedGross = await convertAndRoundCurrency(ctx, gross, "USD", userCurrency);
+      // const convertedNet = await convertAndRoundCurrency(ctx, net, "USD", userCurrency);
+      // monthlyRevenueGross += convertedGross;
+      // monthlyRevenueNet += convertedNet;
     }
 
     console.log(`[App Store ${date}] ===== PARSING SUMMARY =====`);
@@ -810,10 +832,12 @@ export const processAppStoreReport = internalMutation({
     let finalFirstPayments = 0;
     let finalRenewals = 0;
     
-    // Use event data from SUBSCRIBER report for renewals, but day-over-day for cancellations
-    if (eventData && eventData.renewals > 0) {
-      console.log(`[App Store ${date}] Using SUBSCRIBER report: Renewals=${eventData.renewals}`);
-      finalRenewals = eventData.renewals;
+    // Use event data from SUBSCRIBER report for events AND revenue
+    if (eventData) {
+      if (eventData.renewals > 0) {
+        console.log(`[App Store ${date}] Using SUBSCRIBER report: Renewals=${eventData.renewals}`);
+        finalRenewals = eventData.renewals;
+      }
       
       // Use cancellations from event data only if present
       if (eventData.cancellations > 0) {
@@ -824,6 +848,20 @@ export const processAppStoreReport = internalMutation({
       // Use first payments from event data if present
       if (eventData.firstPayments > 0) {
         finalFirstPayments = eventData.firstPayments;
+      }
+      
+      // Use REVENUE from SUBSCRIBER report if available
+      if (eventData.revenueGross !== undefined && eventData.revenueGross > 0) {
+        // Convert from USD to user's preferred currency
+        const convertedGross = await convertAndRoundCurrency(ctx, eventData.revenueGross, "USD", userCurrency);
+        const convertedNet = eventData.revenueNet !== undefined 
+          ? await convertAndRoundCurrency(ctx, eventData.revenueNet, "USD", userCurrency)
+          : convertedGross * 0.85;
+        
+        monthlyRevenueGross = convertedGross;
+        monthlyRevenueNet = convertedNet;
+        
+        console.log(`[App Store ${date}] Using SUBSCRIBER report revenue: Gross=${eventData.revenueGross.toFixed(2)} USD -> ${convertedGross.toFixed(2)} ${userCurrency}, Net=${eventData.revenueNet?.toFixed(2)} USD -> ${convertedNet.toFixed(2)} ${userCurrency}`);
       }
     }
     
@@ -889,10 +927,16 @@ export const processAppStoreReport = internalMutation({
       .query("metricsSnapshots")
       .withIndex("by_app_platform", (q) => q.eq("appId", appId).eq("platform", "appstore"))
       .filter((q) => q.eq(q.field("date"), date))
-      .first();
+      .collect();
 
-    if (existing) await ctx.db.patch(existing._id, snapshot);
-    else await ctx.db.insert("metricsSnapshots", snapshot);
+    if (existing.length > 0) {
+      await ctx.db.patch(existing[0]._id, snapshot);
+      for (let i = 1; i < existing.length; i++) {
+        await ctx.db.delete(existing[i]._id);
+      }
+    } else {
+      await ctx.db.insert("metricsSnapshots", snapshot);
+    }
   },
 });
 
@@ -906,8 +950,12 @@ export const processAppStoreSubscriberReport = internalMutation({
     const lines = tsv.trim().split(/\r?\n/);
     if (lines.length < 2) {
       console.log(`[App Store Subscriber ${date}] Empty TSV - no event data`);
-      return { renewals: 0, firstPayments: 0, cancellations: 0 };
+      return { renewals: 0, firstPayments: 0, cancellations: 0, revenueGross: 0, revenueNet: 0 };
     }
+
+    // Get app's preferred currency for conversion
+    const app = await ctx.db.get(appId);
+    const userCurrency = app?.currency || "USD";
 
     const headers = lines[0].split("\t").map((h) => h.trim().toLowerCase());
     console.log(`[App Store Subscriber ${date}] Headers:`, JSON.stringify(headers));
@@ -919,6 +967,14 @@ export const processAppStoreSubscriberReport = internalMutation({
     const eventDateIdx = idx(/event.*date/i);
     const quantityIdx = idx(/^quantity$/i);
     
+    // Look for REVENUE columns
+    const customerPriceIdx = idx(/customer\s*price/i);
+    const developerProceedsIdx = idx(/developer\s*proceeds/i);
+    const proceedsIdx = idx(/^proceeds$/i); // Fallback to just "proceeds"
+    
+    // Use developerProceedsIdx if available, otherwise try proceedsIdx
+    const netRevenueIdx = developerProceedsIdx >= 0 ? developerProceedsIdx : proceedsIdx;
+    
     // Fallback: If no "Event" column, try "proceeds reason" (older format)
     const proceedsReasonIdx = idx(/proceeds\s*reason/i);
     
@@ -927,7 +983,7 @@ export const processAppStoreSubscriberReport = internalMutation({
     if (eventColumnIdx < 0) {
       console.log(`[App Store Subscriber ${date}] No 'Event' or 'Proceeds Reason' column found - skipping`);
       console.log(`[App Store Subscriber ${date}] Available headers:`, headers.join(", "));
-      return { renewals: 0, firstPayments: 0, cancellations: 0 };
+      return { renewals: 0, firstPayments: 0, cancellations: 0, revenueGross: 0, revenueNet: 0 };
     }
 
     console.log(`[App Store Subscriber ${date}] Column indices:`, {
@@ -935,19 +991,60 @@ export const processAppStoreSubscriberReport = internalMutation({
       proceedsReason: proceedsReasonIdx,
       eventDate: eventDateIdx,
       quantity: quantityIdx,
+      customerPrice: customerPriceIdx,
+      developerProceeds: developerProceedsIdx,
+      proceeds: proceedsIdx,
       usingColumn: eventIdx >= 0 ? "Event" : "Proceeds Reason",
     });
 
     let renewals = 0;
     let firstPayments = 0;
     let cancellations = 0;
+    let revenueGross = 0;
+    let revenueNet = 0;
     const eventTypes: Record<string, number> = {};
     const sampleEvents: string[] = [];
+    let rowsProcessed = 0;
+    let rowsSkippedWrongDate = 0;
 
     for (let i = 1; i < lines.length; i++) {
       const cols = lines[i].split("\t");
       const eventValue = (cols[eventColumnIdx] || "").trim();
       const quantity = quantityIdx >= 0 ? Number(cols[quantityIdx] || 1) : 1;
+      
+      // Check if event date matches the target date (CRITICAL FIX!)
+      if (eventDateIdx >= 0) {
+        const eventDateStr = (cols[eventDateIdx] || "").trim();
+        // Event date might be in format "YYYY-MM-DD" or "MM/DD/YYYY" or other formats
+        // Extract YYYY-MM-DD if possible
+        let normalizedEventDate = eventDateStr;
+        if (eventDateStr.includes("/")) {
+          // Convert MM/DD/YYYY to YYYY-MM-DD
+          const parts = eventDateStr.split("/");
+          if (parts.length === 3) {
+            const month = parts[0].padStart(2, "0");
+            const day = parts[1].padStart(2, "0");
+            const year = parts[2];
+            normalizedEventDate = `${year}-${month}-${day}`;
+          }
+        }
+        
+        // Only process events that occurred on the target date
+        if (normalizedEventDate !== date) {
+          rowsSkippedWrongDate++;
+          continue; // Skip this row
+        }
+      }
+      
+      rowsProcessed++;
+      
+      // Extract revenue amounts for this row (Apple reports are in USD)
+      const rowGrossUSD = customerPriceIdx >= 0 ? Number(cols[customerPriceIdx] || 0) : 0;
+      const rowNetUSD = netRevenueIdx >= 0 ? Number(cols[netRevenueIdx] || 0) : (rowGrossUSD * 0.85); // Fallback: estimate 85% of gross
+      
+      // Convert to user's preferred currency
+      const rowGross = await convertAndRoundCurrency(ctx, rowGrossUSD, "USD", userCurrency);
+      const rowNet = await convertAndRoundCurrency(ctx, rowNetUSD, "USD", userCurrency);
       
       if (eventValue) {
         const eventLower = eventValue.toLowerCase();
@@ -958,12 +1055,19 @@ export const processAppStoreSubscriberReport = internalMutation({
           sampleEvents.push(eventValue);
         }
         
+        // Determine if this is a revenue-generating event (not a cancellation or refund)
+        const isRevenueEvent = !eventLower.includes("cancel") && !eventLower.includes("refund");
+        
         // Match renewal patterns
         if (eventLower === "renew" || 
             eventLower.includes("renewal") ||
             eventLower.includes("renewal from billing retry") ||
             eventLower.includes("rate after one year")) { // Higher revenue share after 1 year
           renewals += quantity;
+          if (isRevenueEvent) {
+            revenueGross += rowGross;
+            revenueNet += rowNet;
+          }
         } 
         // Match new subscription/first payment patterns
         else if (eventLower.includes("start introductory price") ||
@@ -973,21 +1077,39 @@ export const processAppStoreSubscriberReport = internalMutation({
                  eventLower.includes("new") || 
                  eventLower.includes("subscribe")) {
           firstPayments += quantity;
+          if (isRevenueEvent) {
+            revenueGross += rowGross;
+            revenueNet += rowNet;
+          }
         } 
-        // Match cancellation patterns
+        // Match cancellation/refund patterns (subtract revenue)
         else if (eventLower === "cancel" || 
                  eventLower.includes("canceled") ||
                  eventLower.includes("refund")) {
           cancellations += quantity;
+          // Refunds are negative revenue
+          revenueGross -= rowGross;
+          revenueNet -= rowNet;
         }
       }
     }
 
+    console.log(`[App Store Subscriber ${date}] ===== PROCESSING SUMMARY =====`);
+    console.log(`[App Store Subscriber ${date}] Total rows in report: ${lines.length - 1}`);
+    console.log(`[App Store Subscriber ${date}] Rows processed (matching date ${date}): ${rowsProcessed}`);
+    console.log(`[App Store Subscriber ${date}] Rows skipped (wrong date): ${rowsSkippedWrongDate}`);
     console.log(`[App Store Subscriber ${date}] Event values found (${Object.keys(eventTypes).length}):`, JSON.stringify(eventTypes));
     console.log(`[App Store Subscriber ${date}] Sample events:`, sampleEvents.join(", "));
-    console.log(`[App Store Subscriber ${date}] Renewals: ${renewals}, First Payments: ${firstPayments}, Cancellations: ${cancellations}`);
+    console.log(`[App Store Subscriber ${date}] Counts - Renewals: ${renewals}, First Payments: ${firstPayments}, Cancellations: ${cancellations}`);
+    console.log(`[App Store Subscriber ${date}] Revenue - Gross: ${revenueGross.toFixed(2)} ${userCurrency}, Net: ${revenueNet.toFixed(2)} ${userCurrency}`);
 
-    return { renewals, firstPayments, cancellations };
+    return { 
+      renewals, 
+      firstPayments, 
+      cancellations,
+      revenueGross,
+      revenueNet 
+    };
   },
 });
 
@@ -1064,10 +1186,14 @@ export const generateUnifiedHistoricalSnapshots = internalMutation({
           q.eq("appId", appId).eq("date", dateStr)
         )
         .filter((q) => q.eq(q.field("platform"), "unified"))
-        .first();
+        .collect();
 
-      if (existingUnified) {
-        await ctx.db.patch(existingUnified._id, unified);
+      if (existingUnified.length > 0) {
+        await ctx.db.patch(existingUnified[0]._id, unified);
+        // Clean up duplicates
+        for (let i = 1; i < existingUnified.length; i++) {
+          await ctx.db.delete(existingUnified[i]._id);
+        }
       } else {
         await ctx.db.insert("metricsSnapshots", unified);
       }
@@ -1113,10 +1239,16 @@ export const createAppStoreSnapshotFromPrevious = internalMutation({
       .query("metricsSnapshots")
       .withIndex("by_app_platform", (q) => q.eq("appId", appId).eq("platform", "appstore"))
       .filter((q) => q.eq(q.field("date"), date))
-      .first();
+      .collect();
 
-    if (existing) await ctx.db.patch(existing._id, snapshot);
-    else await ctx.db.insert("metricsSnapshots", snapshot);
+    if (existing.length > 0) {
+      await ctx.db.patch(existing[0]._id, snapshot);
+      for (let i = 1; i < existing.length; i++) {
+        await ctx.db.delete(existing[i]._id);
+      }
+    } else {
+      await ctx.db.insert("metricsSnapshots", snapshot);
+    }
   },
 });
 
@@ -1198,10 +1330,14 @@ export const processGooglePlayReports = internalMutation({
       .withIndex("by_app_platform", (q) => q.eq("appId", appId).eq("platform", "googleplay"))
       .collect();
     
-    const existingByDate = new Map(
-      existingSnapshots.map(s => [s.date, s])
-    );
-    console.log(`[Google Play] Found ${existingByDate.size} existing snapshots`);
+    // Group by date - keep array of all snapshots per date to handle duplicates
+    const existingByDate = new Map<string, any[]>();
+    for (const snap of existingSnapshots) {
+      const existing = existingByDate.get(snap.date) || [];
+      existing.push(snap);
+      existingByDate.set(snap.date, existing);
+    }
+    console.log(`[Google Play] Found ${existingSnapshots.length} existing snapshots (${existingByDate.size} unique dates)`);
 
     for (const date of Array.from(allDates).sort()) {
       const revenueData = revenueByDate?.[date];
@@ -1226,7 +1362,13 @@ export const processGooglePlayReports = internalMutation({
       const yearlySubscribers = subMetrics?.yearly || 0;
       const newSubscriptions = subMetrics?.newSubscriptions || 0;
       const canceledSubscriptions = subMetrics?.canceledSubscriptions || 0;
-      const renewals = subMetrics?.renewals || 0;
+      
+      // Calculate renewals: total transactions - new subscriptions
+      // (Every charged transaction is either a new subscription or a renewal)
+      const totalTransactions = revenueData?.transactions || 0;
+      const renewals = totalTransactions > newSubscriptions 
+        ? totalTransactions - newSubscriptions 
+        : (subMetrics?.renewals || 0);
 
       // Calculate MRR if we have active subscribers (rough estimate)
       // This is a placeholder - ideally we'd need pricing data
@@ -1260,11 +1402,15 @@ export const processGooglePlayReports = internalMutation({
       };
 
       // Check if snapshot already exists for this date (using pre-fetched map)
-      const existing = existingByDate.get(date);
+      const existingForDate = existingByDate.get(date);
 
-      if (existing) {
-        await ctx.db.patch(existing._id, snapshot);
+      if (existingForDate && existingForDate.length > 0) {
+        await ctx.db.patch(existingForDate[0]._id, snapshot);
         snapshotsUpdated++;
+        // Clean up any duplicates
+        for (let i = 1; i < existingForDate.length; i++) {
+          await ctx.db.delete(existingForDate[i]._id);
+        }
       } else {
         await ctx.db.insert("metricsSnapshots", snapshot);
         snapshotsCreated++;

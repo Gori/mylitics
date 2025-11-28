@@ -4,6 +4,7 @@ import { action } from "../_generated/server";
 import { v } from "convex/values";
 import { Storage } from "@google-cloud/storage";
 import { google } from "googleapis";
+import AdmZip from "adm-zip";
 
 // Types for different report data
 type RevenueData = {
@@ -114,23 +115,37 @@ export async function fetchGooglePlayFromGCS(
       prefix: gcsReportPrefix,
     });
 
-    // Filter for CSV files matching our package name
+    // Filter for CSV files matching our package name OR in special folders (earnings, sales)
+    const packageVariants = [
+      packageName.toLowerCase(),
+      packageName.toLowerCase().replace(/\./g, '_'),
+      packageName.toLowerCase().replace(/\./g, '')
+    ];
+    
+    // Filter for CSV files matching package name
     const csvFiles = allFiles.filter(file => {
       const name = file.name.toLowerCase();
-      const packageVariants = [
-        packageName.toLowerCase(),
-        packageName.toLowerCase().replace(/\./g, '_'),
-        packageName.toLowerCase().replace(/\./g, '')
-      ];
       return name.endsWith('.csv') && packageVariants.some(variant => name.includes(variant));
     });
+    
+    // Also get ZIP files from earnings/ and sales/ folders (they contain revenue CSVs)
+    const zipFiles = allFiles.filter(file => {
+      const path = file.name.toLowerCase();
+      const isEarnings = path.includes('earnings/') || path.startsWith('earnings/');
+      const isSales = path.includes('sales/') || path.startsWith('sales/');
+      return (isEarnings || isSales) && path.endsWith('.zip');
+    });
 
-    if (csvFiles.length === 0) {
+    if (csvFiles.length === 0 && zipFiles.length === 0) {
       console.warn(`[Google Play GCS] No reports found for ${packageName}`);
       return { revenueByDate, subscriptionMetricsByDate, discoveredReportTypes: Array.from(discoveredReportTypes) };
     }
 
-    console.log(`[Google Play GCS] Processing ${csvFiles.length} reports for ${packageName}`);
+    // Log breakdown of file types found
+    const earningsZipCount = zipFiles.filter(f => f.name.toLowerCase().includes('earnings/')).length;
+    const salesZipCount = zipFiles.filter(f => f.name.toLowerCase().includes('sales/')).length;
+    
+    console.log(`[Google Play GCS] Found ${csvFiles.length} CSV files (package match), ${zipFiles.length} ZIP files (${earningsZipCount} earnings, ${salesZipCount} sales)`);
 
     // Phase 2: Categorize files by path patterns
     const categorizedFiles: Record<ReportType, typeof csvFiles> = {
@@ -144,34 +159,44 @@ export async function fetchGooglePlayFromGCS(
       const name = file.name.toLowerCase();
       const path = file.name.toLowerCase();
       
-      // PRIORITY 1: Subscription metrics (check first, more specific)
-      if (
+      // Check folder patterns (with or without leading slash)
+      const isInEarnings = path.includes('earnings/') || path.startsWith('earnings/');
+      const isInSales = path.includes('sales/') || path.startsWith('sales/');
+      
+      // PRIORITY 1: Earnings folder (highest priority - contains actual revenue transactions)
+      if (isInEarnings) {
+        categorizedFiles.financial.push(file);
+      }
+      // PRIORITY 2: Sales folder (also revenue data)
+      else if (isInSales) {
+        categorizedFiles.financial.push(file);
+      }
+      // PRIORITY 3: Subscription stats (active subscriber counts)
+      else if (
         name.includes('subscription') ||
         name.includes('subscriber') ||
-        path.includes('/subscriptions/') ||
-        path.includes('/stats_subscriptions') ||
+        path.includes('subscriptions/') ||
+        path.includes('stats_subscriptions') ||
         path.includes('financial-stats/subscriptions')
       ) {
         categorizedFiles.subscription.push(file);
       }
-      // PRIORITY 2: Financial/earnings (revenue data)
+      // PRIORITY 4: Other financial files
       else if (
         name.includes('earning') || 
-        name.includes('sales') ||
-        name.includes('estimated') ||
-        path.includes('/earnings/')
+        name.includes('estimated')
       ) {
         categorizedFiles.financial.push(file);
       }
-      // PRIORITY 3: Statistics
+      // PRIORITY 5: Statistics
       else if (
         name.includes('statistic') ||
         name.includes('stats') ||
-        path.includes('/statistics/')
+        path.includes('statistics/')
       ) {
         categorizedFiles.statistics.push(file);
       }
-      // PRIORITY 4: Unknown
+      // PRIORITY 6: Unknown
       else {
         categorizedFiles.unknown.push(file);
       }
@@ -198,7 +223,7 @@ export async function fetchGooglePlayFromGCS(
       }
     }
 
-    // Process financial reports
+    // Process financial reports (CSV)
     for (const file of categorizedFiles.financial) {
       try {
         const [contents] = await file.download();
@@ -212,6 +237,45 @@ export async function fetchGooglePlayFromGCS(
       } catch (error) {
         console.error(`[Google Play GCS] Error processing ${file.name}:`, error);
       }
+    }
+
+    // Process ZIP files from earnings/ and sales/ folders
+    console.log(`[Google Play GCS] Processing ${zipFiles.length} ZIP files for financial data...`);
+    let zipProcessed = 0;
+    let zipErrors = 0;
+    
+    for (const file of zipFiles) {
+      try {
+        const [zipBuffer] = await file.download();
+        const zip = new AdmZip(zipBuffer);
+        const zipEntries = zip.getEntries();
+        
+        for (const entry of zipEntries) {
+          if (entry.entryName.toLowerCase().endsWith('.csv') && !entry.isDirectory) {
+            try {
+              const csvBuffer = entry.getData();
+              const csvContent = detectAndDecodeCSV(csvBuffer);
+              
+              const parsed = await parseFinancialReportCSV(csvContent, `${file.name}/${entry.entryName}`, startDate, endDate);
+              if (parsed) {
+                parsedReports.push(parsed);
+                discoveredReportTypes.add("financial");
+                zipProcessed++;
+              }
+            } catch (csvError) {
+              console.error(`[Google Play GCS] Error parsing CSV in ZIP ${file.name}/${entry.entryName}:`, csvError);
+              zipErrors++;
+            }
+          }
+        }
+      } catch (error) {
+        console.error(`[Google Play GCS] Error processing ZIP ${file.name}:`, error);
+        zipErrors++;
+      }
+    }
+    
+    if (zipFiles.length > 0) {
+      console.log(`[Google Play GCS] ZIP processing complete: ${zipProcessed} CSVs extracted, ${zipErrors} errors`);
     }
 
     // Phase 4: Merge all parsed data
@@ -420,6 +484,13 @@ async function parseSubscriptionReportCSV(
   }
 }
 
+// Extended type for financial reports with renewal tracking
+type FinancialReportData = {
+  revenueByDate: Record<string, RevenueData>;
+  renewalsByDate: Record<string, number>;
+  refundsByDate: Record<string, number>;
+};
+
 // Parse financial/earnings reports
 async function parseFinancialReportCSV(
   csvContent: string,
@@ -428,6 +499,8 @@ async function parseFinancialReportCSV(
   endDate?: number
 ): Promise<ParsedReport | null> {
   const revenueByDate: Record<string, RevenueData> = {};
+  const renewalsByDate: Record<string, number> = {};
+  const refundsByDate: Record<string, number> = {};
 
   try {
     const lines = csvContent.trim().split(/\r?\n/);
@@ -437,7 +510,11 @@ async function parseFinancialReportCSV(
     }
 
     const headers = lines[0].split(',').map(h => h.trim().toLowerCase().replace(/"/g, ''));
-    // Detect headers
+    
+    // Log headers once per unique file pattern (for debugging)
+    if (fileName.includes('earnings_202411') || fileName.includes('salesreport_202411')) {
+      console.log(`[Google Play Financial CSV] Headers in ${fileName}: ${headers.slice(0, 15).join(', ')}`);
+    }
 
     const findColumnIndex = (possibleNames: string[]): number => {
       return headers.findIndex(h => 
@@ -448,13 +525,17 @@ async function parseFinancialReportCSV(
     const dateIdx = findColumnIndex(['transaction date', 'order charged date', 'charged date', 'date', 'day']);
     const grossIdx = findColumnIndex(['amount (merchant currency)', 'charged amount', 'item price', 'gross']);
     const netIdx = findColumnIndex(['developer proceeds', 'payouts', 'earnings', 'net']);
-    const transactionTypeIdx = findColumnIndex(['transaction type', 'type', 'product type']);
-
+    const transactionTypeIdx = findColumnIndex(['transaction type', 'type', 'financial status']);
+    const descriptionIdx = findColumnIndex(['description', 'sku description', 'product title']);
+    const skuIdx = findColumnIndex(['sku id', 'product id', 'sku']);
 
     if (dateIdx < 0) {
       console.warn(`[Google Play Financial CSV] No date column found in ${fileName}`);
       return null;
     }
+
+    // Track unique transaction types for debugging
+    const transactionTypes = new Set<string>();
 
     // Parse data rows
     for (let i = 1; i < lines.length; i++) {
@@ -478,6 +559,18 @@ async function parseFinancialReportCSV(
         net = parseNumber(cols[netIdx]);
       }
 
+      // Get transaction type for renewal/refund detection
+      const transactionType = transactionTypeIdx >= 0 
+        ? (cols[transactionTypeIdx] || '').toLowerCase().trim().replace(/"/g, '')
+        : '';
+      const description = descriptionIdx >= 0 
+        ? (cols[descriptionIdx] || '').toLowerCase().trim().replace(/"/g, '')
+        : '';
+
+      if (transactionType) {
+        transactionTypes.add(transactionType);
+      }
+
       // Estimate missing value (Google takes ~15% cut)
       if (gross > 0 && net === 0) {
         net = gross * 0.85;
@@ -489,11 +582,37 @@ async function parseFinancialReportCSV(
         revenueByDate[date] = { gross: 0, net: 0, transactions: 0 };
       }
 
-      revenueByDate[date].gross += gross;
-      revenueByDate[date].net += net;
-      revenueByDate[date].transactions += 1;
+      // Only count positive charges as revenue (skip Google fees, taxes, etc.)
+      const isCharge = transactionType.includes('charge') && !transactionType.includes('refund');
+      const isRefund = transactionType.includes('refund');
+      const isGoogleFee = transactionType.includes('fee') || transactionType.includes('tax');
+
+      if (isRefund) {
+        // Track refunds separately
+        if (!refundsByDate[date]) refundsByDate[date] = 0;
+        refundsByDate[date] += 1;
+        // Refunds are typically negative, but ensure we subtract
+        revenueByDate[date].gross -= Math.abs(gross);
+        revenueByDate[date].net -= Math.abs(net);
+      } else if (!isGoogleFee && gross !== 0) {
+        revenueByDate[date].gross += gross;
+        revenueByDate[date].net += net;
+        revenueByDate[date].transactions += 1;
+
+        // Count as renewal if it's a subscription charge (renewals are charges on existing subscriptions)
+        // Note: Google Play doesn't distinguish new vs renewal in basic reports
+        // But every charge transaction is either a new sub or a renewal
+        if (isCharge || gross > 0) {
+          if (!renewalsByDate[date]) renewalsByDate[date] = 0;
+          renewalsByDate[date] += 1;
+        }
+      }
     }
 
+    // Log transaction types found (once per file pattern)
+    if ((fileName.includes('earnings_202411') || fileName.includes('salesreport_202411')) && transactionTypes.size > 0) {
+      console.log(`[Google Play Financial CSV] Transaction types found: ${Array.from(transactionTypes).join(', ')}`);
+    }
 
     return {
       type: "financial",

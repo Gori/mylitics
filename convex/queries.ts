@@ -71,10 +71,37 @@ export const getLatestMetrics = query({
       .take(100);
 
     // Get latest snapshot per platform for stock metrics
+    // For Google Play, find the most recent snapshot with actual subscription data
+    // (Google Play reports have ~2-3 day delay, so latest snapshot may have 0 subscribers)
     const latestByPlatform: Record<string, any> = {};
+    const latestWithSubsByPlatform: Record<string, any> = {};
+    
     for (const snap of recentSnapshots) {
       if (!latestByPlatform[snap.platform]) {
         latestByPlatform[snap.platform] = snap;
+      }
+      // Track the most recent snapshot with actual subscription data
+      if (!latestWithSubsByPlatform[snap.platform] && snap.activeSubscribers > 0) {
+        latestWithSubsByPlatform[snap.platform] = snap;
+      }
+    }
+    
+    // For Google Play, use subscription data from the most recent snapshot that has it
+    if (latestByPlatform.googleplay) {
+      const latest = latestByPlatform.googleplay;
+      const latestWithSubs = latestWithSubsByPlatform.googleplay;
+      
+      // If latest has 0 subscribers but we have older data with subscribers, use that
+      if (latest.activeSubscribers === 0 && latestWithSubs && latestWithSubs.activeSubscribers > 0) {
+        latestByPlatform.googleplay = {
+          ...latest,
+          activeSubscribers: latestWithSubs.activeSubscribers,
+          trialSubscribers: latestWithSubs.trialSubscribers,
+          paidSubscribers: latestWithSubs.paidSubscribers,
+          monthlySubscribers: latestWithSubs.monthlySubscribers,
+          yearlySubscribers: latestWithSubs.yearlySubscribers,
+          mrr: latestWithSubs.mrr,
+        };
       }
     }
 
@@ -302,6 +329,18 @@ export const getWeeklyMetricsHistory = query({
       weeklyData[weekKey][snap.platform] = entry;
     }
 
+    // Stock metrics that should show null (line stops) when value is 0 for Google Play
+    // These are subscription counts that come from delayed reports
+    const stockMetrics = [
+      "activeSubscribers",
+      "trialSubscribers", 
+      "paidSubscribers",
+      "monthlySubscribers",
+      "yearlySubscribers",
+      "mrr",
+    ];
+    const isStockMetric = stockMetrics.includes(metric);
+
     // Convert to array, filter incomplete weeks, and sort by date
     const result = Object.entries(weeklyData)
       .map(([week, platforms]) => {
@@ -313,8 +352,15 @@ export const getWeeklyMetricsHistory = query({
         // Return null if platform has no data for this week (so chart line stops instead of dropping to 0)
         const val = (p?: { sum: number; last: number; lastDate: string }) => (p ? (isFlowMetric ? p.sum : p.last) : null);
         const appstore = val((platforms as any).appstore);
-        const googleplay = val((platforms as any).googleplay);
+        let googleplay = val((platforms as any).googleplay);
         const stripe = val((platforms as any).stripe);
+        
+        // For Google Play stock metrics, treat 0 as null (no data) so line stops
+        // Google Play subscription reports have delays, so 0 means no data, not zero subscribers
+        if (isStockMetric && googleplay === 0) {
+          googleplay = null;
+        }
+        
         // Round currency values to 2 decimals
         const isCurrencyMetric = ["mrr", "weeklyRevenue", "monthlyRevenueGross", "monthlyRevenueNet"].includes(metric);
         // Sum only platforms that have data (null values are excluded)
@@ -342,6 +388,118 @@ export const getWeeklyMetricsHistory = query({
       })
       .sort((a, b) => a.week.localeCompare(b.week))
       .slice(-52); // Keep last 52 weeks
+
+    return result;
+  },
+});
+
+export const getMonthlyMetricsHistory = query({
+  args: {
+    appId: v.id("apps"),
+    metric: v.string(),
+  },
+  handler: async (ctx, { appId, metric }) => {
+    await validateAppOwnership(ctx, appId);
+
+    const oneYearAgo = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+    
+    const allSnapshots = await ctx.db
+      .query("metricsSnapshots")
+      .withIndex("by_app_date", (q) => q.eq("appId", appId))
+      .filter((q) => q.gte(q.field("date"), oneYearAgo))
+      .collect();
+    
+    const platformsWithData = new Set(
+      allSnapshots
+        .filter((s) => s.platform !== "unified")
+        .map((s) => s.platform)
+    );
+    
+    const activePlatforms = platformsWithData;
+    
+    const flowMetrics = [
+      "cancellations",
+      "churn",
+      "graceEvents",
+      "firstPayments",
+      "renewals",
+      "weeklyRevenue",
+      "monthlyRevenueGross",
+      "monthlyRevenueNet",
+    ];
+    const isFlowMetric = flowMetrics.includes(metric);
+
+    const snapshots = allSnapshots;
+
+    // Group by month (YYYY-MM) and platform
+    const monthlyData: Record<string, Record<string, { sum: number; last: number; lastDate: string }>> = {};
+    
+    for (const snap of snapshots) {
+      if (snap.platform === "unified") continue;
+
+      // Extract YYYY-MM from date
+      const monthKey = snap.date.substring(0, 7);
+      
+      if (!monthlyData[monthKey]) monthlyData[monthKey] = {} as any;
+      const value = (snap as any)[metric] || 0;
+      const entry = monthlyData[monthKey][snap.platform] || { sum: 0, last: 0, lastDate: "" };
+      entry.sum += value;
+      if (snap.date >= entry.lastDate) {
+        entry.last = value;
+        entry.lastDate = snap.date;
+      }
+      monthlyData[monthKey][snap.platform] = entry;
+    }
+
+    const stockMetrics = [
+      "activeSubscribers",
+      "trialSubscribers", 
+      "paidSubscribers",
+      "monthlySubscribers",
+      "yearlySubscribers",
+      "mrr",
+    ];
+    const isStockMetric = stockMetrics.includes(metric);
+
+    const result = Object.entries(monthlyData)
+      .map(([month, platforms]) => {
+        const platformsInMonth = new Set(Object.keys(platforms));
+        const hasAllPlatforms = Array.from(activePlatforms).every((p) => platformsInMonth.has(p));
+        
+        const val = (p?: { sum: number; last: number; lastDate: string }) => (p ? (isFlowMetric ? p.sum : p.last) : null);
+        const appstore = val((platforms as any).appstore);
+        let googleplay = val((platforms as any).googleplay);
+        const stripe = val((platforms as any).stripe);
+        
+        if (isStockMetric && googleplay === 0) {
+          googleplay = null;
+        }
+        
+        const isCurrencyMetric = ["mrr", "weeklyRevenue", "monthlyRevenueGross", "monthlyRevenueNet"].includes(metric);
+        const sum = (appstore ?? 0) + (googleplay ?? 0) + (stripe ?? 0);
+        const unified = isCurrencyMetric 
+          ? Math.round((sum + Number.EPSILON) * 100) / 100
+          : sum;
+        return {
+          month,
+          appstore,
+          googleplay,
+          stripe,
+          unified,
+          hasAllPlatforms,
+        };
+      })
+      .map((m) => {
+        // Check if month is incomplete: current month or missing platforms
+        const now = new Date();
+        const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+        const isCurrentMonth = m.month === currentMonth;
+        const isIncomplete = !m.hasAllPlatforms || isCurrentMonth;
+        
+        return { ...m, isIncomplete };
+      })
+      .sort((a, b) => a.month.localeCompare(b.month))
+      .slice(-12); // Keep last 12 months
 
     return result;
   },
@@ -452,9 +610,32 @@ export const getAllDebugData = query({
 
     // Get latest snapshot per platform for stock metrics
     const latestByPlatform: Record<string, any> = {};
+    const latestWithSubsByPlatform: Record<string, any> = {};
+    
     for (const snap of recentSnapshots) {
       if (!latestByPlatform[snap.platform]) {
         latestByPlatform[snap.platform] = snap;
+      }
+      if (!latestWithSubsByPlatform[snap.platform] && snap.activeSubscribers > 0) {
+        latestWithSubsByPlatform[snap.platform] = snap;
+      }
+    }
+    
+    // For Google Play, prefer the snapshot with actual subscription data for stock metrics
+    if (latestByPlatform.googleplay && latestWithSubsByPlatform.googleplay) {
+      const latest = latestByPlatform.googleplay;
+      const latestWithSubs = latestWithSubsByPlatform.googleplay;
+      
+      if (latest.activeSubscribers === 0 && latestWithSubs.activeSubscribers > 0) {
+        latestByPlatform.googleplay = {
+          ...latest,
+          activeSubscribers: latestWithSubs.activeSubscribers,
+          trialSubscribers: latestWithSubs.trialSubscribers,
+          paidSubscribers: latestWithSubs.paidSubscribers,
+          monthlySubscribers: latestWithSubs.monthlySubscribers,
+          yearlySubscribers: latestWithSubs.yearlySubscribers,
+          mrr: latestWithSubs.mrr,
+        };
       }
     }
 
@@ -514,6 +695,17 @@ export const getAllDebugData = query({
         weeklyData[weekKey][snap.platform] = entry;
       }
 
+      // Stock metrics that should show null when value is 0 for Google Play
+      const stockMetrics = [
+        "activeSubscribers",
+        "trialSubscribers", 
+        "paidSubscribers",
+        "monthlySubscribers",
+        "yearlySubscribers",
+        "mrr",
+      ];
+      const isStockMetric = stockMetrics.includes(metric);
+
       const result = Object.entries(weeklyData)
         .map(([week, platforms]) => {
           // Check if all active platforms have data for this week
@@ -524,8 +716,14 @@ export const getAllDebugData = query({
           // Return null if platform has no data for this week (consistent with getWeeklyMetricsHistory)
           const val = (p?: { sum: number; last: number; lastDate: string }) => (p ? (isFlowMetric ? p.sum : p.last) : null);
           const appstore = val((platforms as any).appstore);
-          const googleplay = val((platforms as any).googleplay);
+          let googleplay = val((platforms as any).googleplay);
           const stripe = val((platforms as any).stripe);
+          
+          // For Google Play stock metrics, treat 0 as null (no data) so line stops
+          if (isStockMetric && googleplay === 0) {
+            googleplay = null;
+          }
+          
           // Sum only platforms that have data (null values are excluded)
           const sum = (appstore ?? 0) + (googleplay ?? 0) + (stripe ?? 0);
           const unified = sum;
@@ -575,9 +773,33 @@ export const getChatContext = query({
 
     // Group by platform and get the most recent for each
     const latestByPlatform: Record<string, any> = {};
+    const latestWithSubsByPlatform: Record<string, any> = {};
+    
     for (const snap of allLatestSnapshots) {
       if (!latestByPlatform[snap.platform]) {
         latestByPlatform[snap.platform] = snap;
+      }
+      // Track the most recent snapshot with actual subscription data
+      if (!latestWithSubsByPlatform[snap.platform] && snap.activeSubscribers > 0) {
+        latestWithSubsByPlatform[snap.platform] = snap;
+      }
+    }
+    
+    // For Google Play, prefer the snapshot with actual subscription data for stock metrics
+    if (latestByPlatform.googleplay && latestWithSubsByPlatform.googleplay) {
+      const latest = latestByPlatform.googleplay;
+      const latestWithSubs = latestWithSubsByPlatform.googleplay;
+      
+      if (latest.activeSubscribers === 0 && latestWithSubs.activeSubscribers > 0) {
+        latestByPlatform.googleplay = {
+          ...latest,
+          activeSubscribers: latestWithSubs.activeSubscribers,
+          trialSubscribers: latestWithSubs.trialSubscribers,
+          paidSubscribers: latestWithSubs.paidSubscribers,
+          monthlySubscribers: latestWithSubs.monthlySubscribers,
+          yearlySubscribers: latestWithSubs.yearlySubscribers,
+          mrr: latestWithSubs.mrr,
+        };
       }
     }
 
@@ -650,13 +872,30 @@ export const getChatContext = query({
         weeklyDataMap[weekKey][snap.platform] = entry;
       }
 
+      // Stock metrics that should show null when value is 0 for Google Play
+      const stockMetrics = [
+        "activeSubscribers",
+        "trialSubscribers", 
+        "paidSubscribers",
+        "monthlySubscribers",
+        "yearlySubscribers",
+        "mrr",
+      ];
+      const isStockMetric = stockMetrics.includes(metric);
+
       const result = Object.entries(weeklyDataMap)
         .map(([week, platforms]) => {
           const val = (p?: { sum: number; last: number; lastDate: string }) => (p ? (isFlowMetric ? p.sum : p.last) : 0);
           const appstore = val((platforms as any).appstore);
-          const googleplay = val((platforms as any).googleplay);
+          let googleplay: number | null = val((platforms as any).googleplay);
           const stripe = val((platforms as any).stripe);
-          const unified = appstore + googleplay + stripe;
+          
+          // For Google Play stock metrics, treat 0 as null (no data)
+          if (isStockMetric && googleplay === 0) {
+            googleplay = null;
+          }
+          
+          const unified = appstore + (googleplay ?? 0) + stripe;
           return { week, appstore, googleplay, stripe, unified };
         })
         .sort((a, b) => a.week.localeCompare(b.week))
@@ -684,6 +923,188 @@ export const getChatContext = query({
         monthlyRevenueGross: "Total revenue before fees",
         monthlyRevenueNet: "Revenue after platform fees",
       },
+    };
+  },
+});
+
+export const debugRevenueCalculation = query({
+  args: { appId: v.id("apps") },
+  handler: async (ctx, { appId }) => {
+    await validateAppOwnership(ctx, appId);
+
+    const now = Date.now();
+    const thirtyDaysAgo = new Date(now - 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+    const today = new Date(now).toISOString().split("T")[0];
+
+    // Get all snapshots for the past 30 days
+    const snapshots = await ctx.db
+      .query("metricsSnapshots")
+      .withIndex("by_app_date", (q) => q.eq("appId", appId))
+      .filter((q) => q.gte(q.field("date"), thirtyDaysAgo))
+      .collect();
+
+    // Get all revenue events for the past 30 days (all platforms)
+    const allRevenueEvents = await ctx.db
+      .query("revenueEvents")
+      .withIndex("by_app_platform", (q) => q.eq("appId", appId))
+      .filter((q) => q.gte(q.field("timestamp"), new Date(thirtyDaysAgo).getTime()))
+      .collect();
+
+    const stripeEvents = allRevenueEvents.filter(e => e.platform === "stripe");
+    const appstoreEvents = allRevenueEvents.filter(e => e.platform === "appstore");
+    const googleplayEvents = allRevenueEvents.filter(e => e.platform === "googleplay");
+
+    // Group snapshots by date and platform
+    const snapshotsByDate: Record<string, any[]> = {};
+    for (const snap of snapshots) {
+      if (!snapshotsByDate[snap.date]) {
+        snapshotsByDate[snap.date] = [];
+      }
+      snapshotsByDate[snap.date].push({
+        platform: snap.platform,
+        monthlyRevenueGross: snap.monthlyRevenueGross,
+        monthlyRevenueNet: snap.monthlyRevenueNet,
+        firstPayments: snap.firstPayments,
+        renewals: snap.renewals,
+      });
+    }
+
+    // Group revenue events by date and platform
+    const eventsByDate: Record<string, any[]> = {};
+    for (const event of allRevenueEvents) {
+      const date = new Date(event.timestamp).toISOString().split("T")[0];
+      const key = `${date}_${event.platform}`;
+      if (!eventsByDate[key]) {
+        eventsByDate[key] = [];
+      }
+      eventsByDate[key].push({
+        platform: event.platform,
+        eventType: event.eventType,
+        amount: event.amount,
+        currency: event.currency,
+        timestamp: event.timestamp,
+      });
+    }
+
+    // Check for duplicate snapshots (same date + platform)
+    const snapshotsByDatePlatform: Record<string, number> = {};
+    const duplicates: Array<{date: string, platform: string, count: number}> = [];
+    
+    for (const snap of snapshots) {
+      const key = `${snap.date}_${snap.platform}`;
+      snapshotsByDatePlatform[key] = (snapshotsByDatePlatform[key] || 0) + 1;
+    }
+    
+    for (const [key, count] of Object.entries(snapshotsByDatePlatform)) {
+      if (count > 1) {
+        const [date, platform] = key.split('_');
+        duplicates.push({ date, platform, count });
+      }
+    }
+
+    // Calculate totals from snapshots
+    const snapshotTotals = {
+      stripe: { gross: 0, net: 0, count: 0 },
+      appstore: { gross: 0, net: 0, count: 0 },
+      googleplay: { gross: 0, net: 0, count: 0 },
+      unified: { gross: 0, net: 0, count: 0 },
+    };
+
+    for (const snap of snapshots) {
+      if (snap.platform === "stripe" || snap.platform === "appstore" || snap.platform === "googleplay") {
+        snapshotTotals[snap.platform].gross += snap.monthlyRevenueGross;
+        snapshotTotals[snap.platform].net += snap.monthlyRevenueNet;
+        snapshotTotals[snap.platform].count += 1;
+      }
+      if (snap.platform === "unified") {
+        snapshotTotals.unified.gross += snap.monthlyRevenueGross;
+        snapshotTotals.unified.net += snap.monthlyRevenueNet;
+        snapshotTotals.unified.count += 1;
+      }
+    }
+
+    // Calculate totals from raw revenue events by platform
+    const eventTotals = {
+      stripe: {
+        total: 0,
+        byType: { first_payment: 0, renewal: 0, refund: 0 },
+        count: stripeEvents.length,
+      },
+      appstore: {
+        total: 0,
+        byType: { first_payment: 0, renewal: 0, refund: 0 },
+        count: appstoreEvents.length,
+      },
+      googleplay: {
+        total: 0,
+        byType: { first_payment: 0, renewal: 0, refund: 0 },
+        count: googleplayEvents.length,
+      },
+    };
+
+    for (const event of stripeEvents) {
+      eventTotals.stripe.total += event.amount;
+      eventTotals.stripe.byType[event.eventType] += event.amount;
+    }
+    
+    for (const event of appstoreEvents) {
+      eventTotals.appstore.total += event.amount;
+      eventTotals.appstore.byType[event.eventType] += event.amount;
+    }
+    
+    for (const event of googleplayEvents) {
+      eventTotals.googleplay.total += event.amount;
+      eventTotals.googleplay.byType[event.eventType] += event.amount;
+    }
+
+    return {
+      dateRange: { start: thirtyDaysAgo, end: today },
+      snapshotCount: snapshots.length,
+      revenueEventCount: allRevenueEvents.length,
+      duplicates,
+      hasDuplicates: duplicates.length > 0,
+      snapshotTotals,
+      eventTotals,
+      snapshotsByDate: Object.entries(snapshotsByDate)
+        .sort(([a], [b]) => b.localeCompare(a))
+        .slice(0, 10), // Last 10 days
+      eventsByDate: Object.entries(eventsByDate)
+        .sort(([a], [b]) => b.localeCompare(a))
+        .slice(0, 10), // Last 10 days
+      sampleSnapshotsStripe: snapshots
+        .filter((s) => s.platform === "stripe")
+        .sort((a, b) => b.date.localeCompare(a.date))
+        .slice(0, 5)
+        .map((s) => ({
+          date: s.date,
+          platform: s.platform,
+          monthlyRevenueGross: s.monthlyRevenueGross,
+          monthlyRevenueNet: s.monthlyRevenueNet,
+          firstPayments: s.firstPayments,
+          renewals: s.renewals,
+        })),
+      sampleSnapshotsAppStore: snapshots
+        .filter((s) => s.platform === "appstore")
+        .sort((a, b) => b.date.localeCompare(a.date))
+        .slice(0, 5)
+        .map((s) => ({
+          date: s.date,
+          platform: s.platform,
+          monthlyRevenueGross: s.monthlyRevenueGross,
+          monthlyRevenueNet: s.monthlyRevenueNet,
+          firstPayments: s.firstPayments,
+          renewals: s.renewals,
+        })),
+      sampleEvents: allRevenueEvents
+        .sort((a, b) => b.timestamp - a.timestamp)
+        .slice(0, 10)
+        .map((e) => ({
+          date: new Date(e.timestamp).toISOString().split("T")[0],
+          platform: e.platform,
+          eventType: e.eventType,
+          amount: e.amount,
+          currency: e.currency,
+        })),
     };
   },
 });

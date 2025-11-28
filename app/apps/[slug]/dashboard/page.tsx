@@ -24,15 +24,22 @@ export default function DashboardPage() {
   const metrics = useQuery(api.queries.getLatestMetrics, { appId });
   const userPreferences = useQuery(api.queries.getUserPreferences, { appId });
   const debugData = useQuery(api.queries.getAllDebugData, { appId });
+  const debugRevenue = useQuery(api.queries.debugRevenueCalculation, { appId });
   const logs = useQuery(api.queries.getSyncLogs, { appId, limit: 50 });
   const activeSyncStatus = useQuery(api.syncHelpers.getActiveSyncStatus, { appId });
   const chatContext = useQuery(api.queries.getChatContext, { appId });
   const triggerSync = useMutation(api.syncHelpers.triggerSync);
   const cancelSync = useMutation(api.syncHelpers.cancelSync);
   const triggerExchangeRates = useMutation(api.syncHelpers.triggerExchangeRatesFetch);
+  const cleanupDuplicates = useMutation(api.mutations.cleanupDuplicateSnapshots);
+  const fixAppStoreRevenue = useMutation(api.mutations.fixAppStoreRevenue);
   const [syncing, setSyncing] = useState(false);
   const [fetchingRates, setFetchingRates] = useState(false);
+  const [cleaningUp, setCleaningUp] = useState(false);
+  const [fixingAppStore, setFixingAppStore] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
+  const [cleanupResult, setCleanupResult] = useState<any>(null);
+  const [appStoreFixResult, setAppStoreFixResult] = useState<any>(null);
 
   // Monitor logs for sync completion or cancellation
   useEffect(() => {
@@ -80,6 +87,34 @@ export default function DashboardPage() {
       await new Promise(resolve => setTimeout(resolve, 2000));
     } finally {
       setFetchingRates(false);
+    }
+  };
+
+  const handleCleanupDuplicates = async () => {
+    setCleaningUp(true);
+    setCleanupResult(null);
+    try {
+      const result = await cleanupDuplicates({ appId });
+      setCleanupResult(result);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    } catch (error: any) {
+      setCleanupResult({ error: error.message });
+    } finally {
+      setCleaningUp(false);
+    }
+  };
+
+  const handleFixAppStoreRevenue = async () => {
+    setFixingAppStore(true);
+    setAppStoreFixResult(null);
+    try {
+      const result = await fixAppStoreRevenue({ appId });
+      setAppStoreFixResult(result);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    } catch (error: any) {
+      setAppStoreFixResult({ error: error.message });
+    } finally {
+      setFixingAppStore(false);
     }
   };
 
@@ -433,6 +468,183 @@ export default function DashboardPage() {
                 Settings
               </Button>
             </div>
+
+            {debugRevenue && (
+              <div className="mt-12">
+                <h2 className="text-xl font-semibold mb-4">Debug: Revenue Calculation (30 Days)</h2>
+                {debugRevenue.hasDuplicates && (
+                  <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded">
+                    <h3 className="font-semibold text-red-800 mb-2">⚠️ Duplicate Snapshots Detected!</h3>
+                    <p className="text-sm text-red-700 mb-2">Found {debugRevenue.duplicates.length} dates with duplicate snapshots. This will cause revenue to be counted multiple times.</p>
+                    <div className="text-sm font-mono space-y-1 mb-3">
+                      {debugRevenue.duplicates.slice(0, 10).map((dup: any, idx: number) => (
+                        <div key={idx}>
+                          {dup.date} ({dup.platform}): {dup.count} snapshots
+                        </div>
+                      ))}
+                      {debugRevenue.duplicates.length > 10 && (
+                        <div className="text-gray-600">...and {debugRevenue.duplicates.length - 10} more</div>
+                      )}
+                    </div>
+                    <Button
+                      onClick={handleCleanupDuplicates}
+                      disabled={cleaningUp}
+                      variant="destructive"
+                      size="sm"
+                    >
+                      {cleaningUp ? "Cleaning..." : "Fix: Remove Duplicates"}
+                    </Button>
+                    {cleanupResult && (
+                      <div className={`mt-2 p-2 rounded text-sm ${cleanupResult.error ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'}`}>
+                        {cleanupResult.error ? (
+                          `Error: ${cleanupResult.error}`
+                        ) : (
+                          `✓ Deleted ${cleanupResult.duplicatesDeleted} duplicate snapshots. Refresh the page to see updated metrics.`
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {debugRevenue.snapshotTotals.appstore.gross > 0 && (
+                  <div className="mb-4 p-4 bg-yellow-50 border border-yellow-200 rounded">
+                    <h3 className="font-semibold text-yellow-800 mb-2">⚠️ Incorrect App Store Revenue Detected!</h3>
+                    <p className="text-sm text-yellow-700 mb-2">
+                      App Store shows NOK {formatCurrency(debugRevenue.snapshotTotals.appstore.net)} revenue, but App Store SUMMARY reports don't contain actual transaction data. 
+                      This is incorrectly calculated cumulative subscription values, not daily revenue.
+                    </p>
+                    <Button
+                      onClick={handleFixAppStoreRevenue}
+                      disabled={fixingAppStore}
+                      variant="default"
+                      size="sm"
+                    >
+                      {fixingAppStore ? "Fixing..." : "Fix: Reset App Store Revenue to 0"}
+                    </Button>
+                    {appStoreFixResult && (
+                      <div className={`mt-2 p-2 rounded text-sm ${appStoreFixResult.error ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'}`}>
+                        {appStoreFixResult.error ? (
+                          `Error: ${appStoreFixResult.error}`
+                        ) : (
+                          `✓ Fixed ${appStoreFixResult.snapshotsFixed} App Store snapshots. Removed ${formatCurrency(appStoreFixResult.totalRevenueRemoved)} in incorrect revenue. Refresh to see updated metrics.`
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+                <div className="border border-gray-200 rounded p-4 bg-white space-y-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <h3 className="font-semibold mb-2">Snapshot Totals (Sum of 30 days)</h3>
+                      <div className="text-sm space-y-1 font-mono">
+                        <div>Stripe: {debugRevenue.snapshotTotals.stripe.count} snapshots</div>
+                        <div>Stripe Gross: {formatCurrency(debugRevenue.snapshotTotals.stripe.gross)}</div>
+                        <div>Stripe Net: {formatCurrency(debugRevenue.snapshotTotals.stripe.net)}</div>
+                        <div className="mt-2">App Store: {debugRevenue.snapshotTotals.appstore.count} snapshots</div>
+                        <div>App Store Gross: {formatCurrency(debugRevenue.snapshotTotals.appstore.gross)}</div>
+                        <div>App Store Net: {formatCurrency(debugRevenue.snapshotTotals.appstore.net)}</div>
+                        <div className="font-bold mt-2">Total Net: {formatCurrency(debugRevenue.snapshotTotals.stripe.net + debugRevenue.snapshotTotals.appstore.net)}</div>
+                        <div className="text-xs text-gray-600 mt-2">Expected: ~30 snapshots per platform for 30 days</div>
+                      </div>
+                    </div>
+                    <div>
+                      <h3 className="font-semibold mb-2">Raw Event Totals (30 Days)</h3>
+                      <div className="text-sm space-y-1 font-mono">
+                        <div className="font-semibold">Stripe ({debugRevenue.eventTotals.stripe.count} events):</div>
+                        <div className="ml-2">Total: {formatCurrency(debugRevenue.eventTotals.stripe.total)}</div>
+                        <div className="ml-2">First: {formatCurrency(debugRevenue.eventTotals.stripe.byType.first_payment)} | Renewals: {formatCurrency(debugRevenue.eventTotals.stripe.byType.renewal)}</div>
+                        
+                        <div className="font-semibold mt-2">App Store ({debugRevenue.eventTotals.appstore.count} events):</div>
+                        <div className="ml-2">Total: {formatCurrency(debugRevenue.eventTotals.appstore.total)}</div>
+                        <div className="ml-2">First: {formatCurrency(debugRevenue.eventTotals.appstore.byType.first_payment)} | Renewals: {formatCurrency(debugRevenue.eventTotals.appstore.byType.renewal)}</div>
+                        
+                        {debugRevenue.eventTotals.googleplay.count > 0 && (
+                          <>
+                            <div className="font-semibold mt-2">Google Play ({debugRevenue.eventTotals.googleplay.count} events):</div>
+                            <div className="ml-2">Total: {formatCurrency(debugRevenue.eventTotals.googleplay.total)}</div>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <h3 className="font-semibold mb-2">Recent Snapshots - Stripe (Last 5 Days)</h3>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead className="bg-gray-50">
+                            <tr>
+                              <th className="px-2 py-1 text-left">Date</th>
+                              <th className="px-2 py-1 text-right">Gross</th>
+                              <th className="px-2 py-1 text-right">Net</th>
+                            </tr>
+                          </thead>
+                          <tbody className="font-mono">
+                            {debugRevenue.sampleSnapshotsStripe.map((snap: any) => (
+                              <tr key={snap.date} className="border-t">
+                                <td className="px-2 py-1">{snap.date}</td>
+                                <td className="px-2 py-1 text-right">{formatCurrency(snap.monthlyRevenueGross)}</td>
+                                <td className="px-2 py-1 text-right">{formatCurrency(snap.monthlyRevenueNet)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                    
+                    <div>
+                      <h3 className="font-semibold mb-2">Recent Snapshots - App Store (Last 5 Days)</h3>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead className="bg-gray-50">
+                            <tr>
+                              <th className="px-2 py-1 text-left">Date</th>
+                              <th className="px-2 py-1 text-right">Gross</th>
+                              <th className="px-2 py-1 text-right">Net</th>
+                            </tr>
+                          </thead>
+                          <tbody className="font-mono">
+                            {debugRevenue.sampleSnapshotsAppStore.map((snap: any) => (
+                              <tr key={snap.date} className="border-t">
+                                <td className="px-2 py-1">{snap.date}</td>
+                                <td className="px-2 py-1 text-right">{formatCurrency(snap.monthlyRevenueGross)}</td>
+                                <td className="px-2 py-1 text-right">{formatCurrency(snap.monthlyRevenueNet)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <h3 className="font-semibold mb-2">Recent Revenue Events (Last 10)</h3>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead className="bg-gray-50">
+                          <tr>
+                            <th className="px-2 py-1 text-left">Date</th>
+                            <th className="px-2 py-1 text-left">Platform</th>
+                            <th className="px-2 py-1 text-left">Type</th>
+                            <th className="px-2 py-1 text-right">Amount</th>
+                          </tr>
+                        </thead>
+                        <tbody className="font-mono">
+                          {debugRevenue.sampleEvents.map((event: any, idx: number) => (
+                            <tr key={idx} className="border-t">
+                              <td className="px-2 py-1">{event.date}</td>
+                              <td className="px-2 py-1">{event.platform}</td>
+                              <td className="px-2 py-1">{event.eventType}</td>
+                              <td className="px-2 py-1 text-right">{formatCurrency(event.amount)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
 
             <div className="mt-12">
               <h2 className="text-xl font-semibold mb-4">Debug: All Metrics Data</h2>

@@ -326,3 +326,37 @@ export const getActiveSyncStatus = query({
   },
 });
 
+// Get Google Play connection credentials for debugging
+export const getGooglePlayCredentials = query({
+  args: {
+    appId: v.id("apps"),
+  },
+  handler: async (ctx, { appId }) => {
+    const userId = await getUserId(ctx);
+    if (!userId) throw new Error("Not authenticated");
+
+    const app = await ctx.db.get(appId);
+    if (!app || app.userId !== userId) {
+      throw new Error("Not authorized");
+    }
+
+    const connection = await ctx.db
+      .query("platformConnections")
+      .withIndex("by_app", (q) => q.eq("appId", appId))
+      .filter((q) => q.eq(q.field("platform"), "googleplay"))
+      .first();
+
+    if (!connection) {
+      return null;
+    }
+
+    const credentials = JSON.parse(connection.credentials);
+    return {
+      gcsBucketName: credentials.gcsBucketName,
+      gcsReportPrefix: credentials.gcsReportPrefix || "",
+      packageName: credentials.packageName,
+      // Don't expose the service account JSON
+    };
+  },
+});
+

@@ -32,7 +32,7 @@ export const syncAllPlatforms = action({
       );
 
     if (platform) {
-      connections = connections.filter((c) => c.platform === platform);
+      connections = connections.filter((c: { platform: string }) => c.platform === platform);
     }
 
     await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
@@ -658,7 +658,7 @@ export const syncAllPlatforms = action({
                       date: dateStr,
                       tsv: subscriberRes.tsv,
                     });
-                    console.log(`[Sync] SUBSCRIBER report for ${dateStr}: renewals=${eventData?.renewals || 0}, firstPayments=${eventData?.firstPayments || 0}`);
+                    console.log(`[Sync] SUBSCRIBER report for ${dateStr}: renewals=${eventData?.renewals || 0}, firstPayments=${eventData?.firstPayments || 0}, revenueGross=${eventData?.revenueGross?.toFixed(2) || '0.00'}, revenueNet=${eventData?.revenueNet?.toFixed(2) || '0.00'}`);
                   } else {
                     console.log(`[Sync] SUBSCRIBER report for ${dateStr}: FAILED - HTTP ${subscriberRes.status}`);
                   }
@@ -817,5 +817,117 @@ export const syncAllApps = action({
     }
 
     return { success: true, appsProcessed: apps.length };
+  },
+});
+
+// Debug action to list GCS bucket contents
+export const debugGCSBucket = action({
+  args: {
+    appId: v.id("apps"),
+  },
+  handler: async (ctx, { appId }): Promise<Record<string, unknown>> => {
+    // Get Google Play connection
+    const connections = await ctx.runQuery(internal.syncHelpers.getPlatformConnections, { appId });
+    const gpConnection = connections.find((c: { platform: string }) => c.platform === "googleplay");
+    
+    if (!gpConnection) {
+      return { error: "No Google Play connection found" };
+    }
+
+    const credentials = JSON.parse(gpConnection.credentials);
+    const { serviceAccountJson, packageName, gcsBucketName, gcsReportPrefix } = credentials;
+
+    if (!gcsBucketName) {
+      return { error: "No GCS bucket configured" };
+    }
+
+    // Import GCS Storage and list files directly
+    const { Storage } = await import("@google-cloud/storage");
+    const storage = new Storage({ credentials: JSON.parse(serviceAccountJson) });
+
+    try {
+      const [allFiles] = await storage.bucket(gcsBucketName).getFiles({
+        prefix: gcsReportPrefix || "",
+      });
+
+      // Get unique folder paths
+      const folders = new Set<string>();
+      const files: { name: string; size: number; updated: string }[] = [];
+
+      for (const file of allFiles) {
+        const parts = file.name.split('/');
+        if (parts.length > 1) {
+          folders.add(parts.slice(0, -1).join('/') + '/');
+        }
+        files.push({
+          name: file.name,
+          size: Number(file.metadata.size || 0),
+          updated: String(file.metadata.updated || 'unknown'),
+        });
+      }
+
+      // Sample CSV files matching package name
+      const packageVariants = [
+        packageName.toLowerCase(),
+        packageName.toLowerCase().replace(/\./g, '_'),
+        packageName.toLowerCase().replace(/\./g, '')
+      ];
+      const matchingCsvFiles = files.filter(f => 
+        f.name.endsWith('.csv') && 
+        packageVariants.some(variant => f.name.toLowerCase().includes(variant))
+      );
+
+      // Also get files from earnings folder (they don't include package name)
+      const earningsFiles = files.filter(f => {
+        const p = f.name.toLowerCase();
+        return (p.includes('earnings/') || p.startsWith('earnings/')) && f.name.endsWith('.csv');
+      });
+
+      // Get files from sales folder too
+      const salesFiles = files.filter(f => {
+        const p = f.name.toLowerCase();
+        return (p.includes('sales/') || p.startsWith('sales/')) && f.name.endsWith('.csv');
+      });
+
+      // Get ALL files in earnings folder (any extension) to debug
+      const allEarningsFiles = files.filter(f => {
+        const p = f.name.toLowerCase();
+        return p.includes('earnings/') || p.startsWith('earnings/');
+      });
+      
+      // Get ALL files in sales folder (any extension) to debug
+      const allSalesFiles = files.filter(f => {
+        const p = f.name.toLowerCase();
+        return p.includes('sales/') || p.startsWith('sales/');
+      });
+
+      return {
+        bucketName: gcsBucketName,
+        prefix: gcsReportPrefix || "(root)",
+        packageName,
+        totalFiles: files.length,
+        folders: Array.from(folders).sort(),
+        csvFileCount: matchingCsvFiles.length,
+        sampleCsvFiles: matchingCsvFiles.slice(0, 10),
+        // CSV files only
+        earningsFiles: earningsFiles.slice(0, 10),
+        earningsFileCount: earningsFiles.length,
+        salesFiles: salesFiles.slice(0, 5),
+        salesFileCount: salesFiles.length,
+        // ALL files in these folders (any extension) for debugging
+        allEarningsFiles: allEarningsFiles.slice(0, 15).map(f => ({ name: f.name, size: f.size })),
+        allEarningsFilesCount: allEarningsFiles.length,
+        allSalesFiles: allSalesFiles.slice(0, 10).map(f => ({ name: f.name, size: f.size })),
+        allSalesFilesCount: allSalesFiles.length,
+        allFileNames: files.slice(0, 50).map(f => f.name),
+      };
+    } catch (error) {
+      return {
+        bucketName: gcsBucketName,
+        prefix: gcsReportPrefix || "(root)",
+        packageName,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
   },
 });

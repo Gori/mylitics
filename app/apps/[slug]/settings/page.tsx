@@ -1,13 +1,13 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useQuery, useMutation } from "convex/react";
+import { useQuery, useMutation, useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useApp } from "@/app/apps/[slug]/layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { CheckCircle2, XCircle } from "lucide-react";
+import { CheckCircle2, XCircle, FolderSearch } from "lucide-react";
 
 const CURRENCIES = [
   { code: "USD", name: "US Dollar", symbol: "$" },
@@ -46,6 +46,9 @@ export default function SettingsPage() {
   const [selectedWeekStartDay, setSelectedWeekStartDay] = useState<"monday" | "sunday">(weekStartDay);
   const [appNameInput, setAppNameInput] = useState(appName);
   const [isSavingAppName, setIsSavingAppName] = useState(false);
+  const [gcsDebugResult, setGcsDebugResult] = useState<any>(null);
+  const [isDebuggingGCS, setIsDebuggingGCS] = useState(false);
+  const debugGCSBucket = useAction(api.sync.debugGCSBucket);
 
   useEffect(() => {
     if (currency) {
@@ -215,6 +218,166 @@ export default function SettingsPage() {
                 addConnection={addConnection}
                 removeConnection={removeConnection}
               />
+              
+              {/* Google Play GCS Debug Section */}
+              {hasConnection("googleplay") && (
+                <div className="border border-gray-200 rounded p-6 bg-gray-50">
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-2 font-semibold text-lg">
+                      <FolderSearch className="w-5 h-5 text-gray-600" />
+                      Debug: GCS Bucket Contents
+                    </div>
+                    <button
+                      onClick={async () => {
+                        setIsDebuggingGCS(true);
+                        setGcsDebugResult(null);
+                        try {
+                          const result = await debugGCSBucket({ appId });
+                          setGcsDebugResult(result);
+                        } catch (e: any) {
+                          setGcsDebugResult({ error: e.message });
+                        } finally {
+                          setIsDebuggingGCS(false);
+                        }
+                      }}
+                      disabled={isDebuggingGCS}
+                      className="px-3 py-1 text-base bg-gray-700 text-white rounded disabled:opacity-50"
+                    >
+                      {isDebuggingGCS ? "Scanning..." : "Scan Bucket"}
+                    </button>
+                  </div>
+                  
+                  {gcsDebugResult && (
+                    <div className="text-sm space-y-3">
+                      {gcsDebugResult.error ? (
+                        <div className="text-red-600 bg-red-50 p-3 rounded border border-red-200">
+                          ❌ Error: {gcsDebugResult.error}
+                        </div>
+                      ) : (
+                        <>
+                          <div className="bg-white p-3 rounded border">
+                            <div className="font-medium mb-2">Bucket Info</div>
+                            <div className="font-mono text-xs space-y-1">
+                              <div>Bucket: <code className="bg-gray-100 px-1">{gcsDebugResult.bucketName}</code></div>
+                              <div>Prefix: <code className="bg-gray-100 px-1">{gcsDebugResult.prefix}</code></div>
+                              <div>Package: <code className="bg-gray-100 px-1">{gcsDebugResult.packageName}</code></div>
+                              <div>Total files: <strong>{gcsDebugResult.totalFiles}</strong></div>
+                              <div>CSV files: <strong>{gcsDebugResult.csvFileCount}</strong></div>
+                            </div>
+                          </div>
+
+                          {gcsDebugResult.folders?.length > 0 && (
+                            <div className="bg-white p-3 rounded border">
+                              <div className="font-medium mb-2">📁 Folders Found ({gcsDebugResult.folders.length})</div>
+                              <div className="font-mono text-xs max-h-32 overflow-auto">
+                                {gcsDebugResult.folders.map((folder: string) => (
+                                  <div key={folder} className={folder.includes('earning') ? 'text-green-700 font-bold' : ''}>
+                                    {folder.includes('earning') ? '💰 ' : ''}{folder}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Show ALL files in earnings folder for debugging */}
+                          <div className="bg-white p-3 rounded border border-yellow-300">
+                            <div className="font-medium mb-2 text-yellow-700">
+                              📂 All Files in earnings/ folder ({gcsDebugResult.allEarningsFilesCount || 0} total)
+                            </div>
+                            {gcsDebugResult.allEarningsFiles?.length > 0 ? (
+                              <div className="font-mono text-xs max-h-40 overflow-auto space-y-1">
+                                {gcsDebugResult.allEarningsFiles.map((file: any) => (
+                                  <div key={file.name} className="truncate">
+                                    {file.name.endsWith('.csv') ? '✅' : '⚠️'} {file.name} ({Math.round(file.size / 1024)}KB)
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <div className="text-yellow-600 text-sm">
+                                ⚠️ The earnings/ folder appears to be empty or inaccessible
+                              </div>
+                            )}
+                          </div>
+
+                          {gcsDebugResult.allSalesFiles?.length > 0 && (
+                            <div className="bg-white p-3 rounded border">
+                              <div className="font-medium mb-2">📂 All Files in sales/ folder ({gcsDebugResult.allSalesFilesCount})</div>
+                              <div className="font-mono text-xs max-h-32 overflow-auto space-y-1">
+                                {gcsDebugResult.allSalesFiles.map((file: any) => (
+                                  <div key={file.name} className="truncate">
+                                    {file.name.endsWith('.csv') ? '✅' : '⚠️'} {file.name} ({Math.round(file.size / 1024)}KB)
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {gcsDebugResult.earningsFiles?.length > 0 && (
+                            <div className="bg-white p-3 rounded border border-green-300">
+                              <div className="font-medium mb-2 text-green-700">💰 Earnings CSV Files ({gcsDebugResult.earningsFileCount})</div>
+                              <div className="font-mono text-xs max-h-32 overflow-auto space-y-1">
+                                {gcsDebugResult.earningsFiles.map((file: any) => (
+                                  <div key={file.name} className="truncate text-green-800">
+                                    {file.name} ({Math.round(file.size / 1024)}KB)
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {gcsDebugResult.salesFiles?.length > 0 && (
+                            <div className="bg-white p-3 rounded border">
+                              <div className="font-medium mb-2">🛒 Sales Files ({gcsDebugResult.salesFileCount})</div>
+                              <div className="font-mono text-xs max-h-24 overflow-auto space-y-1">
+                                {gcsDebugResult.salesFiles.map((file: any) => (
+                                  <div key={file.name} className="truncate">
+                                    {file.name} ({Math.round(file.size / 1024)}KB)
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {gcsDebugResult.sampleCsvFiles?.length > 0 && (
+                            <div className="bg-white p-3 rounded border">
+                              <div className="font-medium mb-2">📊 Subscription Files (matching package)</div>
+                              <div className="font-mono text-xs max-h-32 overflow-auto space-y-1">
+                                {gcsDebugResult.sampleCsvFiles.map((file: any) => (
+                                  <div key={file.name} className="truncate">
+                                    {file.name} ({Math.round(file.size / 1024)}KB)
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {gcsDebugResult.csvFileCount === 0 && (
+                            <div className="text-yellow-700 bg-yellow-50 p-3 rounded border border-yellow-200">
+                              ⚠️ No CSV files found matching your package name. Check that:
+                              <ul className="list-disc ml-5 mt-2">
+                                <li>Your package name is correct</li>
+                                <li>Reports have been generated (takes time for new apps)</li>
+                                <li>The service account has read access to the bucket</li>
+                              </ul>
+                            </div>
+                          )}
+
+                          {gcsDebugResult.folders && !gcsDebugResult.folders.some((f: string) => f.includes('earning')) && (
+                            <div className="text-orange-700 bg-orange-50 p-3 rounded border border-orange-200">
+                              ⚠️ No <code className="bg-orange-100 px-1">earnings/</code> folder found. 
+                              Financial reports may not be exported yet. This is normal for:
+                              <ul className="list-disc ml-5 mt-2">
+                                <li>New apps without payouts</li>
+                                <li>Apps with no recent transactions</li>
+                              </ul>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>
