@@ -77,13 +77,15 @@ export const createAuth = (
     throw new Error("BETTER_AUTH_SECRET is not set");
   }
 
-  // Build trusted origins list
-  const trustedOrigins = [siteUrl, "http://localhost:3000"];
-  
-  // Add Vercel preview URL if available
-  if (process.env.VERCEL_URL) {
-    trustedOrigins.push(`https://${process.env.VERCEL_URL}`);
-  }
+  // Validate trusted origins - allows Vercel preview deployments
+  const isVercelPreview = (origin: string) => {
+    try {
+      const url = new URL(origin);
+      return url.hostname.endsWith(".vercel.app");
+    } catch {
+      return false;
+    }
+  };
  
   return betterAuth({
     logger: {
@@ -91,7 +93,15 @@ export const createAuth = (
     },
     baseURL: siteUrl,
     secret: authSecret,
-    trustedOrigins,
+    trustedOrigins: (origin) => {
+      if (!origin) return false;
+      // Allow production site, localhost, and Vercel previews
+      return (
+        origin === siteUrl ||
+        origin === "http://localhost:3000" ||
+        isVercelPreview(origin)
+      );
+    },
     database: authComponent.adapter(ctx),
     emailAndPassword: {
       enabled: true,
