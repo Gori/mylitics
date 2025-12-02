@@ -1,15 +1,24 @@
-import { openai } from '@ai-sdk/openai';
+import { google, GoogleGenerativeAIProviderOptions } from '@ai-sdk/google';
 import { streamText, convertToModelMessages, UIMessage, stepCountIs } from 'ai';
 import { tools } from '@/app/dashboard/components/chat/tools';
 
+function extractDateRange(csvData: string): { start: string; end: string } | null {
+  if (!csvData?.trim()) return null;
+  const lines = csvData.split('\n');
+  if (lines.length === 0) return null;
+  const headers = lines[0].split(',').slice(3);
+  if (headers.length === 0) return null;
+  return { start: headers[0], end: headers[headers.length - 1] };
+}
+
 export async function POST(request: Request) {
+  console.log('\n=== CHAT API REQUEST ===');
+  const startTime = Date.now();
+  
   const { messages }: { messages: UIMessage[] } = await request.json();
 
   const latestMessage = messages[messages.length - 1];
   const messageText = latestMessage?.parts?.[0]?.type === 'text' ? latestMessage.parts[0].text : '';
-  
-  console.log('=== API RECEIVED ===');
-  console.log('Full message:', messageText);
   
   // Parse structured data and question
   const dataMatch = messageText.match(/\[DATA\]([\s\S]*?)\[\/DATA\]/);
@@ -19,19 +28,27 @@ export async function POST(request: Request) {
   try {
     data = dataMatch ? JSON.parse(dataMatch[1]) : null;
   } catch (e) {
-    console.error('Failed to parse DATA JSON', e);
+    console.error('[CHAT API] Failed to parse DATA JSON', e);
     return new Response('Invalid data format', { status: 400 });
   }
 
   if (!data || !questionMatch) {
+    console.error('[CHAT API] Missing required data or question');
     return new Response('Missing required data or question', { status: 400 });
   }
 
   const question = questionMatch[1];
+  console.log('[CHAT API] Question:', question);
+  console.log('[CHAT API] Message count:', messages.length);
 
-  if (!data.platformBreakdown || !data.csvData) {
+  if (!data.platformBreakdown || (!data.weeklyCSV && !data.monthlyCSV)) {
+    console.error('[CHAT API] Missing platform breakdown or CSV data');
     return new Response('Missing platform breakdown or CSV data', { status: 400 });
   }
+  
+  console.log('[CHAT API] Currency:', data.currency);
+  console.log('[CHAT API] Weekly CSV rows:', data.weeklyCSV?.split('\n').length || 0);
+  console.log('[CHAT API] Monthly CSV rows:', data.monthlyCSV?.split('\n').length || 0);
 
   const platformSnapshots = [
     data.platformBreakdown.appstore,
@@ -71,29 +88,15 @@ export async function POST(request: Request) {
   const currentDate = now.toISOString().split('T')[0];
   const currentDateFormatted = now.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
   
-  const csvData = data.csvData;
-  if (!csvData || csvData.trim() === '') {
-    return new Response('CSV data is empty', { status: 400 });
-  }
-  
-  const csvLines = csvData.split('\n');
-  if (csvLines.length === 0) {
-    return new Response('Invalid CSV format', { status: 400 });
-  }
-  
-  const headerLine = csvLines[0];
-  const weekHeaders = headerLine.split(',').slice(3);
-  const dataStartDate = weekHeaders.length > 0 ? weekHeaders[0] : currentDate;
-  const dataEndDate = weekHeaders.length > 0 ? weekHeaders[weekHeaders.length - 1] : currentDate;
+  // Extract date ranges from both CSV datasets
+  const weeklyRange = extractDateRange(data.weeklyCSV);
+  const monthlyRange = extractDateRange(data.monthlyCSV);
 
-  const systemMessage = `You are a subscription metrics analyst.
+  const systemMessage = `You are a subscription metrics analyst with access to comprehensive historical data.
 
 CURRENT DATE: ${currentDateFormatted} (${currentDate})
 
-DATA DATE RANGE: ${dataStartDate} to ${dataEndDate} (approximately October 2024 to October 2025, 12 months of weekly data)
-IMPORTANT: All data references are within this range. Do NOT reference dates outside this range (e.g., 2023 data does not exist).
-
-CURRENT METRICS (UNIFIED TOTAL):
+=== CURRENT METRICS (UNIFIED TOTAL) ===
 Active Subscribers: ${current.activeSubscribers}
 Trial Subscribers: ${current.trialSubscribers}
 Paid Subscribers: ${current.paidSubscribers}
@@ -106,7 +109,35 @@ Monthly Revenue Net: ${data.currency} ${Number(current.monthlyRevenueNet).toFixe
 Per-platform breakdown:
 ${breakdownLines}
 
-Answer ONLY using these numbers and the data date range specified above. Be direct and concise.`;
+=== HISTORICAL DATA AVAILABLE ===
+
+You have access to TWO datasets for historical analysis:
+
+1. WEEKLY DATA${weeklyRange ? ` (${weeklyRange.start} to ${weeklyRange.end})` : ''}:
+   - Granular week-by-week metrics
+   - Best for: identifying specific weeks with changes, short-term trends, recent performance
+   - CSV columns: Metric, Platform, Total, [weekly dates...]
+   
+${data.weeklyCSV || 'No weekly data available'}
+
+2. MONTHLY DATA${monthlyRange ? ` (${monthlyRange.start} to ${monthlyRange.end})` : ''}:
+   - Aggregated month-by-month metrics
+   - Best for: long-term trends, seasonal patterns, year-over-year comparisons
+   - CSV columns: Metric, Platform, Total, [monthly periods as YYYY-MM...]
+
+${data.monthlyCSV || 'No monthly data available'}
+
+=== METRICS EXPLANATION ===
+- Stock metrics (Active/Trial/Paid/Monthly/Yearly Subscribers, MRR): Show point-in-time values
+- Flow metrics (Cancellations, Grace Events, First Payments, Renewals, Revenue): Show cumulative amounts per period
+- Platforms: Unified (all combined), App Store, Google Play, Stripe
+
+=== INSTRUCTIONS ===
+- Use weekly data for granular analysis and finding specific time periods
+- Use monthly data for broader trends and long-term patterns
+- When creating charts, use the "week" field for weekly data timestamps
+- Always cite which dataset (weekly/monthly) you're using for analysis
+- Be direct and concise in your answers`;
 
   const cleanMessages = messages.map(msg => {
     if (msg.role === 'user') {
@@ -122,14 +153,71 @@ Answer ONLY using these numbers and the data date range specified above. Be dire
     return msg;
   });
 
-  const result = streamText({
-    model: openai('gpt-4o-mini'),
-    system: systemMessage,
-    messages: convertToModelMessages(cleanMessages),
-    tools,
-    stopWhen: stepCountIs(5),
+  // Log what we're sending to the AI
+  console.log('[CHAT API] Current metrics:', current);
+  console.log('[CHAT API] Platform breakdown:', breakdownLines);
+  console.log('[CHAT API] Weekly range:', weeklyRange);
+  console.log('[CHAT API] Monthly range:', monthlyRange);
+  console.log('[CHAT API] System message length:', systemMessage.length, 'chars');
+  console.log('[CHAT API] Cleaned messages:', cleanMessages.length);
+  
+  // Log each message summary
+  cleanMessages.forEach((msg, i) => {
+    const parts = msg.parts || [];
+    const partsSummary = parts.map((p: any) => {
+      if (p.type === 'text') return `text(${p.text?.length || 0} chars)`;
+      if (p.type === 'tool-invocation') return `tool(${p.toolInvocationId})`;
+      return p.type;
+    }).join(', ');
+    console.log(`[CHAT API] Message ${i + 1}: role=${msg.role}, parts=[${partsSummary}]`);
   });
+  
+  const modelMessages = convertToModelMessages(cleanMessages);
+  const totalContentSize = JSON.stringify(modelMessages).length;
+  console.log('[CHAT API] Model messages content size:', totalContentSize, 'chars');
+  console.log('[CHAT API] Sending to Google (gemini-3-pro-preview)...');
 
-  return result.toUIMessageStreamResponse();
+  try {
+    const result = streamText({
+      model: google('gemini-3-pro-preview'),
+      system: systemMessage,
+      messages: convertToModelMessages(cleanMessages),
+      tools,
+      stopWhen: stepCountIs(5),
+      providerOptions: {
+        google: {
+          thinkingConfig: {
+            thinkingLevel: 'low',
+          },
+        } satisfies GoogleGenerativeAIProviderOptions,
+      },
+      onFinish: ({ text, toolCalls, usage, finishReason }) => {
+        const duration = Date.now() - startTime;
+        console.log('\n=== CHAT API RESPONSE ===');
+        console.log('[CHAT API] Duration:', duration, 'ms');
+        console.log('[CHAT API] Finish reason:', finishReason);
+        console.log('[CHAT API] Response length:', text?.length || 0, 'chars');
+        console.log('[CHAT API] Tool calls:', toolCalls?.length || 0);
+        if (toolCalls?.length) {
+          toolCalls.forEach((tc, i) => console.log(`[CHAT API] Tool ${i + 1}:`, tc.toolName));
+        }
+        console.log('[CHAT API] Usage:', usage);
+        console.log('[CHAT API] Response preview:', text?.slice(0, 200) + (text && text.length > 200 ? '...' : ''));
+      },
+      onError: (error) => {
+        console.error('\n=== CHAT API ERROR ===');
+        console.error('[CHAT API] Error:', error);
+      },
+    });
+
+    return result.toUIMessageStreamResponse();
+  } catch (error) {
+    console.error('\n=== CHAT API FATAL ERROR ===');
+    console.error('[CHAT API] Error:', error);
+    return new Response(
+      JSON.stringify({ error: 'Failed to process chat request', details: String(error) }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
 }
 

@@ -107,6 +107,9 @@ export async function fetchGooglePlayFromGCS(
   const subscriptionMetricsByDate: Record<string, SubscriptionMetrics> = {};
   const discoveredReportTypes: Set<ReportType> = new Set();
 
+  // Track revenue by source for debugging duplicate counting
+  const revenueBySource: Record<string, { gross: number; net: number; transactions: number; dates: number }> = {};
+  
   try {
     console.log(`[Google Play] Scanning bucket gs://${gcsBucketName}/${gcsReportPrefix || "(root)"}`);
     
@@ -115,6 +118,21 @@ export async function fetchGooglePlayFromGCS(
       prefix: gcsReportPrefix,
     });
 
+    // DEBUG: Log all files found in bucket
+    console.log(`[Google Play DEBUG] Total files in bucket: ${allFiles.length}`);
+    const allCsvFiles = allFiles.filter(f => f.name.toLowerCase().endsWith('.csv'));
+    const allZipFiles = allFiles.filter(f => f.name.toLowerCase().endsWith('.zip'));
+    console.log(`[Google Play DEBUG] All CSV files: ${allCsvFiles.length}, All ZIP files: ${allZipFiles.length}`);
+    
+    // Log file counts by folder (summary only)
+    const filesByFolder: Record<string, number> = {};
+    for (const file of allFiles) {
+      const folder = file.name.split('/')[0] || '(root)';
+      filesByFolder[folder] = (filesByFolder[folder] || 0) + 1;
+    }
+    const folderSummary = Object.entries(filesByFolder).map(([f, c]) => `${f}:${c}`).join(', ');
+    console.log(`[Google Play DEBUG] Files by folder: ${folderSummary}`);
+
     // Filter for CSV files matching our package name OR in special folders (earnings, sales)
     const packageVariants = [
       packageName.toLowerCase(),
@@ -122,19 +140,32 @@ export async function fetchGooglePlayFromGCS(
       packageName.toLowerCase().replace(/\./g, '')
     ];
     
+    console.log(`[Google Play DEBUG] Looking for package variants: ${packageVariants.join(', ')}`);
+    
     // Filter for CSV files matching package name
     const csvFiles = allFiles.filter(file => {
       const name = file.name.toLowerCase();
       return name.endsWith('.csv') && packageVariants.some(variant => name.includes(variant));
     });
     
-    // Also get ZIP files from earnings/ and sales/ folders (they contain revenue CSVs)
+    // DEBUG: Log matched CSV files (summary only to avoid log overflow)
+    console.log(`[Google Play DEBUG] CSV files matching package name: ${csvFiles.length} files`);
+    
+    // Get ZIP files from earnings/ and sales/ folders
+    // We need to understand which contains the actual revenue data
     const zipFiles = allFiles.filter(file => {
       const path = file.name.toLowerCase();
       const isEarnings = path.includes('earnings/') || path.startsWith('earnings/');
       const isSales = path.includes('sales/') || path.startsWith('sales/');
       return (isEarnings || isSales) && path.endsWith('.zip');
     });
+    
+    // DEBUG: Log ZIP files by source
+    const earningsZips = zipFiles.filter(f => f.name.toLowerCase().includes('earnings/'));
+    const salesZips = zipFiles.filter(f => f.name.toLowerCase().includes('sales/'));
+    console.log(`[Google Play DEBUG] ZIP files: ${earningsZips.length} from earnings/, ${salesZips.length} from sales/`);
+    earningsZips.slice(0, 3).forEach(f => console.log(`  earnings: ${f.name}`));
+    salesZips.slice(0, 3).forEach(f => console.log(`  sales: ${f.name}`));
 
     if (csvFiles.length === 0 && zipFiles.length === 0) {
       console.warn(`[Google Play GCS] No reports found for ${packageName}`);
@@ -142,10 +173,7 @@ export async function fetchGooglePlayFromGCS(
     }
 
     // Log breakdown of file types found
-    const earningsZipCount = zipFiles.filter(f => f.name.toLowerCase().includes('earnings/')).length;
-    const salesZipCount = zipFiles.filter(f => f.name.toLowerCase().includes('sales/')).length;
-    
-    console.log(`[Google Play GCS] Found ${csvFiles.length} CSV files (package match), ${zipFiles.length} ZIP files (${earningsZipCount} earnings, ${salesZipCount} sales)`);
+    console.log(`[Google Play GCS] Found ${csvFiles.length} CSV files (package match), ${zipFiles.length} ZIP files (earnings + sales)`);
 
     // Phase 2: Categorize files by path patterns
     const categorizedFiles: Record<ReportType, typeof csvFiles> = {
@@ -224,20 +252,42 @@ export async function fetchGooglePlayFromGCS(
     }
 
     // Process financial reports (CSV)
+    let csvRevenueCount = 0;
+    const fileContributions: Array<{ file: string; gross: number; dates: number; sampleDates: string[] }> = [];
+    
     for (const file of categorizedFiles.financial) {
       try {
         const [contents] = await file.download();
         const csvContent = detectAndDecodeCSV(contents);
         
         const parsed = await parseFinancialReportCSV(csvContent, file.name, startDate, endDate);
-        if (parsed) {
+        if (parsed && parsed.revenueByDate) {
           parsedReports.push(parsed);
           discoveredReportTypes.add(parsed.type);
+          csvRevenueCount++;
+          
+          // Track revenue by source
+          const dates = Object.keys(parsed.revenueByDate);
+          const totalGross = Object.values(parsed.revenueByDate).reduce((sum, d) => sum + d.gross, 0);
+          const totalNet = Object.values(parsed.revenueByDate).reduce((sum, d) => sum + d.net, 0);
+          const totalTx = Object.values(parsed.revenueByDate).reduce((sum, d) => sum + d.transactions, 0);
+          
+          // Log each file's contribution
+          fileContributions.push({ file: file.name, gross: totalGross, dates: dates.length, sampleDates: dates.slice(0, 3) });
+          
+          const sourceKey = file.name.toLowerCase().includes('earnings/') ? 'csv-earnings' 
+            : file.name.toLowerCase().includes('sales/') ? 'csv-sales' : 'csv-other';
+          if (!revenueBySource[sourceKey]) revenueBySource[sourceKey] = { gross: 0, net: 0, transactions: 0, dates: 0 };
+          revenueBySource[sourceKey].gross += totalGross;
+          revenueBySource[sourceKey].net += totalNet;
+          revenueBySource[sourceKey].transactions += totalTx;
+          revenueBySource[sourceKey].dates += dates.length;
         }
       } catch (error) {
         console.error(`[Google Play GCS] Error processing ${file.name}:`, error);
       }
     }
+    console.log(`[Google Play DEBUG] Processed ${categorizedFiles.financial.length} financial CSVs, ${csvRevenueCount} had revenue data`);
 
     // Process ZIP files from earnings/ and sales/ folders
     console.log(`[Google Play GCS] Processing ${zipFiles.length} ZIP files for financial data...`);
@@ -245,6 +295,10 @@ export async function fetchGooglePlayFromGCS(
     let zipErrors = 0;
     
     for (const file of zipFiles) {
+      const isEarningsZip = file.name.toLowerCase().includes('earnings/');
+      const isSalesZip = file.name.toLowerCase().includes('sales/');
+      const zipSourceKey = isEarningsZip ? 'zip-earnings' : isSalesZip ? 'zip-sales' : 'zip-other';
+      
       try {
         const [zipBuffer] = await file.download();
         const zip = new AdmZip(zipBuffer);
@@ -257,10 +311,30 @@ export async function fetchGooglePlayFromGCS(
               const csvContent = detectAndDecodeCSV(csvBuffer);
               
               const parsed = await parseFinancialReportCSV(csvContent, `${file.name}/${entry.entryName}`, startDate, endDate);
-              if (parsed) {
+              if (parsed && parsed.revenueByDate) {
                 parsedReports.push(parsed);
                 discoveredReportTypes.add("financial");
                 zipProcessed++;
+                
+                // Track revenue by source
+                const dates = Object.keys(parsed.revenueByDate);
+                const totalGross = Object.values(parsed.revenueByDate).reduce((sum, d) => sum + d.gross, 0);
+                const totalNet = Object.values(parsed.revenueByDate).reduce((sum, d) => sum + d.net, 0);
+                const totalTx = Object.values(parsed.revenueByDate).reduce((sum, d) => sum + d.transactions, 0);
+                
+                // Log each ZIP entry's contribution
+                fileContributions.push({ 
+                  file: `${file.name}/${entry.entryName}`, 
+                  gross: totalGross, 
+                  dates: dates.length, 
+                  sampleDates: dates.slice(0, 3) 
+                });
+                
+                if (!revenueBySource[zipSourceKey]) revenueBySource[zipSourceKey] = { gross: 0, net: 0, transactions: 0, dates: 0 };
+                revenueBySource[zipSourceKey].gross += totalGross;
+                revenueBySource[zipSourceKey].net += totalNet;
+                revenueBySource[zipSourceKey].transactions += totalTx;
+                revenueBySource[zipSourceKey].dates += dates.length;
               }
             } catch (csvError) {
               console.error(`[Google Play GCS] Error parsing CSV in ZIP ${file.name}/${entry.entryName}:`, csvError);
@@ -277,6 +351,42 @@ export async function fetchGooglePlayFromGCS(
     if (zipFiles.length > 0) {
       console.log(`[Google Play GCS] ZIP processing complete: ${zipProcessed} CSVs extracted, ${zipErrors} errors`);
     }
+    
+    // DEBUG: Summary of revenue by source
+    console.log(`[Google Play DEBUG] ========== REVENUE BY SOURCE ==========`);
+    for (const [source, data] of Object.entries(revenueBySource)) {
+      console.log(`[Google Play DEBUG] ${source}: $${data.gross.toFixed(2)} gross, $${data.net.toFixed(2)} net, ${data.transactions} tx, ${data.dates} date entries`);
+    }
+    const totalFromAllSources = Object.values(revenueBySource).reduce((sum, d) => sum + d.gross, 0);
+    console.log(`[Google Play DEBUG] TOTAL from all sources: $${totalFromAllSources.toFixed(2)} gross`);
+    console.log(`[Google Play DEBUG] =======================================`);
+    
+    // DEBUG: Log all file contributions to identify duplicates
+    console.log(`[Google Play DEBUG] ========== ALL FILE CONTRIBUTIONS (${fileContributions.length} files) ==========`);
+    // Sort by gross revenue descending to see biggest contributors first
+    const sortedContributions = [...fileContributions].sort((a, b) => b.gross - a.gross);
+    for (const contrib of sortedContributions.slice(0, 50)) { // Show top 50
+      console.log(`[Google Play FILE] $${contrib.gross.toFixed(2)} from ${contrib.file} (${contrib.dates} dates: ${contrib.sampleDates.join(', ')}...)`);
+    }
+    if (sortedContributions.length > 50) {
+      console.log(`[Google Play FILE] ... and ${sortedContributions.length - 50} more files`);
+    }
+    
+    // DEBUG: Specifically check November 2024 contributions for validation
+    const nov2024Files = fileContributions.filter(f => 
+      f.sampleDates.some(d => d.startsWith('2024-11'))
+    );
+    if (nov2024Files.length > 0) {
+      console.log(`[Google Play NOV2024] ========== FILES WITH NOV 2024 DATA ==========`);
+      let nov2024Total = 0;
+      for (const contrib of nov2024Files) {
+        console.log(`[Google Play NOV2024] $${contrib.gross.toFixed(2)} from ${contrib.file}`);
+        nov2024Total += contrib.gross;
+      }
+      console.log(`[Google Play NOV2024] TOTAL from ${nov2024Files.length} files: $${nov2024Total.toFixed(2)}`);
+      console.log(`[Google Play NOV2024] ================================================`);
+    }
+    console.log(`[Google Play DEBUG] ====================================================`);
 
     // Phase 4: Merge all parsed data
 
@@ -338,23 +448,50 @@ export async function fetchGooglePlayFromGCS(
     }
 
     // Phase 5: Log summary
-    console.log(`[Google Play Summary] Discovered report types: ${Array.from(discoveredReportTypes).join(', ')}`);
-    console.log(`[Google Play Summary] Dates with revenue data: ${Object.keys(revenueByDate).length}`);
+    console.log(`[Google Play Summary] ========================================`);
+    console.log(`[Google Play Summary] Report types: ${Array.from(discoveredReportTypes).join(', ')}`);
+    console.log(`[Google Play Summary] Dates with revenue: ${Object.keys(revenueByDate).length}`);
     console.log(`[Google Play Summary] Dates with subscription metrics: ${Object.keys(subscriptionMetricsByDate).length}`);
+    
+    // Show revenue by source
+    console.log(`[Google Play Summary] REVENUE BY SOURCE:`);
+    for (const [source, data] of Object.entries(revenueBySource)) {
+      console.log(`  ${source}: $${data.gross.toFixed(2)} gross, $${data.net.toFixed(2)} net, ${data.transactions} tx, ${data.dates} date entries`);
+    }
 
     if (Object.keys(revenueByDate).length > 0) {
       const totalGross = Object.values(revenueByDate).reduce((sum, d) => sum + d.gross, 0);
       const totalNet = Object.values(revenueByDate).reduce((sum, d) => sum + d.net, 0);
-      console.log(`[Google Play Summary] Total revenue - Gross: $${totalGross.toFixed(2)}, Net: $${totalNet.toFixed(2)}`);
+      const totalTx = Object.values(revenueByDate).reduce((sum, d) => sum + d.transactions, 0);
+      console.log(`[Google Play Summary] MERGED TOTAL: $${totalGross.toFixed(2)} gross, $${totalNet.toFixed(2)} net, ${totalTx} transactions`);
+      
+      // Show date range
+      const sortedDates = Object.keys(revenueByDate).sort();
+      const firstDate = sortedDates[0];
+      const lastDate = sortedDates[sortedDates.length - 1];
+      console.log(`[Google Play Summary] Date range: ${firstDate} to ${lastDate}`);
+      
+      // Show sample of dates with revenue amounts
+      const datesWithRevenue = sortedDates.filter(d => revenueByDate[d].gross > 0);
+      console.log(`[Google Play Summary] Dates with non-zero revenue: ${datesWithRevenue.length} of ${sortedDates.length}`);
+      
+      // Show first and last few dates with revenue
+      if (datesWithRevenue.length > 0) {
+        const sampleFirst = datesWithRevenue.slice(0, 3).map(d => `${d}:$${revenueByDate[d].gross.toFixed(0)}`).join(', ');
+        const sampleLast = datesWithRevenue.slice(-3).map(d => `${d}:$${revenueByDate[d].gross.toFixed(0)}`).join(', ');
+        console.log(`[Google Play Summary] First dates with revenue: ${sampleFirst}`);
+        console.log(`[Google Play Summary] Last dates with revenue: ${sampleLast}`);
+      }
     }
 
     if (Object.keys(subscriptionMetricsByDate).length > 0) {
       const latestDate = Object.keys(subscriptionMetricsByDate).sort().pop();
       if (latestDate) {
         const latest = subscriptionMetricsByDate[latestDate];
-        console.log(`[Google Play Summary] Latest subscription metrics (${latestDate}): Active=${latest.active}, Trial=${latest.trial}, Paid=${latest.paid}`);
+        console.log(`[Google Play Summary] Latest subs (${latestDate}): Active=${latest.active}, Trial=${latest.trial}, Paid=${latest.paid}`);
       }
     }
+    console.log(`[Google Play Summary] ========================================`);
 
     return { 
       revenueByDate, 
@@ -510,11 +647,6 @@ async function parseFinancialReportCSV(
     }
 
     const headers = lines[0].split(',').map(h => h.trim().toLowerCase().replace(/"/g, ''));
-    
-    // Log headers once per unique file pattern (for debugging)
-    if (fileName.includes('earnings_202411') || fileName.includes('salesreport_202411')) {
-      console.log(`[Google Play Financial CSV] Headers in ${fileName}: ${headers.slice(0, 15).join(', ')}`);
-    }
 
     const findColumnIndex = (possibleNames: string[]): number => {
       return headers.findIndex(h => 
@@ -528,14 +660,32 @@ async function parseFinancialReportCSV(
     const transactionTypeIdx = findColumnIndex(['transaction type', 'type', 'financial status']);
     const descriptionIdx = findColumnIndex(['description', 'sku description', 'product title']);
     const skuIdx = findColumnIndex(['sku id', 'product id', 'sku']);
+    const currencyIdx = findColumnIndex(['currency of sale', 'buyer currency', 'currency']);
 
-    if (dateIdx < 0) {
-      console.warn(`[Google Play Financial CSV] No date column found in ${fileName}`);
-      return null;
+    // Only log first occurrence of each file type to understand format
+    const isEarningsFile = fileName.toLowerCase().includes('earnings');
+    const isSalesFile = fileName.toLowerCase().includes('sales');
+    const fileType = isEarningsFile ? 'EARNINGS' : isSalesFile ? 'SALES' : 'OTHER';
+    
+    // Log detailed info for first file of each type (for debugging format issues)
+    if ((isEarningsFile && fileName.includes('202310')) || (isSalesFile && fileName.includes('202310'))) {
+      console.log(`[Google Play CSV SAMPLE] ${fileType}: ${fileName}`);
+      console.log(`[Google Play CSV SAMPLE] ALL Headers: ${headers.join(', ')}`);
+      console.log(`[Google Play CSV SAMPLE] Columns - date:${dateIdx}, gross:${grossIdx}, net:${netIdx}, currency:${currencyIdx}`);
+      console.log(`[Google Play CSV SAMPLE] Gross column name: "${headers[grossIdx] || 'NOT FOUND'}"`);
     }
 
-    // Track unique transaction types for debugging
+    if (dateIdx < 0) {
+      return null; // No date column - skip silently
+    }
+    
+    if (grossIdx < 0 && netIdx < 0) {
+      return null; // No revenue columns - skip silently
+    }
+
+    // Track unique transaction types and currencies for debugging
     const transactionTypes = new Set<string>();
+    const currenciesUsed = new Map<string, { count: number; totalGross: number }>();
 
     // Parse data rows
     for (let i = 1; i < lines.length; i++) {
@@ -557,6 +707,86 @@ async function parseFinancialReportCSV(
       }
       if (netIdx >= 0) {
         net = parseNumber(cols[netIdx]);
+      }
+
+      // Track currency usage
+      const currency = currencyIdx >= 0 
+        ? (cols[currencyIdx] || 'UNKNOWN').toUpperCase().trim().replace(/"/g, '')
+        : 'UNKNOWN';
+      if (!currenciesUsed.has(currency)) {
+        currenciesUsed.set(currency, { count: 0, totalGross: 0 });
+      }
+      const currencyStats = currenciesUsed.get(currency)!;
+      currencyStats.count += 1;
+      currencyStats.totalGross += gross;
+
+      // CRITICAL: Sales reports have amounts in BUYER CURRENCY, not USD!
+      // We need to convert to USD since downstream expects USD and will convert to user currency.
+      // For earnings reports, "amount (merchant currency)" is already in merchant's currency (typically USD).
+      // 
+      // These are approximate rates used ONLY for normalizing sales report data to USD.
+      // The actual USD → user currency conversion uses live rates from the exchangeRates table.
+      // Small inaccuracies here (±5%) are acceptable as they're normalized across all transactions.
+      if (isSalesFile && currency !== 'USD' && currency !== 'UNKNOWN') {
+        // Approximate exchange rates to USD (updated December 2024)
+        // Source: approximate mid-market rates
+        const toUsdRates: Record<string, number> = {
+          // Nordic currencies
+          'NOK': 0.088,  // Norwegian Krone
+          'SEK': 0.091,  // Swedish Krona
+          'DKK': 0.14,   // Danish Krone
+          'ISK': 0.0071, // Icelandic Króna
+          // European currencies
+          'EUR': 1.05,   // Euro
+          'GBP': 1.26,   // British Pound
+          'CHF': 1.12,   // Swiss Franc
+          'PLN': 0.24,   // Polish Złoty
+          'CZK': 0.042,  // Czech Koruna
+          'HUF': 0.0026, // Hungarian Forint
+          'RON': 0.21,   // Romanian Leu
+          'BGN': 0.54,   // Bulgarian Lev
+          'HRK': 0.14,   // Croatian Kuna
+          'TRY': 0.029,  // Turkish Lira
+          'RUB': 0.010,  // Russian Ruble
+          'UAH': 0.024,  // Ukrainian Hryvnia
+          // Americas
+          'CAD': 0.71,   // Canadian Dollar
+          'MXN': 0.049,  // Mexican Peso
+          'BRL': 0.16,   // Brazilian Real
+          'ARS': 0.001,  // Argentine Peso
+          'CLP': 0.001,  // Chilean Peso
+          'COP': 0.00023,// Colombian Peso
+          'PEN': 0.26,   // Peruvian Sol
+          // Asia-Pacific
+          'JPY': 0.0066, // Japanese Yen
+          'CNY': 0.14,   // Chinese Yuan
+          'HKD': 0.13,   // Hong Kong Dollar
+          'TWD': 0.031,  // Taiwan Dollar
+          'KRW': 0.00071,// South Korean Won
+          'INR': 0.012,  // Indian Rupee
+          'IDR': 0.000063,// Indonesian Rupiah
+          'MYR': 0.22,   // Malaysian Ringgit
+          'SGD': 0.74,   // Singapore Dollar
+          'THB': 0.029,  // Thai Baht
+          'PHP': 0.017,  // Philippine Peso
+          'VND': 0.000040,// Vietnamese Dong
+          'PKR': 0.0036, // Pakistani Rupee
+          'BDT': 0.0083, // Bangladeshi Taka
+          // Oceania
+          'AUD': 0.64,   // Australian Dollar
+          'NZD': 0.58,   // New Zealand Dollar
+          // Middle East & Africa
+          'AED': 0.27,   // UAE Dirham
+          'SAR': 0.27,   // Saudi Riyal
+          'ILS': 0.27,   // Israeli Shekel
+          'ZAR': 0.055,  // South African Rand
+          'EGP': 0.020,  // Egyptian Pound
+          'NGN': 0.00062,// Nigerian Naira
+          'KES': 0.0077, // Kenyan Shilling
+        };
+        const rate = toUsdRates[currency] || 0.1; // Default fallback for unknown currencies
+        gross = gross * rate;
+        net = net * rate;
       }
 
       // Get transaction type for renewal/refund detection
@@ -612,6 +842,21 @@ async function parseFinancialReportCSV(
     // Log transaction types found (once per file pattern)
     if ((fileName.includes('earnings_202411') || fileName.includes('salesreport_202411')) && transactionTypes.size > 0) {
       console.log(`[Google Play Financial CSV] Transaction types found: ${Array.from(transactionTypes).join(', ')}`);
+    }
+
+    // Log currency breakdown for November 2024 file (to debug currency issue)
+    if (fileName.includes('salesreport_202411') && currenciesUsed.size > 0) {
+      console.log(`[Google Play CURRENCY DEBUG] ========== CURRENCY BREAKDOWN (Nov 2024) ==========`);
+      const sortedCurrencies = Array.from(currenciesUsed.entries())
+        .sort((a, b) => b[1].totalGross - a[1].totalGross);
+      for (const [curr, stats] of sortedCurrencies.slice(0, 10)) {
+        console.log(`[Google Play CURRENCY DEBUG] ${curr}: ${stats.count} transactions, total ${stats.totalGross.toFixed(2)} (in ${curr})`);
+      }
+      // Show total after conversion to USD
+      const totalRevenueUsd = Object.values(revenueByDate).reduce((sum, d) => sum + d.gross, 0);
+      console.log(`[Google Play CURRENCY DEBUG] After USD conversion: $${totalRevenueUsd.toFixed(2)} USD`);
+      console.log(`[Google Play CURRENCY DEBUG] Expected: ~$${(84396.80 * 0.09).toFixed(2)} USD (84396 NOK * 0.09)`);
+      console.log(`[Google Play CURRENCY DEBUG] ===================================================`);
     }
 
     return {

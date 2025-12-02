@@ -99,7 +99,7 @@ export default function Home() {
       </header>
 
       {/* Hero Section */}
-      <section className="max-w-7xl mx-auto px-4 md:px-8 py-32 md:py-40 min-h-screen flex items-center justify-center">
+      {/* <section className="max-w-7xl mx-auto px-4 md:px-8 py-32 md:py-40 min-h-screen flex items-center justify-center">
         <div className="text-center max-w-4xl mx-auto">
           <div className="flex justify-center mb-36 relative mx-auto items-center justify-center">
             <div className="absolute">
@@ -141,10 +141,10 @@ export default function Home() {
             </Link>
           </div>
         </div>
-      </section>
+      </section> */}
 
       {/* Platforms Section */}
-      <section className="max-w-7xl mx-auto px-4 md:px-8 py-12">
+      {/* <section className="max-w-7xl mx-auto px-4 md:px-8 py-12">
         <h2 className="text-xl md:text-3xl font-medium text-center mb-14 text-gray-900">
           Connect. <span className="text-gray-500">Integrate with App Store, Google Play, and Stripe.</span>
         </h2>
@@ -170,10 +170,10 @@ export default function Home() {
             imageSize={45}
           />
         </div>
-      </section>
+      </section> */}
 
       {/* Features Section */}
-      <section className="max-w-7xl mx-auto px-4 md:px-8 py-12">
+      {/* <section className="max-w-7xl mx-auto px-4 md:px-8 py-12">
         <h2 className="text-xl md:text-3xl font-medium text-center mb-14 text-gray-900">
           The simplest all-in-one analytics
         </h2>
@@ -195,10 +195,10 @@ export default function Home() {
             description="Integrate App Store, Google Play, and Stripe in one dashboard."
           />
         </div>
-      </section>
+      </section> */}
 
       {/* CTA Section */}
-      <section className="max-w-7xl mx-auto px-4 md:px-8 py-32 md:py-40">
+      {/* <section className="max-w-7xl mx-auto px-4 md:px-8 py-32 md:py-40">
         <div className="text-center max-w-2xl mx-auto">
           <h2 className="text-xl md:text-3xl font-medium mb-6 text-gray-900">
             Get started today
@@ -213,10 +213,10 @@ export default function Home() {
             </Button>
           </Link>
         </div>
-      </section>
+      </section> */}
 
       {/* Footer */}
-      <footer className="border-t border-gray-200 py-8">
+      {/* <footer className="border-t border-gray-200 py-8">
         <div className="max-w-7xl mx-auto px-4 md:px-8">
           <div className="flex flex-col md:flex-row justify-between items-center gap-4">
             <div className="text-sm text-gray-600">
@@ -231,8 +231,8 @@ export default function Home() {
               </Link>
             </div>
           </div>
-        </div>
-      </footer>
+        </div> 
+      </footer>*/}
     </div>
   );
 }

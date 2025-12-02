@@ -26,6 +26,7 @@ export default function DashboardPage() {
   const userPreferences = useQuery(api.queries.getUserPreferences, { appId });
   const debugData = useQuery(api.queries.getAllDebugData, { appId });
   const debugRevenue = useQuery(api.queries.debugRevenueCalculation, { appId });
+  const validateRevenue = useQuery(api.queries.validateRevenueData, { appId });
   const logs = useQuery(api.queries.getSyncLogs, { appId, limit: 50 });
   const activeSyncStatus = useQuery(api.syncHelpers.getActiveSyncStatus, { appId });
   const chatContext = useQuery(api.queries.getChatContext, { appId });
@@ -419,21 +420,21 @@ export default function DashboardPage() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <MetricCard
                   label={viewMode === "monthly" ? "Monthly Rev. (Gross)" : "Weekly Rev. (Gross)"}
-                  value={formatCurrency(viewMode === "monthly" ? metrics.unified.monthlyRevenueGross : metrics.unified.weeklyRevenue)}
-                  metricKey={viewMode === "monthly" ? "monthlyRevenueGross" : "weeklyRevenue"}
+                  value={formatCurrency(viewMode === "monthly" ? metrics.unified.monthlyRevenueGross : metrics.unified.weeklyRevenueGross)}
+                  metricKey="monthlyRevenueGross"
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
                   viewMode={viewMode}
-                  right={rightBlock(viewMode === "monthly" ? "monthlyRevenueGross" : "weeklyRevenue", true)}
+                  right={rightBlock(viewMode === "monthly" ? "monthlyRevenueGross" : "weeklyRevenueGross", true)}
                 />
                 <MetricCard
                   label={viewMode === "monthly" ? "Monthly Rev. (Net)" : "Weekly Rev. (Net)"}
-                  value={formatCurrency(viewMode === "monthly" ? metrics.unified.monthlyRevenueNet : metrics.unified.weeklyRevenue)}
-                  metricKey={viewMode === "monthly" ? "monthlyRevenueNet" : "weeklyRevenue"}
+                  value={formatCurrency(viewMode === "monthly" ? metrics.unified.monthlyRevenueNet : metrics.unified.weeklyRevenueNet)}
+                  metricKey="monthlyRevenueNet"
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
                   viewMode={viewMode}
-                  right={rightBlock(viewMode === "monthly" ? "monthlyRevenueNet" : "weeklyRevenue", true)}
+                  right={rightBlock(viewMode === "monthly" ? "monthlyRevenueNet" : "weeklyRevenueNet", true)}
                 />
               </div>
               <div className="grid grid-cols-1 md:grid-cols-1 gap-4">
@@ -484,6 +485,53 @@ export default function DashboardPage() {
                 Settings
               </Button>
             </div>
+
+            {validateRevenue && (
+              <div className="mt-12">
+                <h2 className="text-xl font-semibold mb-4">🔍 Revenue Validation (October 2025)</h2>
+                <p className="text-sm text-gray-600 mb-4">{validateRevenue.instructions}</p>
+                <div className="border border-blue-200 rounded p-4 bg-blue-50 space-y-4">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {Object.entries(validateRevenue.octoberTotals).map(([platform, totals]: [string, any]) => (
+                      <div key={platform} className="bg-white p-3 rounded border">
+                        <div className="font-semibold text-lg capitalize">{platform}</div>
+                        <div className="text-sm font-mono">
+                          <div>Gross: {formatCurrency(totals.gross)}</div>
+                          <div>Net: {formatCurrency(totals.net)}</div>
+                          <div>Days: {totals.days}</div>
+                          <div>Avg Daily: {formatCurrency(totals.avgDaily)}</div>
+                        </div>
+                        <div className="text-lg font-bold text-blue-700 mt-2">
+                          {validateRevenue.revenueSplitPercentage[platform]} of total
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="bg-white p-3 rounded border">
+                    <div className="font-semibold">Total All Platforms (Oct 2025)</div>
+                    <div className="text-xl font-mono">
+                      Gross: {formatCurrency(validateRevenue.totalAllPlatforms.gross)} | 
+                      Net: {formatCurrency(validateRevenue.totalAllPlatforms.net)}
+                    </div>
+                  </div>
+                  <div className="bg-white p-3 rounded border">
+                    <div className="font-semibold mb-2">Sample Days for Manual Verification</div>
+                    <div className="text-sm font-mono space-y-2">
+                      {Object.entries(validateRevenue.sampleDaysForVerification).map(([date, platforms]: [string, any]) => (
+                        <div key={date} className="border-b pb-2">
+                          <div className="font-bold">{date}:</div>
+                          {Object.entries(platforms).map(([p, v]: [string, any]) => (
+                            <div key={p} className="ml-4">
+                              {p}: Gross {formatCurrency(v.gross)}, Net {formatCurrency(v.net)}
+                            </div>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {debugRevenue && (
               <div className="mt-12">
@@ -718,9 +766,15 @@ function MetricCard({
       return aKey.localeCompare(bKey);
     });
 
-    // Get current (latest) and previous period values
-    const currentPoint = sorted[sorted.length - 1];
-    const previousPoint = sorted[sorted.length - 2];
+    // Filter to only complete periods for accurate comparison
+    // Incomplete periods (current week/month) have partial data and would show misleading % changes
+    const completePeriods = sorted.filter((p: any) => !p.isIncomplete);
+    
+    if (completePeriods.length < 2) return null;
+
+    // Compare the last two complete periods
+    const currentPoint = completePeriods[completePeriods.length - 1];
+    const previousPoint = completePeriods[completePeriods.length - 2];
     if (!currentPoint || !previousPoint) return null;
 
     const currentValue = currentPoint.unified ?? 0;

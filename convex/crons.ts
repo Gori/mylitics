@@ -8,7 +8,21 @@ export const fetchExchangeRates = action({
   handler: async (ctx) => {
     console.log("[Exchange Rates] Starting fetch...");
     const baseCurrency = "USD";
-    const currencies = ["USD", "EUR", "GBP", "JPY", "CAD", "AUD", "CHF", "CNY", "INR", "BRL", "SEK", "NOK", "DKK", "NZD", "SGD", "HKD", "KRW", "MXN", "ZAR", "TRY", "PLN"];
+    // Include all currencies that appear in App Store and Google Play reports
+    const currencies = [
+      // Major currencies
+      "USD", "EUR", "GBP", "JPY", "CAD", "AUD", "CHF", "CNY", "INR", "BRL",
+      // Nordics
+      "SEK", "NOK", "DKK",
+      // Asia Pacific
+      "NZD", "SGD", "HKD", "KRW", "TWD", "THB", "PHP", "IDR", "MYR", "VND",
+      // Europe (non-Euro)
+      "PLN", "CZK", "HUF", "RON", "BGN", "HRK", "RUB", "UAH",
+      // Americas
+      "MXN", "ARS", "CLP", "COP", "PEN",
+      // Middle East / Africa
+      "ZAR", "TRY", "ILS", "AED", "SAR", "EGP", "NGN",
+    ];
     
     try {
       console.log(`[Exchange Rates] Fetching from API for base ${baseCurrency}...`);

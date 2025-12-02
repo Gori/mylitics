@@ -48,131 +48,143 @@ interface ChatSidebarProps {
 }
 
 const models = [
-  { id: 'gpt-5-mini', name: 'GPT-5 Mini' },
-  { id: 'gpt-5', name: 'GPT-5' },
+  { id: 'gemini-3-pro-preview', name: 'Gemini 3.0' },
 ];
 
 function HeaderControls() {
   return null;
 }
 
-function generateCSV(debugData: any): string {
-  if (!debugData || !debugData.latestByPlatform || !debugData.weeklyDataByMetric || !debugData.flowMetrics) return '';
+const METRIC_LABELS: Record<string, string> = {
+  activeSubscribers: "Active Subscribers",
+  trialSubscribers: "Trial Subscribers",
+  paidSubscribers: "Paid Subscribers",
+  monthlySubscribers: "Monthly Subs",
+  yearlySubscribers: "Yearly Subs",
+  cancellations: "Cancellations",
+  churn: "Churn",
+  graceEvents: "Grace Events",
+  firstPayments: "First Payments",
+  renewals: "Renewals",
+  weeklyRevenue: "Weekly Revenue",
+  mrr: "MRR",
+  monthlyRevenueGross: "Monthly Rev. (Gross)",
+  monthlyRevenueNet: "Monthly Rev. (Net)",
+};
 
-  const metricLabels: Record<string, string> = {
-    activeSubscribers: "Active Subscribers",
-    trialSubscribers: "Trial Subscribers",
-    paidSubscribers: "Paid Subscribers",
-    monthlySubscribers: "Monthly Subs",
-    yearlySubscribers: "Yearly Subs",
-    cancellations: "Cancellations",
-    graceEvents: "Grace Events",
-    firstPayments: "First Payments",
-    renewals: "Renewals",
-    mrr: "MRR",
-    monthlyRevenueGross: "Monthly Rev. (Gross)",
-    monthlyRevenueNet: "Monthly Rev. (Net)",
-  };
+const PLATFORMS = ["appstore", "googleplay", "stripe"] as const;
+const PLATFORM_LABELS: Record<string, string> = {
+  appstore: "App Store",
+  googleplay: "Google Play",
+  stripe: "Stripe",
+};
 
-  const metrics = Object.keys(metricLabels);
+function generatePeriodCSV(
+  debugData: any,
+  periodType: "weekly" | "monthly"
+): string {
+  if (!debugData?.latestByPlatform || !debugData?.flowMetrics) return '';
+
+  const dataByMetric = periodType === "monthly" 
+    ? debugData.monthlyDataByMetric 
+    : debugData.weeklyDataByMetric;
+
+  if (!dataByMetric) return '';
+
+  const periodKey = periodType === "monthly" ? "month" : "week";
+  const metrics = Object.keys(METRIC_LABELS);
   const flowMetrics = debugData.flowMetrics;
-  const rows: Array<{ metricName: string; platform: string; total: number; weeks: Record<string, number> }> = [];
+  const rows: Array<{ metricName: string; platform: string; total: number; periods: Record<string, number> }> = [];
 
-  const allWeeks = new Set<string>();
+  // Collect all periods
+  const allPeriods = new Set<string>();
   for (const metric of metrics) {
-    const weeklyData = debugData.weeklyDataByMetric[metric];
-    if (weeklyData && Array.isArray(weeklyData)) {
-      weeklyData.forEach((w: any) => {
-        if (w && w.week) allWeeks.add(w.week);
+    const periodData = dataByMetric[metric];
+    if (periodData && Array.isArray(periodData)) {
+      periodData.forEach((p: any) => {
+        const key = p[periodKey];
+        if (key) allPeriods.add(key);
       });
     }
   }
-  const sortedWeeks = Array.from(allWeeks).sort();
+  const sortedPeriods = Array.from(allPeriods).sort();
 
   for (const metric of metrics) {
-    const weeklyData = debugData.weeklyDataByMetric[metric];
-    if (!weeklyData || !Array.isArray(weeklyData)) continue;
+    const periodData = dataByMetric[metric];
+    if (!periodData || !Array.isArray(periodData)) continue;
     
     const isFlowMetric = flowMetrics.includes(metric);
 
-    const weekLookup: Record<string, any> = {};
-    weeklyData.forEach((w: any) => {
-      if (w && w.week) {
-        weekLookup[w.week] = w;
-      }
+    const periodLookup: Record<string, any> = {};
+    periodData.forEach((p: any) => {
+      const key = p[periodKey];
+      if (key) periodLookup[key] = p;
     });
-
-    const platforms = ["appstore", "googleplay", "stripe"];
-    const platformLabels: Record<string, string> = {
-      appstore: "App Store",
-      googleplay: "Google Play",
-      stripe: "Stripe",
-    };
 
     const platformTotals: Record<string, number> = {};
 
-    for (const platform of platforms) {
+    for (const platform of PLATFORMS) {
       let platformTotal = 0;
       if (isFlowMetric) {
-        if (debugData.flowSumsByPlatform && debugData.flowSumsByPlatform[platform] && debugData.flowSumsByPlatform[platform][metric] !== undefined) {
-          platformTotal = debugData.flowSumsByPlatform[platform][metric];
-        }
+        platformTotal = debugData.flowSumsByPlatform?.[platform]?.[metric] ?? 0;
       } else {
-        if (debugData.latestByPlatform[platform] && debugData.latestByPlatform[platform][metric] !== undefined) {
-          platformTotal = debugData.latestByPlatform[platform][metric];
-        }
+        platformTotal = debugData.latestByPlatform[platform]?.[metric] ?? 0;
       }
       platformTotals[platform] = platformTotal;
     }
 
-    const unifiedTotal = 
-      platformTotals.appstore + 
-      platformTotals.googleplay + 
-      platformTotals.stripe;
+    const unifiedTotal = PLATFORMS.reduce((sum, p) => sum + platformTotals[p], 0);
 
-    const unifiedWeeks: Record<string, number> = {};
-    sortedWeeks.forEach((week) => {
-      unifiedWeeks[week] = weekLookup[week]?.unified ?? 0;
+    const unifiedPeriods: Record<string, number> = {};
+    sortedPeriods.forEach((period) => {
+      unifiedPeriods[period] = periodLookup[period]?.unified ?? 0;
     });
 
     rows.push({
-      metricName: metricLabels[metric],
+      metricName: METRIC_LABELS[metric],
       platform: "Unified",
       total: unifiedTotal,
-      weeks: unifiedWeeks,
+      periods: unifiedPeriods,
     });
 
-    for (const platform of platforms) {
-      const platformWeeks: Record<string, number> = {};
-      sortedWeeks.forEach((week) => {
-        platformWeeks[week] = weekLookup[week]?.[platform] ?? 0;
+    for (const platform of PLATFORMS) {
+      const platformPeriods: Record<string, number> = {};
+      sortedPeriods.forEach((period) => {
+        platformPeriods[period] = periodLookup[period]?.[platform] ?? 0;
       });
 
       rows.push({
-        metricName: metricLabels[metric],
-        platform: platformLabels[platform],
+        metricName: METRIC_LABELS[metric],
+        platform: PLATFORM_LABELS[platform],
         total: platformTotals[platform],
-        weeks: platformWeeks,
+        periods: platformPeriods,
       });
     }
   }
 
   if (rows.length === 0) return '';
 
-  const headers = ["Metric", "Platform", "Total", ...sortedWeeks];
+  const headers = ["Metric", "Platform", "Total", ...sortedPeriods];
   const csvRows = [headers.join(",")];
 
   for (const row of rows) {
-    const weekValues = sortedWeeks.map((week) => row.weeks[week] ?? 0);
+    const periodValues = sortedPeriods.map((period) => row.periods[period] ?? 0);
     csvRows.push([
       `"${row.metricName}"`,
       row.platform,
       row.total,
-      ...weekValues,
+      ...periodValues,
     ].join(","));
   }
 
   return csvRows.join("\n");
+}
+
+function generateDataContext(debugData: any): { weeklyCSV: string; monthlyCSV: string } {
+  return {
+    weeklyCSV: generatePeriodCSV(debugData, "weekly"),
+    monthlyCSV: generatePeriodCSV(debugData, "monthly"),
+  };
 }
 
 function ChatInput({ 
@@ -198,14 +210,24 @@ function ChatInput({
     if (!messageText.trim() || status !== 'ready' || !chatContext || !debugData) return;
 
     const latest = chatContext.latestMetrics;
-    const csvData = generateCSV(debugData);
+    const dataContext = generateDataContext(debugData);
     
     const fullPayload = {
       currency: chatContext.currency,
       current: latest,
       platformBreakdown: latest.platformBreakdown,
-      csvData: csvData,
+      weeklyCSV: dataContext.weeklyCSV,
+      monthlyCSV: dataContext.monthlyCSV,
     };
+
+    // Log what we're sending
+    console.log('=== CHAT SENDING ===');
+    console.log('Question:', messageText);
+    console.log('Currency:', fullPayload.currency);
+    console.log('Current metrics:', fullPayload.current);
+    console.log('Platform breakdown:', fullPayload.platformBreakdown);
+    console.log('Weekly CSV rows:', dataContext.weeklyCSV.split('\n').length);
+    console.log('Monthly CSV rows:', dataContext.monthlyCSV.split('\n').length);
 
     const messageWithContext = `[DATA]${JSON.stringify(fullPayload)}[/DATA][QUESTION]${messageText}[/QUESTION]`;
 
@@ -290,7 +312,7 @@ export function ChatSidebar({ chatContext, debugData }: ChatSidebarProps) {
     <div ref={sidebarRef} className="text-base">
       <Sidebar side="right" className="text-base">
         <SidebarHeader>
-          <h2 className="text-3xl font-semibold pl-8 pt-2">Assistant</h2>
+          <h2 className="text-3xl font-semibold pl-8 pt-2">Alf jr</h2>
         </SidebarHeader>
 
       <SidebarGroup className="flex flex-col flex-1 min-h-0">

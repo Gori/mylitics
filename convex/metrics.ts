@@ -250,20 +250,44 @@ export const processAndStoreMetrics = internalMutation({
     const firstPayments = revenueEvents.filter((e) => e.eventType === "first_payment" && e.timestamp >= todayStart && e.timestamp <= todayEnd).length;
     const renewals = revenueEvents.filter((e) => e.eventType === "renewal" && e.timestamp >= todayStart && e.timestamp <= todayEnd).length;
 
-    // MRR from current active subscription prices
+    // MRR from current active PAID subscription prices (exclude trials)
     let mrr = 0;
     for (const s of subscriptions) {
+      // Skip trials entirely - they're not paying yet
       if (s.isTrial) continue;
-      if (!(s.status === "active" || s.status === "trialing")) continue;
+      // Only include active subscriptions (not trialing, canceled, etc.)
+      if (s.status !== "active") continue;
       try {
         const raw = JSON.parse(s.rawData);
-        const unit = raw?.items?.data?.[0]?.price?.unit_amount;
-        const interval = raw?.items?.data?.[0]?.price?.recurring?.interval;
-        const currency = raw?.items?.data?.[0]?.price?.currency || "usd";
-        if (typeof unit === "number") {
-          const monthlyAmount = interval === "year" ? unit / 100 / 12 : unit / 100;
-          const convertedAmount = await convertAndRoundCurrency(ctx, monthlyAmount, currency, userCurrency);
-          mrr += convertedAmount;
+        const items = raw?.items?.data || [];
+        // Sum ALL items in the subscription (handles multi-item subscriptions)
+        for (const item of items) {
+          const unit = item?.price?.unit_amount;
+          const interval = item?.price?.recurring?.interval;
+          const intervalCount = item?.price?.recurring?.interval_count || 1;
+          const currency = item?.price?.currency || "usd";
+          if (typeof unit === "number") {
+            // Convert to monthly amount based on interval
+            let monthlyAmount: number;
+            switch (interval) {
+              case "day":
+                monthlyAmount = (unit / 100) * (30 / intervalCount);
+                break;
+              case "week":
+                monthlyAmount = (unit / 100) * (4.33 / intervalCount);
+                break;
+              case "month":
+                monthlyAmount = (unit / 100) / intervalCount;
+                break;
+              case "year":
+                monthlyAmount = (unit / 100) / (12 * intervalCount);
+                break;
+              default:
+                monthlyAmount = unit / 100; // Assume monthly if unknown
+            }
+            const convertedAmount = await convertAndRoundCurrency(ctx, monthlyAmount, currency, userCurrency);
+            mrr += convertedAmount;
+          }
         }
       } catch {}
     }
@@ -474,14 +498,37 @@ export const generateHistoricalSnapshots = internalMutation({
           const trialEnd = raw?.trial_end ? raw.trial_end * 1000 : null;
           if (trialEnd && dayStart < trialEnd) trialSubscribers += 1;
 
-          if (!s.isTrial && (s.status === "active" || s.status === "trialing")) {
-            const unit = raw?.items?.data?.[0]?.price?.unit_amount;
-            const interval = raw?.items?.data?.[0]?.price?.recurring?.interval;
-            const currency = raw?.items?.data?.[0]?.price?.currency || "usd";
-            if (typeof unit === "number") {
-              const monthlyAmount = interval === "year" ? unit / 100 / 12 : unit / 100;
-              const convertedAmount = await convertAndRoundCurrency(ctx, monthlyAmount, currency, userCurrency);
-              mrr += convertedAmount;
+          // Only include active PAID subscriptions in MRR (not trialing)
+          if (!s.isTrial && s.status === "active") {
+            const items = raw?.items?.data || [];
+            // Sum ALL items in the subscription
+            for (const item of items) {
+              const unit = item?.price?.unit_amount;
+              const interval = item?.price?.recurring?.interval;
+              const intervalCount = item?.price?.recurring?.interval_count || 1;
+              const currency = item?.price?.currency || "usd";
+              if (typeof unit === "number") {
+                // Convert to monthly amount based on interval
+                let monthlyAmount: number;
+                switch (interval) {
+                  case "day":
+                    monthlyAmount = (unit / 100) * (30 / intervalCount);
+                    break;
+                  case "week":
+                    monthlyAmount = (unit / 100) * (4.33 / intervalCount);
+                    break;
+                  case "month":
+                    monthlyAmount = (unit / 100) / intervalCount;
+                    break;
+                  case "year":
+                    monthlyAmount = (unit / 100) / (12 * intervalCount);
+                    break;
+                  default:
+                    monthlyAmount = unit / 100;
+                }
+                const convertedAmount = await convertAndRoundCurrency(ctx, monthlyAmount, currency, userCurrency);
+                mrr += convertedAmount;
+              }
             }
           }
         } catch {}
@@ -851,17 +898,12 @@ export const processAppStoreReport = internalMutation({
       }
       
       // Use REVENUE from SUBSCRIBER report if available
+      // NOTE: eventData.revenueGross/Net are ALREADY in userCurrency (converted in processAppStoreSubscriberReport)
       if (eventData.revenueGross !== undefined && eventData.revenueGross > 0) {
-        // Convert from USD to user's preferred currency
-        const convertedGross = await convertAndRoundCurrency(ctx, eventData.revenueGross, "USD", userCurrency);
-        const convertedNet = eventData.revenueNet !== undefined 
-          ? await convertAndRoundCurrency(ctx, eventData.revenueNet, "USD", userCurrency)
-          : convertedGross * 0.85;
+        monthlyRevenueGross = eventData.revenueGross;
+        monthlyRevenueNet = eventData.revenueNet ?? (eventData.revenueGross * 0.85);
         
-        monthlyRevenueGross = convertedGross;
-        monthlyRevenueNet = convertedNet;
-        
-        console.log(`[App Store ${date}] Using SUBSCRIBER report revenue: Gross=${eventData.revenueGross.toFixed(2)} USD -> ${convertedGross.toFixed(2)} ${userCurrency}, Net=${eventData.revenueNet?.toFixed(2)} USD -> ${convertedNet.toFixed(2)} ${userCurrency}`);
+        console.log(`[App Store ${date}] Using SUBSCRIBER report revenue: Gross=${monthlyRevenueGross.toFixed(2)} ${userCurrency}, Net=${monthlyRevenueNet.toFixed(2)} ${userCurrency}`);
       }
     }
     
@@ -893,8 +935,33 @@ export const processAppStoreReport = internalMutation({
     
     finalChurn = finalCancellations;
 
-    // MRR: estimate from monthly revenue and active subscribers
-    const estimatedMRR = finalActiveSubscribers > 0 ? (monthlyRevenueNet / finalActiveSubscribers) * finalActiveSubscribers : 0;
+    // MRR: Calculate from ARPU (Average Revenue Per User) using 30-day rolling average
+    // ARPU = (30-day total net revenue) ÷ (sum of daily paid subscribers over 30 days)
+    // MRR = current paidSubscribers × ARPU
+    let estimatedMRR = 0;
+    if (finalPaidSubscribers > 0) {
+      const thirtyDaysAgo = new Date(new Date(date).getTime() - 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+      const recentSnapshots = await ctx.db
+        .query("metricsSnapshots")
+        .withIndex("by_app_platform", (q) => q.eq("appId", appId).eq("platform", "appstore"))
+        .filter((q) => q.gte(q.field("date"), thirtyDaysAgo))
+        .filter((q) => q.lt(q.field("date"), date)) // Exclude current date to avoid circular dependency
+        .collect();
+      
+      if (recentSnapshots.length > 0) {
+        const totalRevenue = recentSnapshots.reduce((sum, s) => sum + (s.monthlyRevenueNet || 0), 0) + monthlyRevenueNet;
+        const totalPaidSubs = recentSnapshots.reduce((sum, s) => sum + (s.paidSubscribers || 0), 0) + finalPaidSubscribers;
+        const avgPaidSubs = totalPaidSubs / (recentSnapshots.length + 1);
+        
+        if (avgPaidSubs > 0) {
+          const arpu = totalRevenue / avgPaidSubs; // Revenue per subscriber over the period
+          estimatedMRR = finalPaidSubscribers * arpu;
+        }
+      } else {
+        // No historical data - estimate from today's revenue × 30
+        estimatedMRR = monthlyRevenueNet * 30;
+      }
+    }
     
     const weeklyRevenue = Math.round((monthlyRevenueNet + Number.EPSILON) * 100) / 100;
     
@@ -975,6 +1042,10 @@ export const processAppStoreSubscriberReport = internalMutation({
     // Use developerProceedsIdx if available, otherwise try proceedsIdx
     const netRevenueIdx = developerProceedsIdx >= 0 ? developerProceedsIdx : proceedsIdx;
     
+    // Look for CURRENCY columns to know what currency the prices are in
+    const customerCurrencyIdx = idx(/customer\s*currency/i);
+    const proceedsCurrencyIdx = idx(/proceeds\s*currency/i);
+    
     // Fallback: If no "Event" column, try "proceeds reason" (older format)
     const proceedsReasonIdx = idx(/proceeds\s*reason/i);
     
@@ -986,15 +1057,27 @@ export const processAppStoreSubscriberReport = internalMutation({
       return { renewals: 0, firstPayments: 0, cancellations: 0, revenueGross: 0, revenueNet: 0 };
     }
 
+    // CRITICAL: If we can't filter by event date, we CANNOT extract revenue
+    // because the SUBSCRIBER report contains events from multiple days.
+    // Summing all rows would give us cumulative revenue, not daily revenue.
+    const canFilterByDate = eventDateIdx >= 0;
+    if (!canFilterByDate) {
+      console.log(`[App Store Subscriber ${date}] ⚠️ No 'Event Date' column found - revenue extraction DISABLED to prevent inflation`);
+      console.log(`[App Store Subscriber ${date}] Available headers:`, headers.join(", "));
+    }
+
     console.log(`[App Store Subscriber ${date}] Column indices:`, {
       event: eventIdx,
       proceedsReason: proceedsReasonIdx,
       eventDate: eventDateIdx,
       quantity: quantityIdx,
       customerPrice: customerPriceIdx,
+      customerCurrency: customerCurrencyIdx,
       developerProceeds: developerProceedsIdx,
+      proceedsCurrency: proceedsCurrencyIdx,
       proceeds: proceedsIdx,
       usingColumn: eventIdx >= 0 ? "Event" : "Proceeds Reason",
+      canExtractRevenue: canFilterByDate,
     });
 
     let renewals = 0;
@@ -1004,6 +1087,7 @@ export const processAppStoreSubscriberReport = internalMutation({
     let revenueNet = 0;
     const eventTypes: Record<string, number> = {};
     const sampleEvents: string[] = [];
+    const currenciesSeen: Record<string, number> = {}; // Track currencies for debugging
     let rowsProcessed = 0;
     let rowsSkippedWrongDate = 0;
 
@@ -1038,13 +1122,21 @@ export const processAppStoreSubscriberReport = internalMutation({
       
       rowsProcessed++;
       
-      // Extract revenue amounts for this row (Apple reports are in USD)
-      const rowGrossUSD = customerPriceIdx >= 0 ? Number(cols[customerPriceIdx] || 0) : 0;
-      const rowNetUSD = netRevenueIdx >= 0 ? Number(cols[netRevenueIdx] || 0) : (rowGrossUSD * 0.85); // Fallback: estimate 85% of gross
-      
-      // Convert to user's preferred currency
-      const rowGross = await convertAndRoundCurrency(ctx, rowGrossUSD, "USD", userCurrency);
-      const rowNet = await convertAndRoundCurrency(ctx, rowNetUSD, "USD", userCurrency);
+      // Extract revenue amounts for this row ONLY if we can filter by date
+      // Otherwise we'd be summing cumulative revenue from multiple days
+      let rowGross = 0;
+      let rowNet = 0;
+      if (canFilterByDate) {
+        const rowGrossRaw = customerPriceIdx >= 0 ? Number(cols[customerPriceIdx] || 0) : 0;
+        const rowNetRaw = netRevenueIdx >= 0 ? Number(cols[netRevenueIdx] || 0) : (rowGrossRaw * 0.85);
+        // Read actual currency from the report - don't assume USD!
+        const grossCurrency = customerCurrencyIdx >= 0 ? (cols[customerCurrencyIdx] || "USD").trim() : "USD";
+        const netCurrency = proceedsCurrencyIdx >= 0 ? (cols[proceedsCurrencyIdx] || "USD").trim() : "USD";
+        // Track currencies seen for debugging
+        currenciesSeen[grossCurrency] = (currenciesSeen[grossCurrency] || 0) + 1;
+        rowGross = await convertAndRoundCurrency(ctx, rowGrossRaw, grossCurrency, userCurrency);
+        rowNet = await convertAndRoundCurrency(ctx, rowNetRaw, netCurrency, userCurrency);
+      }
       
       if (eventValue) {
         const eventLower = eventValue.toLowerCase();
@@ -1098,9 +1190,11 @@ export const processAppStoreSubscriberReport = internalMutation({
     console.log(`[App Store Subscriber ${date}] Total rows in report: ${lines.length - 1}`);
     console.log(`[App Store Subscriber ${date}] Rows processed (matching date ${date}): ${rowsProcessed}`);
     console.log(`[App Store Subscriber ${date}] Rows skipped (wrong date): ${rowsSkippedWrongDate}`);
+    console.log(`[App Store Subscriber ${date}] Currencies seen:`, JSON.stringify(currenciesSeen));
     console.log(`[App Store Subscriber ${date}] Event values found (${Object.keys(eventTypes).length}):`, JSON.stringify(eventTypes));
     console.log(`[App Store Subscriber ${date}] Sample events:`, sampleEvents.join(", "));
     console.log(`[App Store Subscriber ${date}] Counts - Renewals: ${renewals}, First Payments: ${firstPayments}, Cancellations: ${cancellations}`);
+    console.log(`[App Store Subscriber ${date}] Revenue extraction enabled: ${canFilterByDate}`);
     console.log(`[App Store Subscriber ${date}] Revenue - Gross: ${revenueGross.toFixed(2)} ${userCurrency}, Net: ${revenueNet.toFixed(2)} ${userCurrency}`);
 
     return { 
@@ -1370,11 +1464,25 @@ export const processGooglePlayReports = internalMutation({
         ? totalTransactions - newSubscriptions 
         : (subMetrics?.renewals || 0);
 
-      // Calculate MRR if we have active subscribers (rough estimate)
-      // This is a placeholder - ideally we'd need pricing data
+      // MRR: For Google Play, use 30-day rolling revenue as the MRR estimate
+      // This is because Google Play doesn't provide reliable per-subscription pricing
       let mrr = 0;
-      if (activeSubscribers > 0 && convertedNet > 0) {
-        // Estimate MRR based on daily revenue * 30
+      const thirtyDaysAgo = new Date(new Date(date).getTime() - 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+      
+      // Use pre-fetched snapshots to get 30-day revenue
+      const recentSnapshots = existingSnapshots
+        .filter((s) => s.date >= thirtyDaysAgo && s.date < date)
+        .sort((a, b) => a.date.localeCompare(b.date));
+      
+      // Calculate 30-day rolling revenue (this IS the MRR for Google Play)
+      const historicalRevenue = recentSnapshots.reduce((sum, s) => sum + (s.monthlyRevenueNet || 0), 0);
+      const totalRevenue = historicalRevenue + convertedNet;
+      
+      if (totalRevenue > 0) {
+        // MRR = 30-day rolling net revenue
+        mrr = Math.round((totalRevenue + Number.EPSILON) * 100) / 100;
+      } else if (convertedNet > 0) {
+        // No historical data - estimate from daily revenue × 30
         mrr = Math.round((convertedNet * 30 + Number.EPSILON) * 100) / 100;
       }
 

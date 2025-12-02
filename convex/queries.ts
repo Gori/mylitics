@@ -49,15 +49,17 @@ export const getLatestMetrics = query({
       .collect();
 
     const lastSync = Math.max(...connections.map((c) => c.lastSync || 0));
+    const activePlatforms = new Set(connections.map((c) => c.platform));
 
-    // Flow metrics (sum over 30 days or 7 days for weeklyRevenue)
+    // Flow metrics (sum over 30 days for monthly, 7 days for weekly)
     const flowMetrics = [
       "cancellations",
       "churn",
       "graceEvents",
       "firstPayments",
       "renewals",
-      "weeklyRevenue",
+      "weeklyRevenueGross",
+      "weeklyRevenueNet",
       "monthlyRevenueGross",
       "monthlyRevenueNet",
     ];
@@ -113,6 +115,40 @@ export const getLatestMetrics = query({
       .filter((q) => q.neq(q.field("platform"), "unified"))
       .collect();
 
+    // Find the most recent date with complete data from all active platforms
+    const snapshotsByDate: Record<string, Set<string>> = {};
+    for (const snap of snapshots30) {
+      if (!snapshotsByDate[snap.date]) {
+        snapshotsByDate[snap.date] = new Set();
+      }
+      snapshotsByDate[snap.date].add(snap.platform);
+    }
+    
+    // Find the most recent date where all active platforms have data
+    const sortedDates = Object.keys(snapshotsByDate).sort((a, b) => b.localeCompare(a)); // newest first
+    let mostRecentCompleteDate = sortedDates[0] || today; // fallback to most recent date or today
+    if (activePlatforms.size > 0) {
+      for (const date of sortedDates) {
+        const platformsOnDate = snapshotsByDate[date];
+        const hasAllPlatforms = Array.from(activePlatforms).every(p => platformsOnDate.has(p));
+        if (hasAllPlatforms) {
+          mostRecentCompleteDate = date;
+          break;
+        }
+      }
+    }
+    
+    // Calculate 7-day date range ending at mostRecentCompleteDate
+    const endDate = new Date(mostRecentCompleteDate);
+    const sevenDaysAgo = new Date(endDate);
+    sevenDaysAgo.setDate(endDate.getDate() - 6); // 7 days including the end date
+    const sevenDaysAgoStr = sevenDaysAgo.toISOString().split("T")[0];
+
+    // Filter snapshots for 7-day calculations
+    const snapshots7 = snapshots30.filter(snap => 
+      snap.date >= sevenDaysAgoStr && snap.date <= mostRecentCompleteDate
+    );
+
     // Calculate 30-day sums for flow metrics by platform
     const flowSumsByPlatform: Record<string, any> = {};
     for (const snap of snapshots30) {
@@ -123,7 +159,6 @@ export const getLatestMetrics = query({
           graceEvents: 0,
           firstPayments: 0,
           renewals: 0,
-          weeklyRevenue: 0,
           monthlyRevenueGross: 0,
           monthlyRevenueNet: 0,
         };
@@ -133,10 +168,21 @@ export const getLatestMetrics = query({
       flowSumsByPlatform[snap.platform].graceEvents += snap.graceEvents;
       flowSumsByPlatform[snap.platform].firstPayments += snap.firstPayments;
       flowSumsByPlatform[snap.platform].renewals += (snap.renewals || 0);
-      // weeklyRevenue is optional - fallback to monthlyRevenueNet for old data
-      flowSumsByPlatform[snap.platform].weeklyRevenue += (snap.weeklyRevenue !== undefined ? snap.weeklyRevenue : snap.monthlyRevenueNet);
       flowSumsByPlatform[snap.platform].monthlyRevenueGross += snap.monthlyRevenueGross;
       flowSumsByPlatform[snap.platform].monthlyRevenueNet += snap.monthlyRevenueNet;
+    }
+
+    // Calculate 7-day sums for weekly revenue by platform
+    const weeklySumsByPlatform: Record<string, any> = {};
+    for (const snap of snapshots7) {
+      if (!weeklySumsByPlatform[snap.platform]) {
+        weeklySumsByPlatform[snap.platform] = {
+          weeklyRevenueGross: 0,
+          weeklyRevenueNet: 0,
+        };
+      }
+      weeklySumsByPlatform[snap.platform].weeklyRevenueGross += snap.monthlyRevenueGross;
+      weeklySumsByPlatform[snap.platform].weeklyRevenueNet += snap.monthlyRevenueNet;
     }
 
     // Build platformMap with correct values for each metric type
@@ -144,13 +190,14 @@ export const getLatestMetrics = query({
     for (const platform of ["appstore", "googleplay", "stripe"]) {
       const latest = latestByPlatform[platform];
       const flowSums = flowSumsByPlatform[platform];
+      const weeklySums = weeklySumsByPlatform[platform];
       
       // Only include platform in map if it has at least one snapshot
       if (!latest && !flowSums) {
         continue;
       }
       
-      // Stock metrics from latest snapshot, flow metrics from 30-day sums
+      // Stock metrics from latest snapshot, flow metrics from 30-day sums, weekly from 7-day sums
       platformMap[platform] = {
         activeSubscribers: latest?.activeSubscribers || 0,
         trialSubscribers: latest?.trialSubscribers || 0,
@@ -161,7 +208,8 @@ export const getLatestMetrics = query({
         graceEvents: flowSums?.graceEvents || 0,
         firstPayments: flowSums?.firstPayments || 0,
         renewals: flowSums?.renewals || 0,
-        weeklyRevenue: flowSums?.weeklyRevenue || 0,
+        weeklyRevenueGross: weeklySums?.weeklyRevenueGross || 0,
+        weeklyRevenueNet: weeklySums?.weeklyRevenueNet || 0,
         monthlyRevenueGross: flowSums?.monthlyRevenueGross || 0,
         monthlyRevenueNet: flowSums?.monthlyRevenueNet || 0,
         monthlySubscribers: latest?.monthlySubscribers || 0,
@@ -180,7 +228,8 @@ export const getLatestMetrics = query({
       paybacks: 0,
       firstPayments: (platformMap.appstore?.firstPayments || 0) + (platformMap.googleplay?.firstPayments || 0) + (platformMap.stripe?.firstPayments || 0),
       renewals: (platformMap.appstore?.renewals || 0) + (platformMap.googleplay?.renewals || 0) + (platformMap.stripe?.renewals || 0),
-      weeklyRevenue: Math.round(((platformMap.appstore?.weeklyRevenue || 0) + (platformMap.googleplay?.weeklyRevenue || 0) + (platformMap.stripe?.weeklyRevenue || 0) + Number.EPSILON) * 100) / 100,
+      weeklyRevenueGross: Math.round(((platformMap.appstore?.weeklyRevenueGross || 0) + (platformMap.googleplay?.weeklyRevenueGross || 0) + (platformMap.stripe?.weeklyRevenueGross || 0) + Number.EPSILON) * 100) / 100,
+      weeklyRevenueNet: Math.round(((platformMap.appstore?.weeklyRevenueNet || 0) + (platformMap.googleplay?.weeklyRevenueNet || 0) + (platformMap.stripe?.weeklyRevenueNet || 0) + Number.EPSILON) * 100) / 100,
       mrr: Math.round(((platformMap.appstore?.mrr || 0) + (platformMap.googleplay?.mrr || 0) + (platformMap.stripe?.mrr || 0) + Number.EPSILON) * 100) / 100,
       monthlyRevenueGross: Math.round(((platformMap.appstore?.monthlyRevenueGross || 0) + (platformMap.googleplay?.monthlyRevenueGross || 0) + (platformMap.stripe?.monthlyRevenueGross || 0) + Number.EPSILON) * 100) / 100,
       monthlyRevenueNet: Math.round(((platformMap.appstore?.monthlyRevenueNet || 0) + (platformMap.googleplay?.monthlyRevenueNet || 0) + (platformMap.stripe?.monthlyRevenueNet || 0) + Number.EPSILON) * 100) / 100,
@@ -355,9 +404,12 @@ export const getWeeklyMetricsHistory = query({
         let googleplay = val((platforms as any).googleplay);
         const stripe = val((platforms as any).stripe);
         
-        // For Google Play stock metrics, treat 0 as null (no data) so line stops
+        // For Google Play subscriber metrics, treat 0 as null (no data) so line stops
         // Google Play subscription reports have delays, so 0 means no data, not zero subscribers
-        if (isStockMetric && googleplay === 0) {
+        // BUT: MRR is a calculated value, so 0 is valid (not missing data)
+        const subscriberMetrics = ["activeSubscribers", "trialSubscribers", "paidSubscribers", "monthlySubscribers", "yearlySubscribers"];
+        const isSubscriberMetric = subscriberMetrics.includes(metric);
+        if (isSubscriberMetric && googleplay === 0) {
           googleplay = null;
         }
         
@@ -368,6 +420,16 @@ export const getWeeklyMetricsHistory = query({
         const unified = isCurrencyMetric 
           ? Math.round((sum + Number.EPSILON) * 100) / 100
           : sum;
+        
+        // For stock metrics, check if all active platforms have valid (non-null) values
+        // This is crucial for accurate percentage change calculations
+        const hasValidStockData = !isStockMetric || Array.from(activePlatforms).every((p) => {
+          if (p === 'appstore') return appstore !== null;
+          if (p === 'googleplay') return googleplay !== null;
+          if (p === 'stripe') return stripe !== null;
+          return true;
+        });
+        
         return {
           week,
           appstore,
@@ -375,14 +437,15 @@ export const getWeeklyMetricsHistory = query({
           stripe,
           unified,
           hasAllPlatforms,
+          hasValidStockData,
         };
       })
       .map((w) => {
-        // Check if week is incomplete: missing platforms OR current/future week
+        // Check if week is incomplete: missing platforms, current/future week, or missing stock data
         const weekEnd = new Date(w.week);
         weekEnd.setDate(weekEnd.getDate() + 6); // End of week
         const isCurrentOrFutureWeek = weekEnd >= new Date();
-        const isIncomplete = !w.hasAllPlatforms || isCurrentOrFutureWeek;
+        const isIncomplete = !w.hasAllPlatforms || isCurrentOrFutureWeek || !w.hasValidStockData;
         
         return { ...w, isIncomplete };
       })
@@ -471,7 +534,10 @@ export const getMonthlyMetricsHistory = query({
         let googleplay = val((platforms as any).googleplay);
         const stripe = val((platforms as any).stripe);
         
-        if (isStockMetric && googleplay === 0) {
+        // For Google Play subscriber metrics, treat 0 as null (no data)
+        // MRR is calculated, so 0 is valid
+        const subscriberMetrics = ["activeSubscribers", "trialSubscribers", "paidSubscribers", "monthlySubscribers", "yearlySubscribers"];
+        if (subscriberMetrics.includes(metric) && googleplay === 0) {
           googleplay = null;
         }
         
@@ -480,6 +546,15 @@ export const getMonthlyMetricsHistory = query({
         const unified = isCurrencyMetric 
           ? Math.round((sum + Number.EPSILON) * 100) / 100
           : sum;
+        
+        // For stock metrics, check if all active platforms have valid (non-null) values
+        const hasValidStockData = !isStockMetric || Array.from(activePlatforms).every((p) => {
+          if (p === 'appstore') return appstore !== null;
+          if (p === 'googleplay') return googleplay !== null;
+          if (p === 'stripe') return stripe !== null;
+          return true;
+        });
+        
         return {
           month,
           appstore,
@@ -487,14 +562,15 @@ export const getMonthlyMetricsHistory = query({
           stripe,
           unified,
           hasAllPlatforms,
+          hasValidStockData,
         };
       })
       .map((m) => {
-        // Check if month is incomplete: current month or missing platforms
+        // Check if month is incomplete: current month, missing platforms, or missing stock data
         const now = new Date();
         const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
         const isCurrentMonth = m.month === currentMonth;
-        const isIncomplete = !m.hasAllPlatforms || isCurrentMonth;
+        const isIncomplete = !m.hasAllPlatforms || isCurrentMonth || !m.hasValidStockData;
         
         return { ...m, isIncomplete };
       })
@@ -731,19 +807,31 @@ export const getAllDebugData = query({
           let googleplay = val((platforms as any).googleplay);
           const stripe = val((platforms as any).stripe);
           
-          if (isStockMetric && googleplay === 0) {
+          // For Google Play subscriber metrics, treat 0 as null (no data)
+          // MRR is calculated, so 0 is valid
+          const subscriberMetrics = ["activeSubscribers", "trialSubscribers", "paidSubscribers", "monthlySubscribers", "yearlySubscribers"];
+          if (subscriberMetrics.includes(metric) && googleplay === 0) {
             googleplay = null;
           }
           
           const sum = (appstore ?? 0) + (googleplay ?? 0) + (stripe ?? 0);
           const unified = sum;
-          return { week, appstore, googleplay, stripe, unified, hasAllPlatforms };
+          
+          // For stock metrics, check if all active platforms have valid (non-null) values
+          const hasValidStockData = !isStockMetric || Array.from(activePlatforms).every((p) => {
+            if (p === 'appstore') return appstore !== null;
+            if (p === 'googleplay') return googleplay !== null;
+            if (p === 'stripe') return stripe !== null;
+            return true;
+          });
+          
+          return { week, appstore, googleplay, stripe, unified, hasAllPlatforms, hasValidStockData };
         })
         .map((w) => {
           const weekEnd = new Date(w.week);
           weekEnd.setDate(weekEnd.getDate() + 6);
           const isCurrentOrFutureWeek = weekEnd >= new Date();
-          const isIncomplete = !w.hasAllPlatforms || isCurrentOrFutureWeek;
+          const isIncomplete = !w.hasAllPlatforms || isCurrentOrFutureWeek || !w.hasValidStockData;
           
           return { ...w, isIncomplete };
         })
@@ -766,17 +854,29 @@ export const getAllDebugData = query({
           let googleplay = val((platforms as any).googleplay);
           const stripe = val((platforms as any).stripe);
           
-          if (isStockMetric && googleplay === 0) {
+          // For Google Play subscriber metrics, treat 0 as null (no data)
+          // MRR is calculated, so 0 is valid
+          const subscriberMetrics = ["activeSubscribers", "trialSubscribers", "paidSubscribers", "monthlySubscribers", "yearlySubscribers"];
+          if (subscriberMetrics.includes(metric) && googleplay === 0) {
             googleplay = null;
           }
           
           const sum = (appstore ?? 0) + (googleplay ?? 0) + (stripe ?? 0);
           const unified = sum;
-          return { month, appstore, googleplay, stripe, unified, hasAllPlatforms };
+          
+          // For stock metrics, check if all active platforms have valid (non-null) values
+          const hasValidStockData = !isStockMetric || Array.from(activePlatforms).every((p) => {
+            if (p === 'appstore') return appstore !== null;
+            if (p === 'googleplay') return googleplay !== null;
+            if (p === 'stripe') return stripe !== null;
+            return true;
+          });
+          
+          return { month, appstore, googleplay, stripe, unified, hasAllPlatforms, hasValidStockData };
         })
         .map((m) => {
           const isCurrentMonth = m.month === currentMonth;
-          const isIncomplete = !m.hasAllPlatforms || isCurrentMonth;
+          const isIncomplete = !m.hasAllPlatforms || isCurrentMonth || !m.hasValidStockData;
           
           return { ...m, isIncomplete };
         })
@@ -933,8 +1033,10 @@ export const getChatContext = query({
           let googleplay: number | null = val((platforms as any).googleplay);
           const stripe = val((platforms as any).stripe);
           
-          // For Google Play stock metrics, treat 0 as null (no data)
-          if (isStockMetric && googleplay === 0) {
+          // For Google Play subscriber metrics, treat 0 as null (no data)
+          // MRR is calculated, so 0 is valid
+          const subscriberMetrics = ["activeSubscribers", "trialSubscribers", "paidSubscribers", "monthlySubscribers", "yearlySubscribers"];
+          if (subscriberMetrics.includes(metric) && googleplay === 0) {
             googleplay = null;
           }
           
@@ -1138,6 +1240,18 @@ export const debugRevenueCalculation = query({
           firstPayments: s.firstPayments,
           renewals: s.renewals,
         })),
+      sampleSnapshotsGooglePlay: snapshots
+        .filter((s) => s.platform === "googleplay")
+        .sort((a, b) => b.date.localeCompare(a.date))
+        .slice(0, 5)
+        .map((s) => ({
+          date: s.date,
+          platform: s.platform,
+          monthlyRevenueGross: s.monthlyRevenueGross,
+          monthlyRevenueNet: s.monthlyRevenueNet,
+          firstPayments: s.firstPayments,
+          renewals: s.renewals,
+        })),
       sampleEvents: allRevenueEvents
         .sort((a, b) => b.timestamp - a.timestamp)
         .slice(0, 10)
@@ -1152,3 +1266,83 @@ export const debugRevenueCalculation = query({
   },
 });
 
+// Validation query to cross-reference with actual platform dashboards
+export const validateRevenueData = query({
+  args: { appId: v.id("apps") },
+  handler: async (ctx, { appId }) => {
+    await validateAppOwnership(ctx, appId);
+    const app = await ctx.db.get(appId);
+    const userCurrency = app?.currency || "USD";
+
+    // Get snapshots for October 2025 (a recent full month for validation)
+    const octStart = "2025-10-01";
+    const octEnd = "2025-10-31";
+    
+    const octSnapshots = await ctx.db
+      .query("metricsSnapshots")
+      .withIndex("by_app_date", (q) => q.eq("appId", appId))
+      .filter((q) => q.and(
+        q.gte(q.field("date"), octStart),
+        q.lte(q.field("date"), octEnd)
+      ))
+      .filter((q) => q.neq(q.field("platform"), "unified"))
+      .collect();
+
+    // Calculate October totals by platform
+    const octTotals: Record<string, { gross: number; net: number; days: number; avgDaily: number }> = {};
+    for (const snap of octSnapshots) {
+      if (!octTotals[snap.platform]) {
+        octTotals[snap.platform] = { gross: 0, net: 0, days: 0, avgDaily: 0 };
+      }
+      octTotals[snap.platform].gross += snap.monthlyRevenueGross;
+      octTotals[snap.platform].net += snap.monthlyRevenueNet;
+      octTotals[snap.platform].days += 1;
+    }
+    
+    // Calculate averages
+    for (const platform of Object.keys(octTotals)) {
+      if (octTotals[platform].days > 0) {
+        octTotals[platform].avgDaily = octTotals[platform].gross / octTotals[platform].days;
+      }
+    }
+
+    // Get a few specific days of snapshots for manual verification
+    const sampleDates = ["2025-10-15", "2025-10-20", "2025-10-25"];
+    const sampleSnapshots: Record<string, Record<string, { gross: number; net: number }>> = {};
+    
+    for (const snap of octSnapshots) {
+      if (sampleDates.includes(snap.date)) {
+        if (!sampleSnapshots[snap.date]) sampleSnapshots[snap.date] = {};
+        sampleSnapshots[snap.date][snap.platform] = {
+          gross: snap.monthlyRevenueGross,
+          net: snap.monthlyRevenueNet,
+        };
+      }
+    }
+
+    // Calculate revenue split percentage
+    const totalGross = Object.values(octTotals).reduce((sum, t) => sum + t.gross, 0);
+    const revenueSplit: Record<string, string> = {};
+    for (const [platform, totals] of Object.entries(octTotals)) {
+      revenueSplit[platform] = totalGross > 0 
+        ? `${((totals.gross / totalGross) * 100).toFixed(1)}%` 
+        : "0%";
+    }
+
+    return {
+      currency: userCurrency,
+      period: "October 2025",
+      instructions: "Compare these totals against your App Store Connect and Google Play Console reports for October 2025",
+      octoberTotals: octTotals,
+      revenueSplitPercentage: revenueSplit,
+      totalAllPlatforms: {
+        gross: totalGross,
+        net: Object.values(octTotals).reduce((sum, t) => sum + t.net, 0),
+      },
+      sampleDaysForVerification: sampleSnapshots,
+      snapshotCountByPlatform: Object.fromEntries(
+        Object.entries(octTotals).map(([p, t]) => [p, t.days])
+      ),
+    };
+  },
+});
