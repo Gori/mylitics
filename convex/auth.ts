@@ -76,6 +76,14 @@ export const createAuth = (
   if (!authSecret) {
     throw new Error("BETTER_AUTH_SECRET is not set");
   }
+
+  // Build trusted origins list
+  const trustedOrigins = [siteUrl, "http://localhost:3000"];
+  
+  // Add Vercel preview URL if available
+  if (process.env.VERCEL_URL) {
+    trustedOrigins.push(`https://${process.env.VERCEL_URL}`);
+  }
  
   return betterAuth({
     logger: {
@@ -83,7 +91,7 @@ export const createAuth = (
     },
     baseURL: siteUrl,
     secret: authSecret,
-    trustedOrigins: [siteUrl, "http://localhost:3000"],
+    trustedOrigins,
     database: authComponent.adapter(ctx),
     emailAndPassword: {
       enabled: true,
