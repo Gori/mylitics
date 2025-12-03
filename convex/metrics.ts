@@ -651,6 +651,13 @@ export const processAppStoreReport = internalMutation({
       cancellations: v.number(),
       revenueGross: v.optional(v.number()),
       revenueNet: v.optional(v.number()),
+      // Additional data for chunk summary
+      rowsTotal: v.optional(v.number()),
+      rowsProcessed: v.optional(v.number()),
+      rowsSkipped: v.optional(v.number()),
+      currenciesSeen: v.optional(v.any()),
+      eventTypes: v.optional(v.any()),
+      sampleEvents: v.optional(v.array(v.string())),
     })),
   },
   handler: async (ctx, { appId, date, tsv, eventData }) => {
@@ -673,7 +680,6 @@ export const processAppStoreReport = internalMutation({
       .first();
 
     const headers = lines[0].split("\t").map((h) => h.trim().toLowerCase());
-    console.log(`[App Store ${date}] Headers found:`, JSON.stringify(headers));
 
     const idx = (name: RegExp) => headers.findIndex((h) => name.test(h));
     
@@ -697,20 +703,6 @@ export const processAppStoreReport = internalMutation({
     const productIdIdx = idx(/product.*id|sku|product.*identifier|subscription.*name/i);
     const subscriptionDurationIdx = idx(/subscription.*duration|duration/i);
 
-    console.log(`[App Store ${date}] Column indices:`, {
-      activeSubscribers: activeSubsIdx,
-      activeTrials: activeTrialIdx,
-      activePaid: activePaidIdx,
-      gracePeriod: gracePeriodIdx,
-      billingRetry: billingRetryIdx,
-      subscribers: subscribersIdx,
-      event: eventIdx,
-      units: unitsIdx,
-      proceeds: proceedsIdx,
-      customerPrice: customerPriceIdx,
-      productId: productIdIdx,
-      subscriptionDuration: subscriptionDurationIdx
-    });
 
     // Initialize metrics
     let activeSubscribers = 0;
@@ -853,23 +845,7 @@ export const processAppStoreReport = internalMutation({
       // monthlyRevenueNet += convertedNet;
     }
 
-    console.log(`[App Store ${date}] ===== PARSING SUMMARY =====`);
-    console.log(`[App Store ${date}] Subscriber counts - Active: ${activeSubscribers}, Trial: ${trialSubscribers}, Paid: ${paidSubscribers}`);
-    console.log(`[App Store ${date}] Monthly/Yearly breakdown - Monthly: ${monthlySubsCount}, Yearly: ${yearlySubsCount}`);
-    console.log(`[App Store ${date}] Product IDs found (${productIds.size}):`, Array.from(productIds).join(", "));
-    if (unmatchedProductIds.size > 0) {
-      console.log(`[App Store ${date}] ⚠️ UNMATCHED Product IDs (${unmatchedProductIds.size}):`, Array.from(unmatchedProductIds).join(", "));
-    }
-    console.log(`[App Store ${date}] Event types found (${Object.keys(eventTypes).length}):`, JSON.stringify(eventTypes));
-    console.log(`[App Store ${date}] Event counts - First: ${firstPayments}, Renewals: ${renewals}, Refunds: ${refunds}, Cancellations: ${cancellations}, Grace: ${graceEvents}`);
-    console.log(`[App Store ${date}] Revenue - Gross: ${monthlyRevenueGross.toFixed(2)}, Net: ${monthlyRevenueNet.toFixed(2)}`);
-    if (sampleRows.length > 0) {
-      console.log(`[App Store ${date}] Sample data rows (first ${sampleRows.length}):`);
-      sampleRows.forEach((row, idx) => {
-        console.log(`[App Store ${date}]   Row ${idx + 1}: ${row.substring(0, 200)}${row.length > 200 ? "..." : ""}`);
-      });
-    }
-    console.log(`[App Store ${date}] ===========================`);
+    // Return parsing results for chunk aggregation (no per-day logging - chunk will summarize)
 
     // Use extracted subscriber counts directly (TSV contains actual counts, not deltas)
     const finalActiveSubscribers = activeSubscribers;
@@ -886,54 +862,39 @@ export const processAppStoreReport = internalMutation({
     // Use event data from SUBSCRIBER report for events AND revenue
     if (eventData) {
       if (eventData.renewals > 0) {
-        console.log(`[App Store ${date}] Using SUBSCRIBER report: Renewals=${eventData.renewals}`);
         finalRenewals = eventData.renewals;
       }
-      
-      // Use cancellations from event data only if present
       if (eventData.cancellations > 0) {
         finalCancellations = eventData.cancellations;
-        console.log(`[App Store ${date}] Using SUBSCRIBER report: Cancellations=${eventData.cancellations}`);
       }
-      
-      // Use first payments from event data if present
       if (eventData.firstPayments > 0) {
         finalFirstPayments = eventData.firstPayments;
       }
-      
       // Use REVENUE from SUBSCRIBER report if available
       // NOTE: eventData.revenueGross/Net are ALREADY in userCurrency (converted in processAppStoreSubscriberReport)
       if (eventData.revenueGross !== undefined && eventData.revenueGross > 0) {
         monthlyRevenueGross = eventData.revenueGross;
         monthlyRevenueNet = eventData.revenueNet ?? (eventData.revenueGross * 0.85);
-        
-        console.log(`[App Store ${date}] Using SUBSCRIBER report revenue: Gross=${monthlyRevenueGross.toFixed(2)} ${userCurrency}, Net=${monthlyRevenueNet.toFixed(2)} ${userCurrency}`);
       }
     }
     
-    // Check if we have event data from SUMMARY TSV columns (rare)
+    // Fallback: use event data from SUMMARY TSV columns (rare)
     if (firstPayments > 0 || renewals > 0 || cancellations > 0) {
-      console.log(`[App Store ${date}] Using SUMMARY TSV event data: First=${firstPayments}, Renewals=${renewals}, Cancellations=${cancellations}`);
       if (firstPayments > 0) finalFirstPayments = firstPayments;
       if (renewals > 0) finalRenewals = renewals;
       if (cancellations > 0) finalCancellations = cancellations;
     }
     
-    // Use day-over-day for any metrics still at 0
+    // Use day-over-day comparison for any metrics still at 0
     if (prevSnapshot) {
       const paidDrop = prevSnapshot.paidSubscribers - finalPaidSubscribers;
       const paidGain = finalPaidSubscribers - prevSnapshot.paidSubscribers;
       
-      // Cancellations from day-over-day if not already set
       if (finalCancellations === 0 && paidDrop > 0) {
         finalCancellations = paidDrop;
-        console.log(`[App Store ${date}] Day-over-day Cancellations: ${finalCancellations}`);
       }
-      
-      // First Payments from day-over-day if not already set
       if (finalFirstPayments === 0 && paidGain > 0) {
         finalFirstPayments = paidGain;
-        console.log(`[App Store ${date}] Day-over-day First Payments: ${finalFirstPayments}`);
       }
     }
     
@@ -990,9 +951,6 @@ export const processAppStoreReport = internalMutation({
       yearlySubscribers: yearlySubsCount,
     };
 
-    console.log(`[App Store ${date}] ===== FINAL SNAPSHOT =====`);
-    console.log(`[App Store ${date}]`, JSON.stringify(snapshot, null, 2));
-    console.log(`[App Store ${date}] ============================`);
 
     const existing = await ctx.db
       .query("metricsSnapshots")
@@ -1008,6 +966,19 @@ export const processAppStoreReport = internalMutation({
     } else {
       await ctx.db.insert("metricsSnapshots", snapshot);
     }
+    
+    // Return comprehensive data for chunk aggregation
+    return {
+      date,
+      snapshot,
+      parsing: {
+        productIds: Array.from(productIds),
+        eventTypes,
+        rowCount: lines.length - 1,
+        monthlySubsCount,
+        yearlySubsCount,
+      },
+    };
   },
 });
 
@@ -1029,7 +1000,6 @@ export const processAppStoreSubscriberReport = internalMutation({
     const userCurrency = app?.currency || "USD";
 
     const headers = lines[0].split("\t").map((h) => h.trim().toLowerCase());
-    console.log(`[App Store Subscriber ${date}] Headers:`, JSON.stringify(headers));
 
     const idx = (name: RegExp) => headers.findIndex((h) => name.test(h));
     
@@ -1070,19 +1040,6 @@ export const processAppStoreSubscriberReport = internalMutation({
       console.log(`[App Store Subscriber ${date}] Available headers:`, headers.join(", "));
     }
 
-    console.log(`[App Store Subscriber ${date}] Column indices:`, {
-      event: eventIdx,
-      proceedsReason: proceedsReasonIdx,
-      eventDate: eventDateIdx,
-      quantity: quantityIdx,
-      customerPrice: customerPriceIdx,
-      customerCurrency: customerCurrencyIdx,
-      developerProceeds: developerProceedsIdx,
-      proceedsCurrency: proceedsCurrencyIdx,
-      proceeds: proceedsIdx,
-      usingColumn: eventIdx >= 0 ? "Event" : "Proceeds Reason",
-      canExtractRevenue: canFilterByDate,
-    });
 
     let renewals = 0;
     let firstPayments = 0;
@@ -1191,23 +1148,20 @@ export const processAppStoreSubscriberReport = internalMutation({
       }
     }
 
-    console.log(`[App Store Subscriber ${date}] ===== PROCESSING SUMMARY =====`);
-    console.log(`[App Store Subscriber ${date}] Total rows in report: ${lines.length - 1}`);
-    console.log(`[App Store Subscriber ${date}] Rows processed (matching date ${date}): ${rowsProcessed}`);
-    console.log(`[App Store Subscriber ${date}] Rows skipped (wrong date): ${rowsSkippedWrongDate}`);
-    console.log(`[App Store Subscriber ${date}] Currencies seen:`, JSON.stringify(currenciesSeen));
-    console.log(`[App Store Subscriber ${date}] Event values found (${Object.keys(eventTypes).length}):`, JSON.stringify(eventTypes));
-    console.log(`[App Store Subscriber ${date}] Sample events:`, sampleEvents.join(", "));
-    console.log(`[App Store Subscriber ${date}] Counts - Renewals: ${renewals}, First Payments: ${firstPayments}, Cancellations: ${cancellations}`);
-    console.log(`[App Store Subscriber ${date}] Revenue extraction enabled: ${canFilterByDate}`);
-    console.log(`[App Store Subscriber ${date}] Revenue - Gross: ${revenueGross.toFixed(2)} ${userCurrency}, Net: ${revenueNet.toFixed(2)} ${userCurrency}`);
-
+    // Return comprehensive data for chunk aggregation
     return { 
       renewals, 
       firstPayments, 
       cancellations,
       revenueGross,
-      revenueNet 
+      revenueNet,
+      // Additional data for chunk summary
+      rowsTotal: lines.length - 1,
+      rowsProcessed,
+      rowsSkipped: rowsSkippedWrongDate,
+      currenciesSeen,
+      eventTypes,
+      sampleEvents,
     };
   },
 });
@@ -1292,6 +1246,81 @@ export const generateUnifiedHistoricalSnapshots = internalMutation({
         // Clean up duplicates
         for (let i = 1; i < existingUnified.length; i++) {
           await ctx.db.delete(existingUnified[i]._id);
+        }
+      } else {
+        await ctx.db.insert("metricsSnapshots", unified);
+      }
+      
+      created++;
+    }
+
+    return { created };
+  },
+});
+
+// Chunked version of generateUnifiedHistoricalSnapshots for avoiding timeouts
+export const generateUnifiedHistoricalSnapshotsChunk = internalMutation({
+  args: {
+    appId: v.id("apps"),
+    startDayBack: v.number(), // e.g., 365 (oldest)
+    endDayBack: v.number(),   // e.g., 266 (more recent)
+  },
+  handler: async (ctx, { appId, startDayBack, endDayBack }) => {
+    const today = Date.now();
+    const oneDayMs = 24 * 60 * 60 * 1000;
+    let created = 0;
+
+    // Process each day in this chunk (from oldest to newest)
+    for (let i = startDayBack; i >= endDayBack; i--) {
+      const dateMs = today - (i * oneDayMs);
+      const dateStr = new Date(dateMs).toISOString().split("T")[0];
+
+      // Get all platform snapshots for this date
+      const platformSnapshots = await ctx.db
+        .query("metricsSnapshots")
+        .withIndex("by_app_date", (q) => q.eq("appId", appId).eq("date", dateStr))
+        .filter((q) => q.neq(q.field("platform"), "unified"))
+        .collect();
+
+      // Skip if no platform data for this date
+      if (platformSnapshots.length === 0) continue;
+
+      // Sum up all platforms
+      const unified = {
+        appId,
+        date: dateStr,
+        platform: "unified" as const,
+        activeSubscribers: platformSnapshots.reduce((acc, s) => acc + s.activeSubscribers, 0),
+        trialSubscribers: platformSnapshots.reduce((acc, s) => acc + s.trialSubscribers, 0),
+        paidSubscribers: platformSnapshots.reduce((acc, s) => acc + s.paidSubscribers, 0),
+        cancellations: platformSnapshots.reduce((acc, s) => acc + s.cancellations, 0),
+        churn: platformSnapshots.reduce((acc, s) => acc + s.churn, 0),
+        graceEvents: platformSnapshots.reduce((acc, s) => acc + s.graceEvents, 0),
+        paybacks: platformSnapshots.reduce((acc, s) => acc + s.paybacks, 0),
+        firstPayments: platformSnapshots.reduce((acc, s) => acc + s.firstPayments, 0),
+        renewals: platformSnapshots.reduce((acc, s) => acc + s.renewals, 0),
+        mrr: Math.round((platformSnapshots.reduce((acc, s) => acc + s.mrr, 0) + Number.EPSILON) * 100) / 100,
+        weeklyRevenue: Math.round((platformSnapshots.reduce((acc, s) => acc + (s.weeklyRevenue || s.monthlyRevenueNet || 0), 0) + Number.EPSILON) * 100) / 100,
+        monthlyRevenueGross: Math.round((platformSnapshots.reduce((acc, s) => acc + s.monthlyRevenueGross, 0) + Number.EPSILON) * 100) / 100,
+        monthlyRevenueNet: Math.round((platformSnapshots.reduce((acc, s) => acc + s.monthlyRevenueNet, 0) + Number.EPSILON) * 100) / 100,
+        monthlySubscribers: platformSnapshots.reduce((acc, s) => acc + (s.monthlySubscribers || 0), 0),
+        yearlySubscribers: platformSnapshots.reduce((acc, s) => acc + (s.yearlySubscribers || 0), 0),
+      };
+
+      // Check if unified snapshot already exists for this date
+      const existingUnified = await ctx.db
+        .query("metricsSnapshots")
+        .withIndex("by_app_date", (q) =>
+          q.eq("appId", appId).eq("date", dateStr)
+        )
+        .filter((q) => q.eq(q.field("platform"), "unified"))
+        .collect();
+
+      if (existingUnified.length > 0) {
+        await ctx.db.patch(existingUnified[0]._id, unified);
+        // Clean up duplicates
+        for (let j = 1; j < existingUnified.length; j++) {
+          await ctx.db.delete(existingUnified[j]._id);
         }
       } else {
         await ctx.db.insert("metricsSnapshots", unified);

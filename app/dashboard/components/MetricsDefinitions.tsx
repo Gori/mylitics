@@ -99,6 +99,17 @@ export function MetricsDefinitions() {
       },
     },
     {
+      name: "Churn Rate",
+      type: "Flow Metric",
+      total: "Percentage of paid subscribers who churned during the period. Formula: (Customers lost ÷ Starting paid subscribers) × 100. Monthly view shows 30-day churn rate; Weekly view shows 7-day churn rate.",
+      chart: "Each period shows the churn rate calculated from churned subscribers divided by starting subscribers for that period.",
+      sources: {
+        stripe: "Calculated from churn count / paid subscribers at period start",
+        appstore: "Calculated from churn count / paid subscribers at period start",
+        googleplay: "Calculated from churn count / paid subscribers at period start (if subscription data available)",
+      },
+    },
+    {
       name: "Grace Events",
       type: "Flow Metric",
       total: "Sum of all subscriptions in grace period or billing retry over the past 30 days. This is the large number in the card.",

@@ -1,11 +1,16 @@
 "use node";
 
 import { v } from "convex/values";
-import { action } from "./_generated/server";
+import { action, internalAction } from "./_generated/server";
 import { api, internal } from "./_generated/api";
+import { Id } from "./_generated/dataModel";
 import { fetchStripe } from "./integrations/stripe";
 import { fetchGooglePlayFromGCS } from "./integrations/googlePlay";
 import { fetchAppStore, downloadASCSubscriptionSummary, downloadASCSubscriberReport } from "./integrations/appStore";
+
+// Constants for chunked sync
+const CHUNK_SIZE = 30; // Process 30 days per action (well under 10-min timeout)
+const TOTAL_HISTORICAL_DAYS = 365;
 
 export const syncAllPlatforms = action({
   args: {
@@ -16,6 +21,9 @@ export const syncAllPlatforms = action({
   handler: async (ctx, { appId, forceHistorical, platform }) => {
     // Start sync session and cancel any existing active syncs
     const syncId = await ctx.runMutation(internal.syncHelpers.startSync, { appId });
+    
+    // Track if we started a chunked sync (means we need to defer finalization)
+    let hasChunkedSync = false;
     
     try {
       await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
@@ -40,6 +48,14 @@ export const syncAllPlatforms = action({
       message: `Found ${connections.length} platform connection(s)`,
       level: "info",
     });
+    
+    // Sort connections to process Stripe and Google Play FIRST, App Store LAST
+    // This ensures other platforms sync before we potentially start a chunked App Store sync
+    const platformOrder = { stripe: 0, googleplay: 1, appstore: 2 };
+    connections = connections.sort((a: { platform: string }, b: { platform: string }) => 
+      (platformOrder[a.platform as keyof typeof platformOrder] ?? 99) - 
+      (platformOrder[b.platform as keyof typeof platformOrder] ?? 99)
+    );
 
     for (const connection of connections) {
       try {
@@ -360,230 +376,60 @@ export const syncAllPlatforms = action({
           });
 
           if (isFirstSync) {
-            const historicalSyncStartTime = Date.now();
+            // ===== CHUNKED HISTORICAL SYNC =====
+            // Instead of processing all 365 days in this action (which times out),
+            // we create a progress record and schedule the first chunk.
+            // Each chunk is a separate action that processes ~30 days and schedules the next.
+            
             await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
               appId,
-              message: `[PROOF] App Store: HISTORICAL SYNC STARTED at ${new Date(historicalSyncStartTime).toISOString()}`,
+              message: "App Store: First sync detected - starting chunked historical sync...",
               level: "info",
             });
-            
+
+            const oneYearAgo = new Date(Date.now() - TOTAL_HISTORICAL_DAYS * 24 * 60 * 60 * 1000);
+            const startDate = oneYearAgo.toISOString().split("T")[0];
+            const totalChunks = Math.ceil(TOTAL_HISTORICAL_DAYS / CHUNK_SIZE);
+
             await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
               appId,
-              message: "App Store: First sync detected, scheduling 365 daily reports in batches...",
+              message: `App Store: Scheduling ${TOTAL_HISTORICAL_DAYS} days in ${totalChunks} batches of ${CHUNK_SIZE} days each`,
               level: "info",
             });
 
-            // Process in chunks of 30 days to avoid action timeout
-            const CHUNK_SIZE = 30;
-            const TOTAL_DAYS = 365;
-            const oneYearAgo = new Date(Date.now() - TOTAL_DAYS * 24 * 60 * 60 * 1000);
-            
+            // Create progress tracking record
+            const progressId = await ctx.runMutation(internal.syncHelpers.createSyncProgress, {
+              syncId,
+              appId,
+              platform: "appstore",
+              totalDays: TOTAL_HISTORICAL_DAYS,
+              chunkSize: CHUNK_SIZE,
+              startDate,
+              connectionId: connection._id,
+              credentials: connection.credentials,
+            });
+
+            // Schedule the first chunk - this action will complete immediately
+            // and the chunks will process asynchronously
+            await ctx.scheduler.runAfter(100, internal.sync.syncAppStoreChunk, {
+              progressId,
+              syncId,
+              appId,
+            });
+
             await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
               appId,
-              message: `App Store: Processing ${TOTAL_DAYS} days in ${Math.ceil(TOTAL_DAYS / CHUNK_SIZE)} batches of ${CHUNK_SIZE} days each`,
+              message: "App Store: Historical sync started - processing in background...",
               level: "info",
             });
+
+            // Mark that we have a chunked sync in progress
+            // The chunked sync finalization will handle unified snapshots and completion
+            hasChunkedSync = true;
             
-            for (let chunkStart = 0; chunkStart < TOTAL_DAYS; chunkStart += CHUNK_SIZE) {
-              // Check if sync was cancelled before starting each chunk
-              const isCancelled = await ctx.runQuery(internal.syncHelpers.checkSyncCancelled, { syncId });
-              if (isCancelled) {
-                await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-                  appId,
-                  message: "App Store: Sync cancelled by user",
-                  level: "info",
-                });
-                throw new Error("Sync cancelled");
-              }
-
-              const chunkEnd = Math.min(chunkStart + CHUNK_SIZE, TOTAL_DAYS);
-              const chunkNum = Math.floor(chunkStart / CHUNK_SIZE) + 1;
-              const totalChunks = Math.ceil(TOTAL_DAYS / CHUNK_SIZE);
-              const elapsedSeconds = Math.floor((Date.now() - historicalSyncStartTime) / 1000);
-              
-              await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-                appId,
-                message: `[PROOF] App Store: Starting batch ${chunkNum}/${totalChunks} at ${elapsedSeconds}s elapsed`,
-                level: "info",
-              });
-              
-              await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-                appId,
-                message: `App Store: Processing batch ${chunkNum}/${totalChunks} (days ${chunkStart + 1}-${chunkEnd})`,
-                level: "info",
-              });
-
-              let successCount = 0;
-              let errorCount = 0;
-              const errorSamples: string[] = [];
-              
-              for (let dayOffset = chunkStart; dayOffset < chunkEnd; dayOffset++) {
-                const date = new Date(oneYearAgo);
-                date.setDate(date.getDate() + dayOffset);
-                const dateStr = date.toISOString().split("T")[0];
-
-                try {
-                  // Fetch SUBSCRIPTION SUMMARY report (snapshot data)
-                  const res = await downloadASCSubscriptionSummary(
-                    issuerId,
-                    keyId,
-                    privateKey,
-                    vendorNumber,
-                    dateStr,
-                    "DAILY",
-                    "1_4"
-                  );
-
-                  if (res.ok) {
-                    // Fetch SUBSCRIBER report (transaction-level event data)
-                    const subscriberRes = await downloadASCSubscriberReport(
-                      issuerId,
-                      keyId,
-                      privateKey,
-                      vendorNumber,
-                      dateStr,
-                      "DAILY",
-                      "1_3"
-                    );
-                    
-                    let eventData = undefined;
-                    if (subscriberRes.ok) {
-                      await ctx.runMutation(internal.syncHelpers.saveAppStoreReport, {
-                        appId,
-                        reportType: "SUBSCRIBER",
-                        reportSubType: "DETAILED",
-                        frequency: "DAILY",
-                        vendorNumber,
-                        reportDate: dateStr,
-                        bundleId,
-                        content: subscriberRes.tsv,
-                      });
-                      eventData = await ctx.runMutation(internal.metrics.processAppStoreSubscriberReport, {
-                        appId,
-                        date: dateStr,
-                        tsv: subscriberRes.tsv,
-                      });
-                    }
-                    
-                    await ctx.runMutation(internal.syncHelpers.saveAppStoreReport, {
-                      appId,
-                      reportType: "SUBSCRIPTION",
-                      reportSubType: "SUMMARY",
-                      frequency: "DAILY",
-                      vendorNumber,
-                      reportDate: dateStr,
-                      bundleId,
-                      content: res.tsv,
-                    });
-                    await ctx.runMutation(internal.metrics.processAppStoreReport, {
-                      appId,
-                      date: dateStr,
-                      tsv: res.tsv,
-                      eventData,
-                    });
-                    successCount++;
-                    
-                    if (successCount === 1) {
-                      await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-                        appId,
-                        message: `App Store: First successful report for ${dateStr}`,
-                        level: "info",
-                      });
-                    }
-                  } else {
-                    let parsed: any = null;
-                    try { parsed = JSON.parse(res.text); } catch {}
-                    const code = parsed?.errors?.[0]?.code;
-                    
-                    // Skip NOT_FOUND errors for recent dates (last 3 days) - reports are delayed
-                    const daysOld = TOTAL_DAYS - dayOffset;
-                    if (code === "NOT_FOUND" && daysOld <= 3) {
-                      await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-                        appId,
-                        message: `[PROOF] App Store: Tried ${dateStr} (${daysOld} day(s) old) - NOT_FOUND (Apple reporting delay, skipping)`,
-                        level: "info",
-                      });
-                      continue;
-                    }
-                    
-                    // Skip "no sales" reports - don't create fake data
-                    if (code === "NOT_FOUND" && res.text.includes("no sales")) {
-                      continue;
-                    }
-                    
-                    errorCount++;
-                    if (errorSamples.length < 2) {
-                      const title = parsed?.errors?.[0]?.title;
-                      const detail = parsed?.errors?.[0]?.detail;
-                      const errorMsg = `${dateStr}: HTTP ${res.status}${code ? ` [${code}]` : ""}${title ? ` ${title}` : ""}${detail ? ` - ${detail}` : ""}`;
-                      errorSamples.push(errorMsg);
-                      
-                      if (code === "FORBIDDEN.REQUIRED_AGREEMENTS_MISSING_OR_EXPIRED") {
-                        await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-                          appId,
-                          message: "App Store ACTION REQUIRED: Accept latest agreements in App Store Connect → Agreements, Tax, and Banking, then retry.",
-                          level: "error",
-                        });
-                      }
-                      if (code === "FORBIDDEN_ERROR") {
-                        await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-                          appId,
-                          message: "App Store ACTION REQUIRED: Ensure the API Key has access to Sales Reports (Finance role) and is scoped correctly. Also verify bundleId/vendor permissions.",
-                          level: "error",
-                        });
-                      }
-                      if (code === "NOT_AUTHORIZED") {
-                        await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-                          appId,
-                          message: "App Store ACTION REQUIRED: Verify issuerId, keyId, and private key match; device/server clock is accurate (NTP); token lifetime kept short; and role includes Finance.",
-                          level: "error",
-                        });
-                      }
-                    }
-                  }
-                } catch (error) {
-                  errorCount++;
-                  if (errorSamples.length < 2) {
-                    errorSamples.push(`${dateStr}: ${String(error)}`);
-                  }
-                }
-              }
-
-              const batchElapsedSeconds = Math.floor((Date.now() - historicalSyncStartTime) / 1000);
-              
-              await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-                appId,
-                message: `[PROOF] App Store: Batch ${chunkNum}/${totalChunks} COMPLETED at ${batchElapsedSeconds}s elapsed - ${successCount} reports, ${errorCount} errors`,
-                level: "info",
-              });
-              
-              await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-                appId,
-                message: `App Store: Batch ${chunkNum}/${totalChunks} complete - ${successCount} reports fetched, ${errorCount} errors`,
-                level: successCount > 0 ? "success" : "info",
-              });
-              
-              if (errorSamples.length > 0) {
-                await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-                  appId,
-                  message: `App Store: Sample errors from batch ${chunkNum}: ${errorSamples.join("; ")}`,
-                  level: "error",
-                });
-              }
-            }
-
-            const totalElapsedSeconds = Math.floor((Date.now() - historicalSyncStartTime) / 1000);
-            await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-              appId,
-              message: `[PROOF] App Store: HISTORICAL SYNC COMPLETED after ${totalElapsedSeconds}s - all batches processed`,
-              level: "success",
-            });
-            
-            await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-              appId,
-              message: "App Store: Historical sync completed - all batches processed",
-              level: "success",
-            });
+            // Skip the rest of App Store processing and updateLastSync
+            // (the chunked sync will handle that when it completes)
+            continue;
           } else {
             await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
               appId,
@@ -712,22 +558,10 @@ export const syncAllPlatforms = action({
           }
         }
 
-        await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-          appId,
-          message: `[PROOF] ${connection.platform}: About to call updateLastSync`,
-          level: "info",
-        });
-        
         await ctx.runMutation(internal.syncHelpers.updateLastSync, {
           connectionId: connection._id,
         });
 
-        await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-          appId,
-          message: `[PROOF] ${connection.platform}: updateLastSync COMPLETED - next sync will be incremental`,
-          level: "info",
-        });
-        
         await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
           appId,
           message: `${connection.platform}: Connection updated`,
@@ -742,6 +576,19 @@ export const syncAllPlatforms = action({
       }
     }
 
+    // If we have a chunked sync in progress, skip finalization here
+    // The chunked sync's finalization action will handle unified snapshots and completion
+    if (hasChunkedSync) {
+      await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
+        appId,
+        message: "App Store historical sync running in background - unified snapshots will be created when complete",
+        level: "info",
+      });
+      
+      // Don't mark sync as completed - the chunked sync will do that
+      return { success: true, chunkedSync: true };
+    }
+
     await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
       appId,
       message: "Creating unified snapshots (today + historical)...",
@@ -751,15 +598,26 @@ export const syncAllPlatforms = action({
     // Create unified snapshot for today
     await ctx.runMutation(internal.metrics.createUnifiedSnapshot, { appId });
 
-    // Generate unified snapshots for ALL historical dates (past 365 days)
-    const result = await ctx.runMutation(internal.metrics.generateUnifiedHistoricalSnapshots, { 
-      appId,
-      daysBack: 365,
-    });
+    // Generate unified snapshots in chunks to avoid timeout (100 days per chunk)
+    const UNIFIED_CHUNK_SIZE = 100;
+    const totalDays = 365;
+    let totalCreated = 0;
+
+    for (let startDay = totalDays; startDay >= 1; startDay -= UNIFIED_CHUNK_SIZE) {
+      const endDay = Math.max(startDay - UNIFIED_CHUNK_SIZE + 1, 1);
+      
+      const result = await ctx.runMutation(internal.metrics.generateUnifiedHistoricalSnapshotsChunk, { 
+        appId,
+        startDayBack: startDay,
+        endDayBack: endDay,
+      });
+      
+      totalCreated += result.created;
+    }
 
     await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
       appId,
-      message: `Created ${result.created} unified historical snapshots`,
+      message: `Created ${totalCreated} unified historical snapshots`,
       level: "info",
     });
 
@@ -775,20 +633,8 @@ export const syncAllPlatforms = action({
         status: "completed",
       });
 
-      await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-        appId,
-        message: "[PROOF] syncAllPlatforms action RETURNING successfully - action should end now",
-        level: "info",
-      });
-
       return { success: true };
     } catch (error) {
-      await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
-        appId,
-        message: `[PROOF] syncAllPlatforms CAUGHT ERROR: ${error instanceof Error ? error.message : String(error)}`,
-        level: "error",
-      });
-      
       await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
         appId,
         message: `Sync error: ${error instanceof Error ? error.message : String(error)}`,
@@ -929,5 +775,467 @@ export const debugGCSBucket = action({
         error: error instanceof Error ? error.message : String(error),
       };
     }
+  },
+});
+
+// ===== CHUNKED SYNC ACTIONS =====
+// These actions process data in small chunks to avoid the 10-minute timeout
+
+/**
+ * Process a single chunk of App Store historical data.
+ * Each chunk handles ~30 days, then schedules the next chunk.
+ */
+export const syncAppStoreChunk = internalAction({
+  args: {
+    progressId: v.id("syncProgress"),
+    syncId: v.id("syncStatus"),
+    appId: v.id("apps"),
+  },
+  handler: async (ctx, { progressId, syncId, appId }) => {
+    console.log(`[Chunked Sync] Starting chunk processing for progressId=${progressId}`);
+    
+    // Get current progress
+    const progress = await ctx.runQuery(internal.syncHelpers.getSyncProgress, { progressId });
+    if (!progress) {
+      console.error("[Chunked Sync] Progress record not found - sync may have been cancelled");
+      return;
+    }
+
+    // Check if sync was cancelled
+    const isCancelled = await ctx.runQuery(internal.syncHelpers.checkSyncCancelled, { syncId });
+    if (isCancelled) {
+      console.log("[Chunked Sync] Sync was cancelled by user");
+      await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
+        appId,
+        message: "App Store: Sync cancelled by user",
+        level: "info",
+      });
+      await ctx.runMutation(internal.syncHelpers.deleteSyncProgress, { progressId });
+      return;
+    }
+
+    const { currentChunk, totalChunks, totalDays, processedDays, startDate, credentials, connectionId } = progress;
+    
+    // Validate connectionId exists
+    if (!connectionId) {
+      console.error("[Chunked Sync] No connectionId in progress record");
+      await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
+        appId,
+        message: "App Store: Error - missing connection ID in progress record",
+        level: "error",
+      });
+      return;
+    }
+    
+    const { issuerId, keyId, privateKey, vendorNumber, bundleId } = JSON.parse(credentials);
+
+    const chunkNum = currentChunk + 1;
+    const chunkStart = currentChunk * CHUNK_SIZE;
+    const chunkEnd = Math.min(chunkStart + CHUNK_SIZE, totalDays);
+    const daysInChunk = chunkEnd - chunkStart;
+
+    console.log(`[Chunked Sync] Chunk ${chunkNum}/${totalChunks}: days ${chunkStart}-${chunkEnd-1} (${daysInChunk} days)`);
+
+    await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
+      appId,
+      message: `App Store: Processing batch ${chunkNum}/${totalChunks} (days ${chunkStart + 1}-${chunkEnd} of ${totalDays})`,
+      level: "info",
+    });
+
+    const oneYearAgo = new Date(startDate);
+    let successCount = 0;
+    let errorCount = 0;
+    let skippedRecentDays = 0;
+    const errorSamples: string[] = [];
+    let lastProcessedDate = progress.lastProcessedDate;
+    
+    // Comprehensive data collection for chunk summary
+    type DayData = {
+      date: string;
+      active: number;
+      paid: number;
+      trial: number;
+      monthly: number;
+      yearly: number;
+      renewals: number;
+      firstPayments: number;
+      cancellations: number;
+      grace: number;
+      revenueGross: number;
+      revenueNet: number;
+      mrr: number;
+      productIds: string[];
+      currencies: Record<string, number>;
+      eventTypes: Record<string, number>;
+    };
+    
+    const chunkData: DayData[] = [];
+    const allProductIds = new Set<string>();
+    const allCurrencies: Record<string, number> = {};
+    const allEventTypes: Record<string, number> = {};
+
+    // Process each day in this chunk
+    for (let dayOffset = chunkStart; dayOffset < chunkEnd; dayOffset++) {
+      const date = new Date(oneYearAgo);
+      date.setDate(date.getDate() + dayOffset);
+      const dateStr = date.toISOString().split("T")[0];
+
+      try {
+        // Fetch SUBSCRIPTION SUMMARY report (snapshot data)
+        const res = await downloadASCSubscriptionSummary(
+          issuerId,
+          keyId,
+          privateKey,
+          vendorNumber,
+          dateStr,
+          "DAILY",
+          "1_4"
+        );
+
+        if (res.ok) {
+          // Fetch SUBSCRIBER report (transaction-level event data)
+          const subscriberRes = await downloadASCSubscriberReport(
+            issuerId,
+            keyId,
+            privateKey,
+            vendorNumber,
+            dateStr,
+            "DAILY",
+            "1_3"
+          );
+          
+          let eventData = undefined;
+          if (subscriberRes.ok) {
+            await ctx.runMutation(internal.syncHelpers.saveAppStoreReport, {
+              appId,
+              reportType: "SUBSCRIBER",
+              reportSubType: "DETAILED",
+              frequency: "DAILY",
+              vendorNumber,
+              reportDate: dateStr,
+              bundleId,
+              content: subscriberRes.tsv,
+            });
+            eventData = await ctx.runMutation(internal.metrics.processAppStoreSubscriberReport, {
+              appId,
+              date: dateStr,
+              tsv: subscriberRes.tsv,
+            });
+          }
+          
+          await ctx.runMutation(internal.syncHelpers.saveAppStoreReport, {
+            appId,
+            reportType: "SUBSCRIPTION",
+            reportSubType: "SUMMARY",
+            frequency: "DAILY",
+            vendorNumber,
+            reportDate: dateStr,
+            bundleId,
+            content: res.tsv,
+          });
+          const reportResult = await ctx.runMutation(internal.metrics.processAppStoreReport, {
+            appId,
+            date: dateStr,
+            tsv: res.tsv,
+            eventData,
+          });
+          successCount++;
+          lastProcessedDate = dateStr;
+          
+          // Collect comprehensive data for chunk summary
+          if (reportResult) {
+            const { snapshot, parsing } = reportResult;
+            
+            // Collect day data
+            chunkData.push({
+              date: dateStr,
+              active: snapshot.activeSubscribers,
+              paid: snapshot.paidSubscribers,
+              trial: snapshot.trialSubscribers,
+              monthly: snapshot.monthlySubscribers,
+              yearly: snapshot.yearlySubscribers,
+              renewals: snapshot.renewals,
+              firstPayments: snapshot.firstPayments,
+              cancellations: snapshot.cancellations,
+              grace: snapshot.graceEvents,
+              revenueGross: snapshot.monthlyRevenueGross,
+              revenueNet: snapshot.monthlyRevenueNet,
+              mrr: snapshot.mrr,
+              productIds: parsing.productIds,
+              currencies: eventData?.currenciesSeen || {},
+              eventTypes: eventData?.eventTypes || {},
+            });
+            
+            // Aggregate across chunk
+            parsing.productIds.forEach((id: string) => allProductIds.add(id));
+            if (eventData?.currenciesSeen) {
+              Object.entries(eventData.currenciesSeen).forEach(([currency, count]) => {
+                allCurrencies[currency] = (allCurrencies[currency] || 0) + (count as number);
+              });
+            }
+            if (eventData?.eventTypes) {
+              Object.entries(eventData.eventTypes).forEach(([type, count]) => {
+                allEventTypes[type] = (allEventTypes[type] || 0) + (count as number);
+              });
+            }
+          }
+        } else {
+          let parsed: any = null;
+          try { parsed = JSON.parse(res.text); } catch {}
+          const code = parsed?.errors?.[0]?.code;
+          
+          // Skip NOT_FOUND errors for recent dates (last 3 days) - reports are delayed
+          const daysOld = totalDays - dayOffset;
+          if (code === "NOT_FOUND" && daysOld <= 3) {
+            console.log(`[Chunked Sync] Skipping ${dateStr} (${daysOld} day(s) old) - Apple report delay`);
+            skippedRecentDays++;
+            continue;
+          }
+          
+          // Skip "no sales" reports
+          if (code === "NOT_FOUND" && res.text.includes("no sales")) {
+            console.log(`[Chunked Sync] Skipping ${dateStr} - no sales`);
+            skippedRecentDays++;
+            continue;
+          }
+          
+          errorCount++;
+          if (errorSamples.length < 2) {
+            const title = parsed?.errors?.[0]?.title;
+            const detail = parsed?.errors?.[0]?.detail;
+            const errorMsg = `${dateStr}: HTTP ${res.status}${code ? ` [${code}]` : ""}${title ? ` ${title}` : ""}${detail ? ` - ${detail}` : ""}`;
+            errorSamples.push(errorMsg);
+          }
+        }
+      } catch (error) {
+        errorCount++;
+        if (errorSamples.length < 2) {
+          errorSamples.push(`${dateStr}: ${String(error)}`);
+        }
+      }
+    }
+
+    // Update progress and finalize chunk
+    try {
+      console.log(`[Chunked Sync] Chunk ${chunkNum} loop complete: success=${successCount}, errors=${errorCount}, skipped=${skippedRecentDays}, lastDate=${lastProcessedDate}`);
+      
+      const newProcessedDays = processedDays + daysInChunk;
+      await ctx.runMutation(internal.syncHelpers.updateSyncProgress, {
+        progressId,
+        currentChunk: chunkNum,
+        processedDays: newProcessedDays,
+        lastProcessedDate,
+      });
+
+      // ===== COMPREHENSIVE CHUNK SUMMARY =====
+      // Using console.log so it appears in Convex dashboard logs
+      
+      const firstDate = chunkData.length > 0 ? chunkData[0].date : "N/A";
+      const lastDate = chunkData.length > 0 ? chunkData[chunkData.length - 1].date : "N/A";
+      
+      // Header
+      console.log(`\n═══════════════════════════════════════════════════════════════════`);
+      console.log(`[App Store Batch ${chunkNum}/${totalChunks}] ${firstDate} → ${lastDate}`);
+      console.log(`───────────────────────────────────────────────────────────────────`);
+      
+      // Status counts
+      const statusParts = [`${successCount} days synced`];
+      if (skippedRecentDays > 0) statusParts.push(`${skippedRecentDays} skipped (Apple delay)`);
+      if (errorCount > 0) statusParts.push(`${errorCount} errors`);
+      console.log(`STATUS: ${statusParts.join(" | ")}`);
+      
+      if (chunkData.length > 0) {
+        // Aggregate totals
+        const totals = chunkData.reduce((acc, day) => ({
+          renewals: acc.renewals + day.renewals,
+          firstPayments: acc.firstPayments + day.firstPayments,
+          cancellations: acc.cancellations + day.cancellations,
+          grace: acc.grace + day.grace,
+          revenueGross: acc.revenueGross + day.revenueGross,
+          revenueNet: acc.revenueNet + day.revenueNet,
+        }), { renewals: 0, firstPayments: 0, cancellations: 0, grace: 0, revenueGross: 0, revenueNet: 0 });
+        
+        // Latest snapshot values (end of chunk)
+        const latest = chunkData[chunkData.length - 1];
+        
+        // Subscriber counts (snapshot - from last day)
+        console.log(`SUBSCRIBERS (end of chunk): Active=${latest.active} | Paid=${latest.paid} | Trial=${latest.trial} | Monthly=${latest.monthly} | Yearly=${latest.yearly}`);
+        
+        // Flow metrics (aggregated across chunk)
+        console.log(`EVENTS (chunk total): Renewals=${totals.renewals} | FirstPayments=${totals.firstPayments} | Cancellations=${totals.cancellations} | Grace=${totals.grace}`);
+        
+        // Revenue (aggregated)
+        console.log(`REVENUE (chunk total): Gross=${totals.revenueGross.toFixed(2)} | Net=${totals.revenueNet.toFixed(2)} | MRR(latest)=${latest.mrr.toFixed(2)}`);
+        
+        // Product IDs
+        if (allProductIds.size > 0) {
+          console.log(`PRODUCTS (${allProductIds.size}): ${Array.from(allProductIds).join(", ")}`);
+        }
+        
+        // Currencies seen
+        if (Object.keys(allCurrencies).length > 0) {
+          const currencyStr = Object.entries(allCurrencies)
+            .sort((a, b) => b[1] - a[1])
+            .map(([c, n]) => `${c}:${n}`)
+            .join(", ");
+          console.log(`CURRENCIES: ${currencyStr}`);
+        }
+        
+        // Event types breakdown
+        if (Object.keys(allEventTypes).length > 0) {
+          const eventStr = Object.entries(allEventTypes)
+            .sort((a, b) => b[1] - a[1])
+            .map(([e, n]) => `${e}:${n}`)
+            .join(", ");
+          console.log(`EVENT TYPES: ${eventStr}`);
+        }
+        
+        // Per-day breakdown table
+        console.log(`───────────────────────────────────────────────────────────────────`);
+        console.log(`PER-DAY DATA:`);
+        
+        // Show each day's data in compact format
+        for (const day of chunkData) {
+          console.log(`  ${day.date}: Active=${day.active} Paid=${day.paid} Trial=${day.trial} | Mo=${day.monthly} Yr=${day.yearly} | Ren=${day.renewals} 1st=${day.firstPayments} Can=${day.cancellations} Grace=${day.grace} | GrossRev=${day.revenueGross.toFixed(2)} NetRev=${day.revenueNet.toFixed(2)} MRR=${day.mrr.toFixed(2)}`);
+        }
+      }
+      
+      // Errors
+      if (errorSamples.length > 0) {
+        console.log(`ERRORS: ${errorSamples.join("; ")}`);
+      }
+      
+      console.log(`═══════════════════════════════════════════════════════════════════\n`);
+      
+      // Also save a summary to syncLogs for the UI
+      await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
+        appId,
+        message: `App Store: Batch ${chunkNum}/${totalChunks} complete [${firstDate} → ${lastDate}] - ${successCount} days, ${chunkData.length > 0 ? chunkData.reduce((a, d) => a + d.renewals, 0) : 0} renewals, ${chunkData.length > 0 ? chunkData.reduce((a, d) => a + d.revenueNet, 0).toFixed(2) : '0'} net revenue`,
+        level: successCount > 0 ? "success" : "info",
+      });
+
+      // Check if there are more chunks to process
+      if (chunkNum < totalChunks) {
+        // Schedule next chunk (with small delay to avoid overwhelming the system)
+        console.log(`[Chunked Sync] Scheduling next chunk ${chunkNum + 1}/${totalChunks}`);
+        await ctx.scheduler.runAfter(100, internal.sync.syncAppStoreChunk, {
+          progressId,
+          syncId,
+          appId,
+        });
+      } else {
+        // All chunks complete - update connection and clean up
+        console.log(`[Chunked Sync] All chunks complete, finalizing...`);
+        
+        await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
+          appId,
+          message: `App Store: Historical sync completed - ${newProcessedDays} days processed`,
+          level: "success",
+        });
+
+        await ctx.runMutation(internal.syncHelpers.updateLastSync, {
+          connectionId: progress.connectionId,
+        });
+
+        // Delete progress record
+        await ctx.runMutation(internal.syncHelpers.deleteSyncProgress, { progressId });
+
+        // Schedule the finalization (unified snapshots, etc.)
+        console.log(`[Chunked Sync] Scheduling finalization...`);
+        await ctx.scheduler.runAfter(100, internal.sync.finalizeSyncAfterAppStore, {
+          syncId,
+          appId,
+        });
+      }
+    } catch (error) {
+      console.error(`[Chunked Sync] Error in chunk ${chunkNum} finalization:`, error);
+      await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
+        appId,
+        message: `App Store: Chunk ${chunkNum} finalization error: ${error instanceof Error ? error.message : String(error)}`,
+        level: "error",
+      });
+      throw error;
+    }
+  },
+});
+
+/**
+ * Finalize sync after App Store historical data is done.
+ * Creates unified snapshots in chunks to avoid timeout.
+ */
+export const finalizeSyncAfterAppStore = internalAction({
+  args: {
+    syncId: v.id("syncStatus"),
+    appId: v.id("apps"),
+  },
+  handler: async (ctx, { syncId, appId }) => {
+    console.log("[Finalization] Starting App Store finalization...");
+    
+    // Check if sync was cancelled
+    const isCancelled = await ctx.runQuery(internal.syncHelpers.checkSyncCancelled, { syncId });
+    if (isCancelled) {
+      console.log("[Finalization] Sync was cancelled, skipping finalization");
+      return;
+    }
+
+    console.log("[Finalization] Creating unified snapshots...");
+    await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
+      appId,
+      message: "Creating unified snapshots (chunked)...",
+      level: "info",
+    });
+
+    // Create unified snapshot for today
+    await ctx.runMutation(internal.metrics.createUnifiedSnapshot, { appId });
+
+    // Generate unified snapshots in chunks of 100 days
+    const UNIFIED_CHUNK_SIZE = 100;
+    const totalDays = 365;
+    let totalCreated = 0;
+
+    for (let startDay = totalDays; startDay >= 1; startDay -= UNIFIED_CHUNK_SIZE) {
+      const endDay = Math.max(startDay - UNIFIED_CHUNK_SIZE + 1, 1);
+      
+      // Check if sync was cancelled before each chunk
+      const cancelled = await ctx.runQuery(internal.syncHelpers.checkSyncCancelled, { syncId });
+      if (cancelled) {
+        await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
+          appId,
+          message: "Unified snapshot creation cancelled",
+          level: "info",
+        });
+        return;
+      }
+
+      const result = await ctx.runMutation(internal.metrics.generateUnifiedHistoricalSnapshotsChunk, { 
+        appId,
+        startDayBack: startDay,
+        endDayBack: endDay,
+      });
+      
+      totalCreated += result.created;
+    }
+
+    console.log(`[Finalization] Created ${totalCreated} unified historical snapshots`);
+    await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
+      appId,
+      message: `Created ${totalCreated} unified historical snapshots`,
+      level: "info",
+    });
+
+    console.log("[Finalization] Marking sync as completed...");
+    await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
+      appId,
+      message: "Sync completed",
+      level: "success",
+    });
+
+    // Mark sync as completed
+    await ctx.runMutation(internal.syncHelpers.completeSyncSession, {
+      syncId,
+      status: "completed",
+    });
+    
+    console.log("[Finalization] ✅ App Store sync fully completed!");
   },
 });

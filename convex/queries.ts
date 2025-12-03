@@ -30,6 +30,14 @@ function getWeekStart(date: Date, weekStartDay: "monday" | "sunday"): Date {
   return weekStart;
 }
 
+// Shared churn rate calculation - single source of truth
+// Formula: (churn count / starting paid subscribers) × 100
+function calculateChurnRate(churnCount: number, startingPaidSubscribers: number): number {
+  if (startingPaidSubscribers <= 0) return 0;
+  const rate = (churnCount / startingPaidSubscribers) * 100;
+  return Math.round((rate + Number.EPSILON) * 100) / 100; // Round to 2 decimals
+}
+
 export const getLatestMetrics = query({
   args: { appId: v.id("apps") },
   handler: async (ctx, { appId }) => {
@@ -150,8 +158,14 @@ export const getLatestMetrics = query({
     );
 
     // Calculate 30-day sums for flow metrics by platform
+    // Also track starting paid subscribers for churn rate calculation
     const flowSumsByPlatform: Record<string, any> = {};
-    for (const snap of snapshots30) {
+    const startingPaidSubsByPlatform30: Record<string, number> = {};
+    
+    // Sort snapshots by date to find the earliest (starting) values
+    const sortedSnapshots30 = [...snapshots30].sort((a, b) => a.date.localeCompare(b.date));
+    
+    for (const snap of sortedSnapshots30) {
       if (!flowSumsByPlatform[snap.platform]) {
         flowSumsByPlatform[snap.platform] = {
           cancellations: 0,
@@ -162,6 +176,8 @@ export const getLatestMetrics = query({
           monthlyRevenueGross: 0,
           monthlyRevenueNet: 0,
         };
+        // First snapshot for this platform = starting paid subscribers
+        startingPaidSubsByPlatform30[snap.platform] = snap.paidSubscribers || 0;
       }
       flowSumsByPlatform[snap.platform].cancellations += snap.cancellations;
       flowSumsByPlatform[snap.platform].churn += snap.churn;
@@ -172,17 +188,26 @@ export const getLatestMetrics = query({
       flowSumsByPlatform[snap.platform].monthlyRevenueNet += snap.monthlyRevenueNet;
     }
 
-    // Calculate 7-day sums for weekly revenue by platform
+    // Calculate 7-day sums for weekly revenue and churn by platform
     const weeklySumsByPlatform: Record<string, any> = {};
-    for (const snap of snapshots7) {
+    const startingPaidSubsByPlatform7: Record<string, number> = {};
+    
+    // Sort snapshots by date to find the earliest (starting) values
+    const sortedSnapshots7 = [...snapshots7].sort((a, b) => a.date.localeCompare(b.date));
+    
+    for (const snap of sortedSnapshots7) {
       if (!weeklySumsByPlatform[snap.platform]) {
         weeklySumsByPlatform[snap.platform] = {
           weeklyRevenueGross: 0,
           weeklyRevenueNet: 0,
+          weeklyChurn: 0,
         };
+        // First snapshot for this platform = starting paid subscribers
+        startingPaidSubsByPlatform7[snap.platform] = snap.paidSubscribers || 0;
       }
       weeklySumsByPlatform[snap.platform].weeklyRevenueGross += snap.monthlyRevenueGross;
       weeklySumsByPlatform[snap.platform].weeklyRevenueNet += snap.monthlyRevenueNet;
+      weeklySumsByPlatform[snap.platform].weeklyChurn += snap.churn || 0;
     }
 
     // Build platformMap with correct values for each metric type
@@ -198,6 +223,16 @@ export const getLatestMetrics = query({
       }
       
       // Stock metrics from latest snapshot, flow metrics from 30-day sums, weekly from 7-day sums
+      // Calculate churn rates using the shared helper function
+      const monthlyChurnRate = calculateChurnRate(
+        flowSums?.churn || 0,
+        startingPaidSubsByPlatform30[platform] || 0
+      );
+      const weeklyChurnRate = calculateChurnRate(
+        weeklySums?.weeklyChurn || 0,
+        startingPaidSubsByPlatform7[platform] || 0
+      );
+      
       platformMap[platform] = {
         activeSubscribers: latest?.activeSubscribers || 0,
         trialSubscribers: latest?.trialSubscribers || 0,
@@ -205,6 +240,8 @@ export const getLatestMetrics = query({
         mrr: latest?.mrr || 0,
         cancellations: flowSums?.cancellations || 0,
         churn: flowSums?.churn || 0,
+        churnRate: monthlyChurnRate,
+        weeklyChurnRate: weeklyChurnRate,
         graceEvents: flowSums?.graceEvents || 0,
         firstPayments: flowSums?.firstPayments || 0,
         renewals: flowSums?.renewals || 0,
@@ -218,12 +255,20 @@ export const getLatestMetrics = query({
     }
 
     // Calculate unified by summing all platforms (use 0 if platform not in map)
+    // For churn rate, calculate from total churn / total starting subscribers (not average of rates)
+    const totalChurn = (platformMap.appstore?.churn || 0) + (platformMap.googleplay?.churn || 0) + (platformMap.stripe?.churn || 0);
+    const totalStartingPaidSubs30 = (startingPaidSubsByPlatform30.appstore || 0) + (startingPaidSubsByPlatform30.googleplay || 0) + (startingPaidSubsByPlatform30.stripe || 0);
+    const totalWeeklyChurn = (weeklySumsByPlatform.appstore?.weeklyChurn || 0) + (weeklySumsByPlatform.googleplay?.weeklyChurn || 0) + (weeklySumsByPlatform.stripe?.weeklyChurn || 0);
+    const totalStartingPaidSubs7 = (startingPaidSubsByPlatform7.appstore || 0) + (startingPaidSubsByPlatform7.googleplay || 0) + (startingPaidSubsByPlatform7.stripe || 0);
+    
     const unified = {
       activeSubscribers: (platformMap.appstore?.activeSubscribers || 0) + (platformMap.googleplay?.activeSubscribers || 0) + (platformMap.stripe?.activeSubscribers || 0),
       trialSubscribers: (platformMap.appstore?.trialSubscribers || 0) + (platformMap.googleplay?.trialSubscribers || 0) + (platformMap.stripe?.trialSubscribers || 0),
       paidSubscribers: (platformMap.appstore?.paidSubscribers || 0) + (platformMap.googleplay?.paidSubscribers || 0) + (platformMap.stripe?.paidSubscribers || 0),
       cancellations: (platformMap.appstore?.cancellations || 0) + (platformMap.googleplay?.cancellations || 0) + (platformMap.stripe?.cancellations || 0),
-      churn: (platformMap.appstore?.churn || 0) + (platformMap.googleplay?.churn || 0) + (platformMap.stripe?.churn || 0),
+      churn: totalChurn,
+      churnRate: calculateChurnRate(totalChurn, totalStartingPaidSubs30),
+      weeklyChurnRate: calculateChurnRate(totalWeeklyChurn, totalStartingPaidSubs7),
       graceEvents: (platformMap.appstore?.graceEvents || 0) + (platformMap.googleplay?.graceEvents || 0) + (platformMap.stripe?.graceEvents || 0),
       paybacks: 0,
       firstPayments: (platformMap.appstore?.firstPayments || 0) + (platformMap.googleplay?.firstPayments || 0) + (platformMap.stripe?.firstPayments || 0),
@@ -339,6 +384,9 @@ export const getWeeklyMetricsHistory = query({
     
     const activePlatforms = platformsWithData;
     
+    // Special handling for churnRate - it's a calculated metric
+    const isChurnRate = metric === "churnRate";
+    
     // Determine if this is a flow metric (sum weekly) or stock metric (last value)
     const flowMetrics = [
       "cancellations",
@@ -350,13 +398,14 @@ export const getWeeklyMetricsHistory = query({
       "monthlyRevenueGross",
       "monthlyRevenueNet",
     ];
-    const isFlowMetric = flowMetrics.includes(metric);
+    const isFlowMetric = flowMetrics.includes(metric) || isChurnRate; // churnRate uses flow logic
 
     // Use the snapshots we already fetched
     const snapshots = allSnapshots;
 
     // Group by week and platform
-    const weeklyData: Record<string, Record<string, { sum: number; last: number; lastDate: string }>> = {};
+    // For churnRate, we need both churn (sum) and paidSubscribers (first value of week)
+    const weeklyData: Record<string, Record<string, { sum: number; last: number; lastDate: string; churnSum?: number; startingPaidSubs?: number; firstDate?: string }>> = {};
     
     for (const snap of snapshots) {
       // Skip unified platform - we'll calculate it from the sum of platforms
@@ -367,14 +416,25 @@ export const getWeeklyMetricsHistory = query({
       const weekKey = weekStart.toISOString().split("T")[0];
       
       if (!weeklyData[weekKey]) weeklyData[weekKey] = {} as any;
-      const value = (snap as any)[metric] || 0;
-      const entry = weeklyData[weekKey][snap.platform] || { sum: 0, last: 0, lastDate: "" };
+      const value = isChurnRate ? 0 : ((snap as any)[metric] || 0); // For churnRate, we calculate separately
+      const entry = weeklyData[weekKey][snap.platform] || { sum: 0, last: 0, lastDate: "", churnSum: 0, startingPaidSubs: 0, firstDate: "9999-99-99" };
       entry.sum += value;
       // Only update last if this is a more recent date
       if (snap.date >= entry.lastDate) {
         entry.last = value;
         entry.lastDate = snap.date;
       }
+      
+      // For churnRate calculation: track churn sum and starting paid subscribers
+      if (isChurnRate) {
+        entry.churnSum = (entry.churnSum || 0) + (snap.churn || 0);
+        // Track the earliest date's paidSubscribers as "starting"
+        if (snap.date < (entry.firstDate || "9999-99-99")) {
+          entry.startingPaidSubs = snap.paidSubscribers || 0;
+          entry.firstDate = snap.date;
+        }
+      }
+      
       weeklyData[weekKey][snap.platform] = entry;
     }
 
@@ -396,6 +456,32 @@ export const getWeeklyMetricsHistory = query({
         // Check if all active platforms have data for this week
         const platformsInWeek = new Set(Object.keys(platforms));
         const hasAllPlatforms = Array.from(activePlatforms).every((p) => platformsInWeek.has(p));
+        
+        // For churnRate, calculate using the shared helper
+        if (isChurnRate) {
+          const getChurnRate = (p?: { churnSum?: number; startingPaidSubs?: number }) => {
+            if (!p) return null;
+            return calculateChurnRate(p.churnSum || 0, p.startingPaidSubs || 0);
+          };
+          const appstore = getChurnRate((platforms as any).appstore);
+          const googleplay = getChurnRate((platforms as any).googleplay);
+          const stripe = getChurnRate((platforms as any).stripe);
+          
+          // Calculate unified churn rate from totals (not average of rates)
+          const totalChurn = ((platforms as any).appstore?.churnSum || 0) + ((platforms as any).googleplay?.churnSum || 0) + ((platforms as any).stripe?.churnSum || 0);
+          const totalStartingSubs = ((platforms as any).appstore?.startingPaidSubs || 0) + ((platforms as any).googleplay?.startingPaidSubs || 0) + ((platforms as any).stripe?.startingPaidSubs || 0);
+          const unified = calculateChurnRate(totalChurn, totalStartingSubs);
+          
+          return {
+            week,
+            appstore,
+            googleplay,
+            stripe,
+            unified,
+            hasAllPlatforms,
+            hasValidStockData: true, // churnRate is always valid if we have data
+          };
+        }
         
         // For flow metrics, use sum of all days in the week; for stock metrics, use last day
         // Return null if platform has no data for this week (so chart line stops instead of dropping to 0)
@@ -480,6 +566,9 @@ export const getMonthlyMetricsHistory = query({
     
     const activePlatforms = platformsWithData;
     
+    // Special handling for churnRate - it's a calculated metric
+    const isChurnRate = metric === "churnRate";
+    
     const flowMetrics = [
       "cancellations",
       "churn",
@@ -490,12 +579,13 @@ export const getMonthlyMetricsHistory = query({
       "monthlyRevenueGross",
       "monthlyRevenueNet",
     ];
-    const isFlowMetric = flowMetrics.includes(metric);
+    const isFlowMetric = flowMetrics.includes(metric) || isChurnRate; // churnRate uses flow logic
 
     const snapshots = allSnapshots;
 
     // Group by month (YYYY-MM) and platform
-    const monthlyData: Record<string, Record<string, { sum: number; last: number; lastDate: string }>> = {};
+    // For churnRate, we need both churn (sum) and paidSubscribers (first value of month)
+    const monthlyData: Record<string, Record<string, { sum: number; last: number; lastDate: string; churnSum?: number; startingPaidSubs?: number; firstDate?: string }>> = {};
     
     for (const snap of snapshots) {
       if (snap.platform === "unified") continue;
@@ -504,13 +594,24 @@ export const getMonthlyMetricsHistory = query({
       const monthKey = snap.date.substring(0, 7);
       
       if (!monthlyData[monthKey]) monthlyData[monthKey] = {} as any;
-      const value = (snap as any)[metric] || 0;
-      const entry = monthlyData[monthKey][snap.platform] || { sum: 0, last: 0, lastDate: "" };
+      const value = isChurnRate ? 0 : ((snap as any)[metric] || 0); // For churnRate, we calculate separately
+      const entry = monthlyData[monthKey][snap.platform] || { sum: 0, last: 0, lastDate: "", churnSum: 0, startingPaidSubs: 0, firstDate: "9999-99-99" };
       entry.sum += value;
       if (snap.date >= entry.lastDate) {
         entry.last = value;
         entry.lastDate = snap.date;
       }
+      
+      // For churnRate calculation: track churn sum and starting paid subscribers
+      if (isChurnRate) {
+        entry.churnSum = (entry.churnSum || 0) + (snap.churn || 0);
+        // Track the earliest date's paidSubscribers as "starting"
+        if (snap.date < (entry.firstDate || "9999-99-99")) {
+          entry.startingPaidSubs = snap.paidSubscribers || 0;
+          entry.firstDate = snap.date;
+        }
+      }
+      
       monthlyData[monthKey][snap.platform] = entry;
     }
 
@@ -528,6 +629,32 @@ export const getMonthlyMetricsHistory = query({
       .map(([month, platforms]) => {
         const platformsInMonth = new Set(Object.keys(platforms));
         const hasAllPlatforms = Array.from(activePlatforms).every((p) => platformsInMonth.has(p));
+        
+        // For churnRate, calculate using the shared helper
+        if (isChurnRate) {
+          const getChurnRate = (p?: { churnSum?: number; startingPaidSubs?: number }) => {
+            if (!p) return null;
+            return calculateChurnRate(p.churnSum || 0, p.startingPaidSubs || 0);
+          };
+          const appstore = getChurnRate((platforms as any).appstore);
+          const googleplay = getChurnRate((platforms as any).googleplay);
+          const stripe = getChurnRate((platforms as any).stripe);
+          
+          // Calculate unified churn rate from totals (not average of rates)
+          const totalChurn = ((platforms as any).appstore?.churnSum || 0) + ((platforms as any).googleplay?.churnSum || 0) + ((platforms as any).stripe?.churnSum || 0);
+          const totalStartingSubs = ((platforms as any).appstore?.startingPaidSubs || 0) + ((platforms as any).googleplay?.startingPaidSubs || 0) + ((platforms as any).stripe?.startingPaidSubs || 0);
+          const unified = calculateChurnRate(totalChurn, totalStartingSubs);
+          
+          return {
+            month,
+            appstore,
+            googleplay,
+            stripe,
+            unified,
+            hasAllPlatforms,
+            hasValidStockData: true, // churnRate is always valid if we have data
+          };
+        }
         
         const val = (p?: { sum: number; last: number; lastDate: string }) => (p ? (isFlowMetric ? p.sum : p.last) : null);
         const appstore = val((platforms as any).appstore);
@@ -636,6 +763,7 @@ export const getAllDebugData = query({
       "yearlySubscribers",
       "cancellations",
       "churn",
+      "churnRate", // Calculated metric: (churn / starting paid subscribers) × 100
       "graceEvents",
       "firstPayments",
       "renewals",
@@ -760,9 +888,11 @@ export const getAllDebugData = query({
     ];
 
     for (const metric of metrics) {
-      const weeklyData: Record<string, Record<string, { sum: number; last: number; lastDate: string }>> = {};
-      const monthlyData: Record<string, Record<string, { sum: number; last: number; lastDate: string }>> = {};
-      const isFlowMetric = flowMetrics.includes(metric);
+      // Special handling for churnRate - it's a calculated metric
+      const isChurnRate = metric === "churnRate";
+      const weeklyData: Record<string, Record<string, { sum: number; last: number; lastDate: string; churnSum?: number; startingPaidSubs?: number; firstDate?: string }>> = {};
+      const monthlyData: Record<string, Record<string, { sum: number; last: number; lastDate: string; churnSum?: number; startingPaidSubs?: number; firstDate?: string }>> = {};
+      const isFlowMetric = flowMetrics.includes(metric) || isChurnRate;
       const isStockMetric = stockMetrics.includes(metric);
 
       for (const snap of snapshots) {
@@ -773,25 +903,41 @@ export const getAllDebugData = query({
         const weekKey = weekStart.toISOString().split("T")[0];
         const monthKey = snap.date.substring(0, 7); // YYYY-MM
 
-        const value = (snap as any)[metric] || 0;
+        const value = isChurnRate ? 0 : ((snap as any)[metric] || 0);
 
         // Weekly aggregation
         if (!weeklyData[weekKey]) weeklyData[weekKey] = {} as any;
-        const weekEntry = weeklyData[weekKey][snap.platform] || { sum: 0, last: 0, lastDate: "" };
+        const weekEntry = weeklyData[weekKey][snap.platform] || { sum: 0, last: 0, lastDate: "", churnSum: 0, startingPaidSubs: 0, firstDate: "9999-99-99" };
         weekEntry.sum += value;
         if (snap.date >= weekEntry.lastDate) {
           weekEntry.last = value;
           weekEntry.lastDate = snap.date;
         }
+        // For churnRate calculation
+        if (isChurnRate) {
+          weekEntry.churnSum = (weekEntry.churnSum || 0) + (snap.churn || 0);
+          if (snap.date < (weekEntry.firstDate || "9999-99-99")) {
+            weekEntry.startingPaidSubs = snap.paidSubscribers || 0;
+            weekEntry.firstDate = snap.date;
+          }
+        }
         weeklyData[weekKey][snap.platform] = weekEntry;
 
         // Monthly aggregation
         if (!monthlyData[monthKey]) monthlyData[monthKey] = {} as any;
-        const monthEntry = monthlyData[monthKey][snap.platform] || { sum: 0, last: 0, lastDate: "" };
+        const monthEntry = monthlyData[monthKey][snap.platform] || { sum: 0, last: 0, lastDate: "", churnSum: 0, startingPaidSubs: 0, firstDate: "9999-99-99" };
         monthEntry.sum += value;
         if (snap.date >= monthEntry.lastDate) {
           monthEntry.last = value;
           monthEntry.lastDate = snap.date;
+        }
+        // For churnRate calculation
+        if (isChurnRate) {
+          monthEntry.churnSum = (monthEntry.churnSum || 0) + (snap.churn || 0);
+          if (snap.date < (monthEntry.firstDate || "9999-99-99")) {
+            monthEntry.startingPaidSubs = snap.paidSubscribers || 0;
+            monthEntry.firstDate = snap.date;
+          }
         }
         monthlyData[monthKey][snap.platform] = monthEntry;
       }
@@ -801,6 +947,24 @@ export const getAllDebugData = query({
         .map(([week, platforms]) => {
           const platformsInWeek = new Set(Object.keys(platforms));
           const hasAllPlatforms = Array.from(activePlatforms).every((p) => platformsInWeek.has(p));
+          
+          // For churnRate, calculate using the shared helper
+          if (isChurnRate) {
+            const getChurnRate = (p?: { churnSum?: number; startingPaidSubs?: number }) => {
+              if (!p) return null;
+              return calculateChurnRate(p.churnSum || 0, p.startingPaidSubs || 0);
+            };
+            const appstore = getChurnRate((platforms as any).appstore);
+            const googleplay = getChurnRate((platforms as any).googleplay);
+            const stripe = getChurnRate((platforms as any).stripe);
+            
+            // Calculate unified churn rate from totals
+            const totalChurn = ((platforms as any).appstore?.churnSum || 0) + ((platforms as any).googleplay?.churnSum || 0) + ((platforms as any).stripe?.churnSum || 0);
+            const totalStartingSubs = ((platforms as any).appstore?.startingPaidSubs || 0) + ((platforms as any).googleplay?.startingPaidSubs || 0) + ((platforms as any).stripe?.startingPaidSubs || 0);
+            const unified = calculateChurnRate(totalChurn, totalStartingSubs);
+            
+            return { week, appstore, googleplay, stripe, unified, hasAllPlatforms, hasValidStockData: true };
+          }
           
           const val = (p?: { sum: number; last: number; lastDate: string }) => (p ? (isFlowMetric ? p.sum : p.last) : null);
           const appstore = val((platforms as any).appstore);
@@ -848,6 +1012,24 @@ export const getAllDebugData = query({
         .map(([month, platforms]) => {
           const platformsInMonth = new Set(Object.keys(platforms));
           const hasAllPlatforms = Array.from(activePlatforms).every((p) => platformsInMonth.has(p));
+          
+          // For churnRate, calculate using the shared helper
+          if (isChurnRate) {
+            const getChurnRate = (p?: { churnSum?: number; startingPaidSubs?: number }) => {
+              if (!p) return null;
+              return calculateChurnRate(p.churnSum || 0, p.startingPaidSubs || 0);
+            };
+            const appstore = getChurnRate((platforms as any).appstore);
+            const googleplay = getChurnRate((platforms as any).googleplay);
+            const stripe = getChurnRate((platforms as any).stripe);
+            
+            // Calculate unified churn rate from totals
+            const totalChurn = ((platforms as any).appstore?.churnSum || 0) + ((platforms as any).googleplay?.churnSum || 0) + ((platforms as any).stripe?.churnSum || 0);
+            const totalStartingSubs = ((platforms as any).appstore?.startingPaidSubs || 0) + ((platforms as any).googleplay?.startingPaidSubs || 0) + ((platforms as any).stripe?.startingPaidSubs || 0);
+            const unified = calculateChurnRate(totalChurn, totalStartingSubs);
+            
+            return { month, appstore, googleplay, stripe, unified, hasAllPlatforms, hasValidStockData: true };
+          }
           
           const val = (p?: { sum: number; last: number; lastDate: string }) => (p ? (isFlowMetric ? p.sum : p.last) : null);
           const appstore = val((platforms as any).appstore);
@@ -1343,6 +1525,113 @@ export const validateRevenueData = query({
       snapshotCountByPlatform: Object.fromEntries(
         Object.entries(octTotals).map(([p, t]) => [p, t.days])
       ),
+    };
+  },
+});
+
+// Debug query for churn rate calculation
+export const debugChurnRate = query({
+  args: { appId: v.id("apps") },
+  handler: async (ctx, { appId }) => {
+    await validateAppOwnership(ctx, appId);
+
+    const now = Date.now();
+    const thirtyDaysAgo = new Date(now - 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+    const sevenDaysAgo = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+
+    // Get all snapshots for the past 30 days
+    const snapshots = await ctx.db
+      .query("metricsSnapshots")
+      .withIndex("by_app_date", (q) => q.eq("appId", appId))
+      .filter((q) => q.gte(q.field("date"), thirtyDaysAgo))
+      .filter((q) => q.neq(q.field("platform"), "unified"))
+      .collect();
+
+    // Sort by date
+    const sorted = [...snapshots].sort((a, b) => a.date.localeCompare(b.date));
+
+    // Group by platform
+    const byPlatform: Record<string, typeof snapshots> = {};
+    for (const snap of sorted) {
+      if (!byPlatform[snap.platform]) byPlatform[snap.platform] = [];
+      byPlatform[snap.platform].push(snap);
+    }
+
+    // Calculate churn rate breakdown for each platform
+    const breakdown: Record<string, {
+      totalChurn30d: number;
+      startingPaidSubs30d: number;
+      endingPaidSubs30d: number;
+      calculatedChurnRate30d: number;
+      totalChurn7d: number;
+      startingPaidSubs7d: number;
+      endingPaidSubs7d: number;
+      calculatedChurnRate7d: number;
+      dailySnapshots: Array<{ date: string; churn: number; paidSubs: number }>;
+    }> = {};
+
+    for (const [platform, snaps] of Object.entries(byPlatform)) {
+      // 30-day data
+      const first30d = snaps[0];
+      const last30d = snaps[snaps.length - 1];
+      const totalChurn30d = snaps.reduce((sum, s) => sum + (s.churn || 0), 0);
+      const startingPaidSubs30d = first30d?.paidSubscribers || 0;
+      const endingPaidSubs30d = last30d?.paidSubscribers || 0;
+      
+      // 7-day data
+      const snaps7d = snaps.filter(s => s.date >= sevenDaysAgo);
+      const first7d = snaps7d[0];
+      const last7d = snaps7d[snaps7d.length - 1];
+      const totalChurn7d = snaps7d.reduce((sum, s) => sum + (s.churn || 0), 0);
+      const startingPaidSubs7d = first7d?.paidSubscribers || 0;
+      const endingPaidSubs7d = last7d?.paidSubscribers || 0;
+
+      breakdown[platform] = {
+        totalChurn30d,
+        startingPaidSubs30d,
+        endingPaidSubs30d,
+        calculatedChurnRate30d: calculateChurnRate(totalChurn30d, startingPaidSubs30d),
+        totalChurn7d,
+        startingPaidSubs7d,
+        endingPaidSubs7d,
+        calculatedChurnRate7d: calculateChurnRate(totalChurn7d, startingPaidSubs7d),
+        // Include daily snapshots for debugging
+        dailySnapshots: snaps.slice(-10).map(s => ({
+          date: s.date,
+          churn: s.churn || 0,
+          paidSubs: s.paidSubscribers || 0,
+        })),
+      };
+    }
+
+    // Calculate unified totals
+    const allPlatforms = Object.keys(breakdown);
+    const unified30d = {
+      totalChurn: allPlatforms.reduce((sum, p) => sum + breakdown[p].totalChurn30d, 0),
+      startingSubs: allPlatforms.reduce((sum, p) => sum + breakdown[p].startingPaidSubs30d, 0),
+      endingSubs: allPlatforms.reduce((sum, p) => sum + breakdown[p].endingPaidSubs30d, 0),
+    };
+    const unified7d = {
+      totalChurn: allPlatforms.reduce((sum, p) => sum + breakdown[p].totalChurn7d, 0),
+      startingSubs: allPlatforms.reduce((sum, p) => sum + breakdown[p].startingPaidSubs7d, 0),
+      endingSubs: allPlatforms.reduce((sum, p) => sum + breakdown[p].endingPaidSubs7d, 0),
+    };
+
+    return {
+      explanation: "Churn Rate = (Total Churn Count / Starting Paid Subscribers) × 100",
+      note: "If churn rate seems too low, check if the 'churn' field is capturing all churned subscribers. The 'churn' field counts subscriptions that ended on each day.",
+      platformBreakdown: breakdown,
+      unified30Day: {
+        ...unified30d,
+        calculatedChurnRate: calculateChurnRate(unified30d.totalChurn, unified30d.startingSubs),
+        subscriberDelta: unified30d.endingSubs - unified30d.startingSubs,
+      },
+      unified7Day: {
+        ...unified7d,
+        calculatedChurnRate: calculateChurnRate(unified7d.totalChurn, unified7d.startingSubs),
+        subscriberDelta: unified7d.endingSubs - unified7d.startingSubs,
+      },
+      suggestion: "Compare 'subscriberDelta' (ending - starting) with 'totalChurn'. If delta is larger (more negative), there may be churned subscribers not captured in the 'churn' field.",
     };
   },
 });

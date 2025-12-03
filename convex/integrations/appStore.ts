@@ -208,15 +208,15 @@ async function downloadASCReport(
     'filter[version]': version,
   });
   const url = `https://api.appstoreconnect.apple.com/v1/salesReports?${params.toString()}`;
-  console.log(`[App Store API] Fetching: ${reportType}/${reportSubType} for ${reportDate}`);
-  console.log(`[App Store API] URL: ${url.substring(0, 200)}`);
   const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
   if (!res.ok) {
     const text = await res.text();
     const wwwAuth = res.headers.get("www-authenticate") || null;
     const requestId = res.headers.get("x-request-id") || null;
-    console.log(`[App Store API] HTTP ${res.status} error for ${reportType}/${reportSubType}`);
-    console.log(`[App Store API] Error response: ${text.substring(0, 500)}`);
+    // Only log non-404 errors (404s are common for recent dates due to Apple reporting delay)
+    if (res.status !== 404) {
+      console.log(`[App Store API] HTTP ${res.status} error for ${reportType}/${reportSubType} ${reportDate}`);
+    }
     return { ok: false, status: res.status, text, wwwAuth, requestId } as const;
   }
   const gz = Buffer.from(await res.arrayBuffer());

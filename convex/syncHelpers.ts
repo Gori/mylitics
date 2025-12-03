@@ -360,3 +360,90 @@ export const getGooglePlayCredentials = query({
   },
 });
 
+// ===== CHUNKED SYNC HELPERS =====
+
+export const createSyncProgress = internalMutation({
+  args: {
+    syncId: v.id("syncStatus"),
+    appId: v.id("apps"),
+    platform: v.union(v.literal("appstore"), v.literal("googleplay"), v.literal("stripe")),
+    totalDays: v.number(),
+    chunkSize: v.number(),
+    startDate: v.string(),
+    connectionId: v.id("platformConnections"),
+    credentials: v.string(),
+  },
+  handler: async (ctx, { syncId, appId, platform, totalDays, chunkSize, startDate, connectionId, credentials }) => {
+    const totalChunks = Math.ceil(totalDays / chunkSize);
+    
+    const progressId = await ctx.db.insert("syncProgress", {
+      syncId,
+      appId,
+      platform,
+      phase: "historical",
+      currentChunk: 0,
+      totalChunks,
+      processedDays: 0,
+      totalDays,
+      startDate,
+      connectionId,
+      credentials,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    
+    return progressId;
+  },
+});
+
+export const getSyncProgress = internalQuery({
+  args: {
+    progressId: v.id("syncProgress"),
+  },
+  handler: async (ctx, { progressId }) => {
+    return await ctx.db.get(progressId);
+  },
+});
+
+export const updateSyncProgress = internalMutation({
+  args: {
+    progressId: v.id("syncProgress"),
+    currentChunk: v.optional(v.number()),
+    processedDays: v.optional(v.number()),
+    lastProcessedDate: v.optional(v.string()),
+    phase: v.optional(v.string()),
+    error: v.optional(v.string()),
+  },
+  handler: async (ctx, { progressId, ...updates }) => {
+    const cleanUpdates = Object.fromEntries(
+      Object.entries(updates).filter(([_, v]) => v !== undefined)
+    );
+    await ctx.db.patch(progressId, {
+      ...cleanUpdates,
+      updatedAt: Date.now(),
+    });
+  },
+});
+
+export const deleteSyncProgress = internalMutation({
+  args: {
+    progressId: v.id("syncProgress"),
+  },
+  handler: async (ctx, { progressId }) => {
+    await ctx.db.delete(progressId);
+  },
+});
+
+export const getActiveSyncProgress = internalQuery({
+  args: {
+    appId: v.id("apps"),
+    platform: v.union(v.literal("appstore"), v.literal("googleplay"), v.literal("stripe")),
+  },
+  handler: async (ctx, { appId, platform }) => {
+    return await ctx.db
+      .query("syncProgress")
+      .withIndex("by_app_platform", (q) => q.eq("appId", appId).eq("platform", platform))
+      .first();
+  },
+});
+

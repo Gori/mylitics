@@ -41,11 +41,13 @@ export function DebugDataTable({ debugData, userCurrency = "USD", periodType }: 
       monthlySubscribers: "Monthly Subs",
       yearlySubscribers: "Yearly Subs",
       cancellations: "Cancellations",
+      churn: "Churn (count)",
+      churnRate: "Churn Rate (%)",
       graceEvents: "Grace Events",
       firstPayments: "First Payments",
       renewals: "Renewals",
-      mrr: "MRR",
       weeklyRevenue: "Weekly Revenue",
+      mrr: "MRR",
       monthlyRevenueGross: "Monthly Rev. (Gross)",
       monthlyRevenueNet: "Monthly Rev. (Net)",
     };
@@ -54,12 +56,14 @@ export function DebugDataTable({ debugData, userCurrency = "USD", periodType }: 
     const flowMetrics = debugData.flowMetrics || [];
     const rows: DebugRow[] = [];
 
+    // Get appropriate data based on periodType
     const dataByMetric = periodType === "monthly" 
       ? debugData.monthlyDataByMetric 
       : debugData.weeklyDataByMetric;
 
     if (!dataByMetric) return { rows: [], periodHeaders: [] };
 
+    // Get all unique periods across all metrics
     const allPeriods = new Set<string>();
     for (const metric of metrics) {
       const periodData = dataByMetric[metric] || [];
@@ -74,12 +78,14 @@ export function DebugDataTable({ debugData, userCurrency = "USD", periodType }: 
       const periodData = dataByMetric[metric] || [];
       const isFlowMetric = flowMetrics.includes(metric);
 
+      // Create period lookup for this metric
       const periodLookup: Record<string, any> = {};
       periodData.forEach((p: any) => {
         const key = periodType === "monthly" ? p.month : p.week;
         if (key) periodLookup[key] = p;
       });
 
+      // Platform rows - calculate these first so we can sum them for unified
       const platforms = ["appstore", "googleplay", "stripe"];
       const platformLabels: Record<string, string> = {
         appstore: "App Store",
@@ -89,6 +95,7 @@ export function DebugDataTable({ debugData, userCurrency = "USD", periodType }: 
 
       const platformTotals: Record<string, number> = {};
 
+      // For flow metrics: use 30-day sum; for stock metrics: use latest value
       for (const platform of platforms) {
         const platformTotal = isFlowMetric
           ? debugData.flowSumsByPlatform?.[platform]?.[metric] || 0
@@ -96,6 +103,7 @@ export function DebugDataTable({ debugData, userCurrency = "USD", periodType }: 
         platformTotals[platform] = platformTotal;
       }
 
+      // Unified row - always calculate as sum of platforms
       const unifiedTotal = 
         platformTotals.appstore + 
         platformTotals.googleplay + 
@@ -114,6 +122,7 @@ export function DebugDataTable({ debugData, userCurrency = "USD", periodType }: 
         periods: unifiedPeriods,
       });
 
+      // Add platform rows
       for (const platform of platforms) {
         const platformPeriods: Record<string, number | null> = {};
         sortedPeriods.forEach((period) => {
@@ -136,6 +145,7 @@ export function DebugDataTable({ debugData, userCurrency = "USD", periodType }: 
   const downloadData = () => {
     if (!rows || rows.length === 0) return;
 
+    // Create CSV content
     const headers = ["Metric", "Platform", "Total", ...periodHeaders];
     const csvRows = [headers.join(",")];
 
@@ -145,7 +155,7 @@ export function DebugDataTable({ debugData, userCurrency = "USD", periodType }: 
         return value === null ? "" : value;
       });
       csvRows.push([
-        '"' + row.metricName + '"',
+        `"${row.metricName}"`,
         row.platform,
         row.total,
         ...periodValues,
@@ -157,7 +167,7 @@ export function DebugDataTable({ debugData, userCurrency = "USD", periodType }: 
     const link = document.createElement("a");
     const url = URL.createObjectURL(blob);
     link.setAttribute("href", url);
-    link.setAttribute("download", "metrics-debug-" + periodType + "-" + new Date().toISOString().split("T")[0] + ".csv");
+    link.setAttribute("download", `metrics-debug-${periodType}-${new Date().toISOString().split("T")[0]}.csv`);
     link.style.visibility = "hidden";
     document.body.appendChild(link);
     link.click();
@@ -166,6 +176,10 @@ export function DebugDataTable({ debugData, userCurrency = "USD", periodType }: 
 
   const formatValue = (metricName: string, value: number) => {
     const currencyMetrics = ["MRR", "Monthly Rev. (Gross)", "Monthly Rev. (Net)", "Weekly Revenue"];
+    const percentMetrics = ["Churn Rate (%)"];
+    if (percentMetrics.includes(metricName)) {
+      return `${value.toFixed(2)}%`;
+    }
     if (currencyMetrics.includes(metricName)) {
       return new Intl.NumberFormat("en-US", {
         style: "currency",
@@ -213,9 +227,10 @@ export function DebugDataTable({ debugData, userCurrency = "USD", periodType }: 
     ];
 
     const periodColumns: ColumnDef<DebugRow>[] = periodHeaders.map((period) => ({
-      id: "period-" + period,
+      id: `period-${period}`,
       header: () => {
         if (periodType === "monthly") {
+          // Format YYYY-MM as "Jan 2024"
           const [year, month] = period.split("-");
           const date = new Date(parseInt(year), parseInt(month) - 1, 1);
           return (
@@ -224,6 +239,7 @@ export function DebugDataTable({ debugData, userCurrency = "USD", periodType }: 
             </div>
           );
         }
+        // Weekly: format as "Jan 15"
         const date = new Date(period);
         return (
           <div className="text-xs whitespace-nowrap">
@@ -319,11 +335,11 @@ export function DebugDataTable({ debugData, userCurrency = "USD", periodType }: 
                         key={cell.id}
                         className={
                           idx === 0
-                            ? "sticky left-0 z-10 " + platformBg + " border-r min-w-[180px]"
+                            ? `sticky left-0 z-10 ${platformBg} border-r min-w-[180px]`
                             : idx === 1
-                            ? "sticky left-[180px] z-10 " + platformBg + " border-r min-w-[120px]"
+                            ? `sticky left-[180px] z-10 ${platformBg} border-r min-w-[120px]`
                             : idx === 2
-                            ? "sticky left-[300px] z-10 " + platformBg + " border-r min-w-[120px]"
+                            ? `sticky left-[300px] z-10 ${platformBg} border-r min-w-[120px]`
                             : "min-w-[100px]"
                         }
                       >

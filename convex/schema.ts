@@ -155,5 +155,26 @@ export default defineSchema({
   })
     .index("by_pair", ["fromCurrency", "toCurrency"])
     .index("by_pair_month", ["fromCurrency", "toCurrency", "yearMonth"]),
+
+  // Track progress for chunked sync operations (to avoid action timeouts)
+  syncProgress: defineTable({
+    syncId: v.id("syncStatus"), // Links to parent sync session
+    appId: v.id("apps"),
+    platform: v.union(v.literal("appstore"), v.literal("googleplay"), v.literal("stripe")),
+    phase: v.string(), // "historical" | "unified" | "complete"
+    currentChunk: v.number(), // Current chunk being processed
+    totalChunks: v.number(), // Total chunks to process
+    processedDays: v.number(), // Days processed so far
+    totalDays: v.number(), // Total days to process
+    startDate: v.string(), // YYYY-MM-DD - start of the range
+    lastProcessedDate: v.optional(v.string()), // YYYY-MM-DD - last date processed
+    connectionId: v.id("platformConnections"), // Connection being synced
+    credentials: v.string(), // Cached credentials (encrypted)
+    error: v.optional(v.string()), // Last error if any
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_sync", ["syncId"])
+    .index("by_app_platform", ["appId", "platform"]),
 });
 

@@ -26,6 +26,7 @@ export default function DashboardPage() {
   const userPreferences = useQuery(api.queries.getUserPreferences, { appId });
   const debugData = useQuery(api.queries.getAllDebugData, { appId });
   const debugRevenue = useQuery(api.queries.debugRevenueCalculation, { appId });
+  const debugChurnRate = useQuery(api.queries.debugChurnRate, { appId });
   const validateRevenue = useQuery(api.queries.validateRevenueData, { appId });
   const logs = useQuery(api.queries.getSyncLogs, { appId, limit: 50 });
   const activeSyncStatus = useQuery(api.syncHelpers.getActiveSyncStatus, { appId });
@@ -195,6 +196,26 @@ export default function DashboardPage() {
                   ⓘ
                 </span>
               )}
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  // Format churn rate as percentage
+  const formatPercent = (value: number) => `${value.toFixed(2)}%`;
+  
+  // Right block for churn rate (shows percentage per platform)
+  const rightBlockChurnRate = (viewMode: "monthly" | "weekly") => {
+    const key = viewMode === "monthly" ? "churnRate" : "weeklyChurnRate";
+    return (
+      <div className="text-xs text-right text-gray-500 leading-4">
+        {connectedPlatforms.map((platform) => {
+          const value = metrics?.platformMap?.[platform]?.[key] ?? 0;
+          return (
+            <div key={platform}>
+              {platformLabels[platform]}: {formatPercent(value)}
             </div>
           );
         })}
@@ -387,6 +408,17 @@ export default function DashboardPage() {
                   viewMode={viewMode}
                   right={rightBlock("cancellations")}
                 />
+                <MetricCard currency={currency}
+                  label="Churn Rate"
+                  value={formatPercent(viewMode === "monthly" ? metrics.unified.churnRate : metrics.unified.weeklyChurnRate)}
+                  metricKey="churnRate"
+                  appId={appId}
+                  connectedPlatforms={connectedPlatforms}
+                  viewMode={viewMode}
+                  right={rightBlockChurnRate(viewMode)}
+                />
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <MetricCard currency={currency}
                   label="Grace Events"
                   value={metrics.unified.graceEvents}
@@ -710,6 +742,73 @@ export default function DashboardPage() {
               </div>
             )}
 
+            {debugChurnRate && (
+              <div className="mt-12">
+                <h2 className="text-xl font-semibold mb-4">Debug: Churn Rate Calculation</h2>
+                <p className="text-sm text-gray-600 mb-4">{debugChurnRate.explanation}</p>
+                <p className="text-sm text-yellow-700 bg-yellow-50 p-2 rounded mb-4">{debugChurnRate.note}</p>
+                <div className="border border-gray-200 rounded p-4 bg-white space-y-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="bg-blue-50 p-3 rounded border">
+                      <div className="font-semibold text-lg">30-Day Unified</div>
+                      <div className="text-sm font-mono space-y-1">
+                        <div>Total Churn: <span className="font-bold">{debugChurnRate.unified30Day.totalChurn}</span></div>
+                        <div>Starting Paid Subs: <span className="font-bold">{debugChurnRate.unified30Day.startingSubs}</span></div>
+                        <div>Ending Paid Subs: <span className="font-bold">{debugChurnRate.unified30Day.endingSubs}</span></div>
+                        <div>Subscriber Delta: <span className={`font-bold ${debugChurnRate.unified30Day.subscriberDelta < 0 ? 'text-red-600' : 'text-green-600'}`}>{debugChurnRate.unified30Day.subscriberDelta}</span></div>
+                        <div className="text-lg font-bold text-blue-700 mt-2">
+                          Churn Rate: {debugChurnRate.unified30Day.calculatedChurnRate}%
+                        </div>
+                      </div>
+                    </div>
+                    <div className="bg-green-50 p-3 rounded border">
+                      <div className="font-semibold text-lg">7-Day Unified</div>
+                      <div className="text-sm font-mono space-y-1">
+                        <div>Total Churn: <span className="font-bold">{debugChurnRate.unified7Day.totalChurn}</span></div>
+                        <div>Starting Paid Subs: <span className="font-bold">{debugChurnRate.unified7Day.startingSubs}</span></div>
+                        <div>Ending Paid Subs: <span className="font-bold">{debugChurnRate.unified7Day.endingSubs}</span></div>
+                        <div>Subscriber Delta: <span className={`font-bold ${debugChurnRate.unified7Day.subscriberDelta < 0 ? 'text-red-600' : 'text-green-600'}`}>{debugChurnRate.unified7Day.subscriberDelta}</span></div>
+                        <div className="text-lg font-bold text-green-700 mt-2">
+                          Churn Rate: {debugChurnRate.unified7Day.calculatedChurnRate}%
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {Object.entries(debugChurnRate.platformBreakdown).map(([platform, data]: [string, any]) => (
+                      <div key={platform} className="bg-gray-50 p-3 rounded border">
+                        <div className="font-semibold capitalize">{platform}</div>
+                        <div className="text-xs font-mono space-y-1 mt-2">
+                          <div className="font-semibold">30-Day:</div>
+                          <div className="ml-2">Churn: {data.totalChurn30d}</div>
+                          <div className="ml-2">Start Subs: {data.startingPaidSubs30d}</div>
+                          <div className="ml-2">Rate: <span className="font-bold">{data.calculatedChurnRate30d}%</span></div>
+                          <div className="font-semibold mt-2">7-Day:</div>
+                          <div className="ml-2">Churn: {data.totalChurn7d}</div>
+                          <div className="ml-2">Start Subs: {data.startingPaidSubs7d}</div>
+                          <div className="ml-2">Rate: <span className="font-bold">{data.calculatedChurnRate7d}%</span></div>
+                        </div>
+                        <div className="mt-2 text-xs">
+                          <div className="font-semibold">Last 10 Days:</div>
+                          <div className="max-h-32 overflow-y-auto">
+                            {data.dailySnapshots.map((snap: any) => (
+                              <div key={snap.date} className="flex justify-between font-mono">
+                                <span>{snap.date.slice(5)}</span>
+                                <span>churn:{snap.churn} subs:{snap.paidSubs}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  
+                  <p className="text-sm text-orange-700 bg-orange-50 p-2 rounded">{debugChurnRate.suggestion}</p>
+                </div>
+              </div>
+            )}
+
             <div className="mt-12">
               <h2 className="text-xl font-semibold mb-4">Debug: Monthly Metrics Data</h2>
               <DebugDataTable debugData={debugData} userCurrency={currency} periodType="monthly" />
@@ -737,15 +836,21 @@ const CustomChartTooltip = ({ active, payload, label, currency, config, metricKe
   if (!active || !payload || !payload.length) return null;
 
   const isCurrency = metricKey.toLowerCase().includes("revenue") || metricKey === "mrr";
-  const formatValue = (val: number) =>
-    isCurrency
-      ? new Intl.NumberFormat("en-US", {
-          style: "currency",
-          currency: currency,
-          minimumFractionDigits: 0,
-          maximumFractionDigits: 0,
-        }).format(val)
-      : new Intl.NumberFormat("en-US").format(val);
+  const isPercent = metricKey === "churnRate";
+  const formatValue = (val: number) => {
+    if (isPercent) {
+      return `${val.toFixed(2)}%`;
+    }
+    if (isCurrency) {
+      return new Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency: currency,
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 0,
+      }).format(val);
+    }
+    return new Intl.NumberFormat("en-US").format(val);
+  };
 
   const formatLabel = (dateStr: string) => {
     try {
