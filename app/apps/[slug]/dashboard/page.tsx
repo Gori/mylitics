@@ -304,7 +304,7 @@ export default function DashboardPage() {
           <>
             <div className="space-y-4 mb-8">
               <div className="grid grid-cols-1 md:grid-cols-1 gap-4">
-                <MetricCard
+                <MetricCard currency={currency}
                   label="Active Subscribers"
                   value={metrics.unified.activeSubscribers}
                   metricKey="activeSubscribers"
@@ -338,7 +338,7 @@ export default function DashboardPage() {
                 />
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <MetricCard
+                <MetricCard currency={currency}
                   label="Trial Subscribers"
                   value={metrics.unified.trialSubscribers}
                   metricKey="trialSubscribers"
@@ -347,7 +347,7 @@ export default function DashboardPage() {
                   viewMode={viewMode}
                   right={rightBlock("trialSubscribers")}
                 />
-                <MetricCard
+                <MetricCard currency={currency}
                   label="Paid Subscribers"
                   value={metrics.unified.paidSubscribers}
                   metricKey="paidSubscribers"
@@ -358,7 +358,7 @@ export default function DashboardPage() {
                 />
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <MetricCard
+                <MetricCard currency={currency}
                   label="Monthly Subs"
                   value={metrics.unified.monthlySubscribers}
                   metricKey="monthlySubscribers"
@@ -367,7 +367,7 @@ export default function DashboardPage() {
                   viewMode={viewMode}
                   right={rightBlock("monthlySubscribers")}
                 />
-                <MetricCard
+                <MetricCard currency={currency}
                   label="Yearly Subs"
                   value={metrics.unified.yearlySubscribers}
                   metricKey="yearlySubscribers"
@@ -378,7 +378,7 @@ export default function DashboardPage() {
                 />
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <MetricCard
+                <MetricCard currency={currency}
                   label="Cancellations"
                   value={metrics.unified.cancellations}
                   metricKey="cancellations"
@@ -387,7 +387,7 @@ export default function DashboardPage() {
                   viewMode={viewMode}
                   right={rightBlock("cancellations")}
                 />
-                <MetricCard
+                <MetricCard currency={currency}
                   label="Grace Events"
                   value={metrics.unified.graceEvents}
                   metricKey="graceEvents"
@@ -398,7 +398,7 @@ export default function DashboardPage() {
                 />
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <MetricCard
+                <MetricCard currency={currency}
                   label="First Payments"
                   value={metrics.unified.firstPayments}
                   metricKey="firstPayments"
@@ -407,7 +407,7 @@ export default function DashboardPage() {
                   viewMode={viewMode}
                   right={rightBlock("firstPayments")}
                 />
-                <MetricCard
+                <MetricCard currency={currency}
                   label="Renewals"
                   value={metrics.unified.renewals}
                   metricKey="renewals"
@@ -418,7 +418,7 @@ export default function DashboardPage() {
                 />
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <MetricCard
+                <MetricCard currency={currency}
                   label={viewMode === "monthly" ? "Monthly Rev. (Gross)" : "Weekly Rev. (Gross)"}
                   value={formatCurrency(viewMode === "monthly" ? metrics.unified.monthlyRevenueGross : metrics.unified.weeklyRevenueGross)}
                   metricKey="monthlyRevenueGross"
@@ -427,7 +427,7 @@ export default function DashboardPage() {
                   viewMode={viewMode}
                   right={rightBlock(viewMode === "monthly" ? "monthlyRevenueGross" : "weeklyRevenueGross", true)}
                 />
-                <MetricCard
+                <MetricCard currency={currency}
                   label={viewMode === "monthly" ? "Monthly Rev. (Net)" : "Weekly Rev. (Net)"}
                   value={formatCurrency(viewMode === "monthly" ? metrics.unified.monthlyRevenueNet : metrics.unified.weeklyRevenueNet)}
                   metricKey="monthlyRevenueNet"
@@ -438,7 +438,7 @@ export default function DashboardPage() {
                 />
               </div>
               <div className="grid grid-cols-1 md:grid-cols-1 gap-4">
-                <MetricCard
+                <MetricCard currency={currency}
                   label="MRR"
                   value={formatCurrency(metrics.unified.mrr)}
                   metricKey="mrr"
@@ -733,6 +733,89 @@ export default function DashboardPage() {
 }
 
 
+const CustomChartTooltip = ({ active, payload, label, currency, config, metricKey, connectedPlatforms, viewMode }: any) => {
+  if (!active || !payload || !payload.length) return null;
+
+  const isCurrency = metricKey.toLowerCase().includes("revenue") || metricKey === "mrr";
+  const formatValue = (val: number) =>
+    isCurrency
+      ? new Intl.NumberFormat("en-US", {
+          style: "currency",
+          currency: currency,
+          minimumFractionDigits: 0,
+          maximumFractionDigits: 0,
+        }).format(val)
+      : new Intl.NumberFormat("en-US").format(val);
+
+  const formatLabel = (dateStr: string) => {
+    try {
+      if (viewMode === "monthly") {
+        // dateStr is "YYYY-MM"
+        const [year, month] = dateStr.split("-");
+        const date = new Date(parseInt(year), parseInt(month) - 1);
+        return date.toLocaleDateString("en-US", {
+          month: "long",
+          year: "numeric",
+        });
+      } else {
+        // dateStr is "YYYY-MM-DD"
+        const date = new Date(dateStr);
+        // Fix timezone offset issues by ensuring we interpret as local date components or UTC
+        // Assuming dateStr is ISO YYYY-MM-DD. 
+        // To match the user request "Week of March 23, 2025", we just need correct day.
+        // Using the timezone offset approach to ensure "2025-03-23" is treated as local March 23.
+        const userTimezoneOffset = date.getTimezoneOffset() * 60000;
+        const localDate = new Date(date.getTime() + userTimezoneOffset);
+        return `Week of ${localDate.toLocaleDateString("en-US", {
+          month: "long",
+          day: "numeric",
+          year: "numeric",
+        })}`;
+      }
+    } catch {
+      return dateStr;
+    }
+  };
+
+  // Calculate total based on connected platforms available in payload
+  const total = payload.reduce((acc: number, item: any) => acc + (item.value || 0), 0);
+
+  return (
+    <div className="border-border/50 bg-background grid min-w-[13rem] items-start gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs shadow-xl">
+      <div className="font-medium mb-1">{formatLabel(label)}</div>
+      <div className="grid gap-1.5">
+        {payload.map((item: any) => {
+          const key = item.dataKey || item.name;
+          const itemConfig = config[key];
+          const itemLabel = itemConfig?.label || item.name;
+          const color = itemConfig?.color || item.stroke || item.fill;
+
+          return (
+            <div key={key} className="flex w-full items-center gap-2">
+              <div
+                className="h-2.5 w-2.5 shrink-0 rounded-[2px]"
+                style={{ backgroundColor: color }}
+              />
+              <div className="text-muted-foreground">{itemLabel}</div>
+              <div className="ml-auto font-mono font-medium tabular-nums text-foreground">
+                {formatValue(item.value)}
+              </div>
+            </div>
+          );
+        })}
+        {connectedPlatforms.length > 1 && (
+          <div className="mt-2 flex w-full items-center gap-2 border-t pt-2 font-medium">
+            <div className="text-foreground">Total</div>
+            <div className="ml-auto font-mono font-medium tabular-nums text-foreground">
+              {formatValue(total)}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 function MetricCard({
   label,
   value,
@@ -741,6 +824,7 @@ function MetricCard({
   right,
   connectedPlatforms,
   viewMode,
+  currency,
 }: {
   label: string;
   value: string | number;
@@ -749,6 +833,7 @@ function MetricCard({
   right?: React.ReactNode;
   connectedPlatforms: string[];
   viewMode: "monthly" | "weekly";
+  currency: string;
 }) {
   const weeklyData = useQuery(api.queries.getWeeklyMetricsHistory, { appId, metric: metricKey });
   const monthlyData = useQuery(api.queries.getMonthlyMetricsHistory, { appId, metric: metricKey });
@@ -789,6 +874,12 @@ function MetricCard({
     };
   }, [chartData, dateKey]);
 
+  const chartConfig = {
+    appstore: { label: "iOS App Store", color: "var(--color-platform-appstore)" },
+    googleplay: { label: "Google Play", color: "var(--color-platform-googleplay)" },
+    stripe: { label: "Stripe", color: "var(--color-platform-stripe)" },
+  } satisfies ChartConfig;
+
   return (
     <Card className="p-0 gap-0">
       <CardContent className="p-6 pb-5">
@@ -825,11 +916,7 @@ function MetricCard({
 
         <ChartContainer
           className="h-32 mt-4 !aspect-auto"
-          config={{
-            appstore: { label: "iOS App Store", color: "var(--color-platform-appstore)" },
-            googleplay: { label: "Google Play", color: "var(--color-platform-googleplay)" },
-            stripe: { label: "Stripe", color: "var(--color-platform-stripe)" },
-          } satisfies ChartConfig}
+          config={chartConfig}
         >
           {chartData && chartData.length > 0 ? (
             <LineChart data={chartData} margin={{ left: 0, right: 0, top: 5, bottom: 5 }}>
@@ -864,7 +951,18 @@ function MetricCard({
                 }}
               />
               <YAxis hide />
-              <ChartTooltip cursor={false} content={<ChartTooltipContent />} />
+              <ChartTooltip
+                cursor={false}
+                content={
+                  <CustomChartTooltip
+                    currency={currency}
+                    config={chartConfig}
+                    metricKey={metricKey}
+                    connectedPlatforms={connectedPlatforms}
+                    viewMode={viewMode}
+                  />
+                }
+              />
               {connectedPlatforms.includes("appstore") && (
                 <Line type="linear" dataKey="appstore" stroke="var(--color-appstore)" strokeWidth={1} dot={false} isAnimationActive={false} />
               )}

@@ -2,89 +2,96 @@ import { cronJobs } from "convex/server";
 import { action } from "./_generated/server";
 import { api, internal } from "./_generated/api";
 
-// Fetch exchange rates from exchangerate-api.io (free tier)
+// All supported currencies
+const CURRENCIES = [
+  // Major currencies
+  "USD", "EUR", "GBP", "JPY", "CAD", "AUD", "CHF", "CNY", "INR", "BRL",
+  // Nordics
+  "SEK", "NOK", "DKK",
+  // Asia Pacific
+  "NZD", "SGD", "HKD", "KRW", "TWD", "THB", "PHP", "IDR", "MYR", "VND",
+  // Europe (non-Euro)
+  "PLN", "CZK", "HUF", "RON", "BGN", "HRK", "RUB", "UAH",
+  // Americas
+  "MXN", "ARS", "CLP", "COP", "PEN",
+  // Middle East / Africa
+  "ZAR", "TRY", "ILS", "AED", "SAR", "EGP", "NGN",
+];
+
+const MONTHS_TO_BACKFILL = 24;
+
+// Fetch exchange rates using Frankfurter.app (free, supports historical)
+// Duplicates are automatically skipped, so this is safe to run repeatedly
 export const fetchExchangeRates = action({
   args: {},
-  handler: async (ctx) => {
-    console.log("[Exchange Rates] Starting fetch...");
+  handler: async (ctx): Promise<{ success: boolean; error?: string; stored?: number; skipped?: number; errors?: string[] }> => {
+    console.log("[Exchange Rates] Starting fetch (current + historical)...");
     const baseCurrency = "USD";
-    // Include all currencies that appear in App Store and Google Play reports
-    const currencies = [
-      // Major currencies
-      "USD", "EUR", "GBP", "JPY", "CAD", "AUD", "CHF", "CNY", "INR", "BRL",
-      // Nordics
-      "SEK", "NOK", "DKK",
-      // Asia Pacific
-      "NZD", "SGD", "HKD", "KRW", "TWD", "THB", "PHP", "IDR", "MYR", "VND",
-      // Europe (non-Euro)
-      "PLN", "CZK", "HUF", "RON", "BGN", "HRK", "RUB", "UAH",
-      // Americas
-      "MXN", "ARS", "CLP", "COP", "PEN",
-      // Middle East / Africa
-      "ZAR", "TRY", "ILS", "AED", "SAR", "EGP", "NGN",
-    ];
     
-    try {
-      console.log(`[Exchange Rates] Fetching from API for base ${baseCurrency}...`);
-      const response = await fetch(`https://open.er-api.com/v6/latest/${baseCurrency}`);
-      
-      if (!response.ok) {
-        console.error(`[Exchange Rates] Failed to fetch: HTTP ${response.status}`);
-        return { success: false, error: `HTTP ${response.status}` };
-      }
-      
-      const data = await response.json() as { result?: string; rates?: Record<string, number> };
-      
-      if (data.result !== "success" || !data.rates) {
-        console.error("[Exchange Rates] Invalid response - missing rates");
-        return { success: false, error: "Invalid response" };
-      }
-      
-      console.log(`[Exchange Rates] API response received, rates available: ${Object.keys(data.rates).length}`);
-      
-      const rates = [];
-      
-      // Store rates from USD to each currency
-      for (const currency of currencies) {
-        if (currency === baseCurrency) continue;
+    // Generate list of months: current + past 24 months
+    const months: string[] = [];
+    const now = new Date();
+    for (let i = 0; i < MONTHS_TO_BACKFILL; i++) {
+      const date = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      months.push(date.toISOString().substring(0, 7));
+    }
+    
+    let totalStored = 0;
+    let totalSkipped = 0;
+    const errors: string[] = [];
+    
+    for (const yearMonth of months) {
+      try {
+        // Frankfurter.app: use /latest for current, /YYYY-MM-DD for historical
+        const isCurrentMonth = yearMonth === now.toISOString().substring(0, 7);
+        const url = isCurrentMonth
+          ? `https://api.frankfurter.app/latest?from=${baseCurrency}`
+          : `https://api.frankfurter.app/${yearMonth}-01?from=${baseCurrency}`;
         
-        const rate = data.rates[currency];
-        if (rate) {
-          rates.push({
-            fromCurrency: baseCurrency,
-            toCurrency: currency,
-            rate,
-          });
-          if (currency === "NOK") {
-            console.log(`[Exchange Rates] USD -> NOK rate: ${rate}`);
+        const response = await fetch(url);
+        
+        if (!response.ok) {
+          errors.push(`${yearMonth}: HTTP ${response.status}`);
+          continue;
+        }
+        
+        const data = await response.json() as { rates?: Record<string, number> };
+        
+        if (!data.rates) {
+          errors.push(`${yearMonth}: Invalid response`);
+          continue;
+        }
+        
+        const rates: { fromCurrency: string; toCurrency: string; rate: number }[] = [];
+        for (const currency of CURRENCIES) {
+          if (currency === baseCurrency) continue;
+          const rate = data.rates[currency];
+          if (rate) {
+            rates.push({ fromCurrency: baseCurrency, toCurrency: currency, rate });
           }
         }
+        
+        if (rates.length > 0) {
+          const result = await ctx.runMutation(internal.mutations.storeExchangeRates, { rates, yearMonth });
+          totalStored += result.count;
+          totalSkipped += result.skipped;
+          if (result.count > 0) {
+            console.log(`[Exchange Rates] ${yearMonth}: stored ${result.count} new rates`);
+          }
+        }
+        
+        // Small delay to avoid rate limiting
+        if (!isCurrentMonth) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error);
+        errors.push(`${yearMonth}: ${msg}`);
       }
-      
-      console.log(`[Exchange Rates] Prepared ${rates.length} rates to store`);
-      
-      if (rates.length > 0) {
-        await ctx.runMutation(internal.mutations.storeExchangeRates, { rates });
-        console.log(`[Exchange Rates] ✅ Successfully stored ${rates.length} exchange rates`);
-        return { success: true, count: rates.length };
-      }
-      
-      console.error("[Exchange Rates] No rates to store");
-      return { success: false, error: "No rates found" };
-    } catch (error: any) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      console.error("[Exchange Rates] Error:", errorMsg);
-      
-      // Provide helpful error message for common issues
-      if (errorMsg.includes("tunnel") || errorMsg.includes("Connect")) {
-        return { 
-          success: false, 
-          error: "Network connection failed. Please check your internet connection and try again." 
-        };
-      }
-      
-      return { success: false, error: errorMsg };
     }
+    
+    console.log(`[Exchange Rates] ✅ Complete: ${totalStored} stored, ${totalSkipped} already existed, ${errors.length} errors`);
+    return { success: true, stored: totalStored, skipped: totalSkipped, errors: errors.length > 0 ? errors : undefined };
   },
 });
 

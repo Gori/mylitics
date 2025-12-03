@@ -115,20 +115,37 @@ export const storeExchangeRates = internalMutation({
       toCurrency: v.string(),
       rate: v.number(),
     })),
+    yearMonth: v.optional(v.string()), // Optional: specific month for historical rates (YYYY-MM)
   },
-  handler: async (ctx, { rates }) => {
+  handler: async (ctx, { rates, yearMonth }) => {
     const timestamp = Date.now();
+    // Use provided yearMonth or derive from current date
+    const month = yearMonth || new Date().toISOString().substring(0, 7);
     
+    let stored = 0;
     for (const { fromCurrency, toCurrency, rate } of rates) {
-      await ctx.db.insert("exchangeRates", {
-        fromCurrency: fromCurrency.toUpperCase(),
-        toCurrency: toCurrency.toUpperCase(),
-        rate,
-        timestamp,
-      });
+      const from = fromCurrency.toUpperCase();
+      const to = toCurrency.toUpperCase();
+      
+      // Check if we already have a rate for this month (avoid duplicates)
+      const existing = await ctx.db
+        .query("exchangeRates")
+        .withIndex("by_pair_month", (q) => q.eq("fromCurrency", from).eq("toCurrency", to).eq("yearMonth", month))
+        .first();
+      
+      if (!existing) {
+        await ctx.db.insert("exchangeRates", {
+          fromCurrency: from,
+          toCurrency: to,
+          rate,
+          timestamp,
+          yearMonth: month,
+        });
+        stored++;
+      }
     }
     
-    return { success: true, count: rates.length };
+    return { success: true, count: stored, skipped: rates.length - stored };
   },
 });
 

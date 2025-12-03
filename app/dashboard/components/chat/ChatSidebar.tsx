@@ -362,7 +362,7 @@ export function ChatSidebar({ chatContext, debugData }: ChatSidebarProps) {
                             case 'output-available':
                               return (
                                 <div key={index} className="-mx-4 -my-3 first:-mt-0 last:-mb-0">
-                                  <LineChartDisplay {...(part.output as any)} />
+                                  <LineChartDisplay {...(part.output as any)} currency={chatContext?.currency} />
                                 </div>
                               );
                             case 'output-error':
@@ -388,7 +388,7 @@ export function ChatSidebar({ chatContext, debugData }: ChatSidebarProps) {
                             case 'output-available':
                               return (
                                 <div key={index} className="-mx-4 -my-3 first:-mt-0 last:-mb-0">
-                                  <BarChartDisplay {...(part.output as any)} />
+                                  <BarChartDisplay {...(part.output as any)} currency={chatContext?.currency} />
                                 </div>
                               );
                             case 'output-error':

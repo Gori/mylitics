@@ -4,7 +4,8 @@ import { Id } from "./_generated/dataModel";
 
 // Helper to convert currency and round to 2 decimals
 // This is the single source of truth for all currency conversions and rounding
-async function convertAndRoundCurrency(ctx: any, amount: number, fromCurrency: string, toCurrency: string): Promise<number> {
+// yearMonth is optional - when provided, uses historical rate for that month (format: "YYYY-MM")
+async function convertAndRoundCurrency(ctx: any, amount: number, fromCurrency: string, toCurrency: string, yearMonth?: string): Promise<number> {
   const from = fromCurrency.toUpperCase();
   const to = toCurrency.toUpperCase();
   
@@ -13,12 +14,26 @@ async function convertAndRoundCurrency(ctx: any, amount: number, fromCurrency: s
     return Math.round((amount + Number.EPSILON) * 100) / 100;
   }
   
+  // Helper to get rate - tries historical first if yearMonth provided, then falls back to latest
+  const getRate = async (fromC: string, toC: string) => {
+    if (yearMonth) {
+      // Try historical rate for specific month
+      const historicalRate = await ctx.db
+        .query("exchangeRates")
+        .withIndex("by_pair_month", (q: any) => q.eq("fromCurrency", fromC).eq("toCurrency", toC).eq("yearMonth", yearMonth))
+        .first();
+      if (historicalRate) return historicalRate;
+    }
+    // Fall back to latest rate
+    return await ctx.db
+      .query("exchangeRates")
+      .withIndex("by_pair", (q: any) => q.eq("fromCurrency", fromC).eq("toCurrency", toC))
+      .order("desc")
+      .first();
+  };
+  
   // Get exchange rate
-  const rate = await ctx.db
-    .query("exchangeRates")
-    .withIndex("by_pair", (q: any) => q.eq("fromCurrency", from).eq("toCurrency", to))
-    .order("desc")
-    .first();
+  const rate = await getRate(from, to);
   
   if (rate) {
     const converted = amount * rate.rate;
@@ -26,11 +41,7 @@ async function convertAndRoundCurrency(ctx: any, amount: number, fromCurrency: s
   }
   
   // Try inverse rate
-  const inverseRate = await ctx.db
-    .query("exchangeRates")
-    .withIndex("by_pair", (q: any) => q.eq("fromCurrency", to).eq("toCurrency", from))
-    .order("desc")
-    .first();
+  const inverseRate = await getRate(to, from);
   
   if (inverseRate) {
     const converted = amount / inverseRate.rate;
@@ -39,17 +50,8 @@ async function convertAndRoundCurrency(ctx: any, amount: number, fromCurrency: s
   
   // If both currencies are not USD, try converting through USD
   if (from !== "USD" && to !== "USD") {
-    const fromUSD = await ctx.db
-      .query("exchangeRates")
-      .withIndex("by_pair", (q: any) => q.eq("fromCurrency", "USD").eq("toCurrency", from))
-      .order("desc")
-      .first();
-    
-    const toUSD = await ctx.db
-      .query("exchangeRates")
-      .withIndex("by_pair", (q: any) => q.eq("fromCurrency", "USD").eq("toCurrency", to))
-      .order("desc")
-      .first();
+    const fromUSD = await getRate("USD", from);
+    const toUSD = await getRate("USD", to);
     
     if (fromUSD && toUSD) {
       const amountInUSD = amount / fromUSD.rate;
@@ -526,7 +528,8 @@ export const generateHistoricalSnapshots = internalMutation({
                   default:
                     monthlyAmount = unit / 100;
                 }
-                const convertedAmount = await convertAndRoundCurrency(ctx, monthlyAmount, currency, userCurrency);
+                const yearMonth = date.substring(0, 7);
+                const convertedAmount = await convertAndRoundCurrency(ctx, monthlyAmount, currency, userCurrency, yearMonth);
                 mrr += convertedAmount;
               }
             }
@@ -569,8 +572,9 @@ export const generateHistoricalSnapshots = internalMutation({
       // Monthly revenue calculation
       let monthlyRevenueGross = 0;
       let monthlyRevenueNet = 0;
+      const yearMonth = date.substring(0, 7);
       for (const e of dayRevenue) {
-        const convertedAmount = await convertAndRoundCurrency(ctx, e.amount, e.currency, userCurrency);
+        const convertedAmount = await convertAndRoundCurrency(ctx, e.amount, e.currency, userCurrency, yearMonth);
         
         if (e.eventType === "refund") {
           monthlyRevenueGross -= convertedAmount;
@@ -1134,8 +1138,9 @@ export const processAppStoreSubscriberReport = internalMutation({
         const netCurrency = proceedsCurrencyIdx >= 0 ? (cols[proceedsCurrencyIdx] || "USD").trim() : "USD";
         // Track currencies seen for debugging
         currenciesSeen[grossCurrency] = (currenciesSeen[grossCurrency] || 0) + 1;
-        rowGross = await convertAndRoundCurrency(ctx, rowGrossRaw, grossCurrency, userCurrency);
-        rowNet = await convertAndRoundCurrency(ctx, rowNetRaw, netCurrency, userCurrency);
+        const yearMonth = date.substring(0, 7);
+        rowGross = await convertAndRoundCurrency(ctx, rowGrossRaw, grossCurrency, userCurrency, yearMonth);
+        rowNet = await convertAndRoundCurrency(ctx, rowNetRaw, netCurrency, userCurrency, yearMonth);
       }
       
       if (eventValue) {
@@ -1382,39 +1387,57 @@ export const processGooglePlayReports = internalMutation({
 
     console.log(`[Google Play] Processing ${allDates.size} unique dates`);
 
-    // OPTIMIZATION: Pre-fetch exchange rate once for all conversions
-    // Google Play reports are in USD, so we only need one rate lookup
-    let exchangeRate = 1.0;
-    if (userCurrency.toUpperCase() !== "USD") {
-      const rate = await ctx.db
-        .query("exchangeRates")
-        .withIndex("by_pair", (q: any) => q.eq("fromCurrency", "USD").eq("toCurrency", userCurrency.toUpperCase()))
-        .order("desc")
-        .first();
-      
-      if (rate) {
-        exchangeRate = rate.rate;
-        console.log(`[Google Play] Using exchange rate USD -> ${userCurrency}: ${exchangeRate}`);
-      } else {
-        // Try inverse
-        const inverseRate = await ctx.db
-          .query("exchangeRates")
-          .withIndex("by_pair", (q: any) => q.eq("fromCurrency", userCurrency.toUpperCase()).eq("toCurrency", "USD"))
-          .order("desc")
-          .first();
-        
-        if (inverseRate) {
-          exchangeRate = 1 / inverseRate.rate;
-          console.log(`[Google Play] Using inverse exchange rate USD -> ${userCurrency}: ${exchangeRate}`);
-        } else {
-          console.warn(`[Google Play] No exchange rate found for USD -> ${userCurrency}, using 1:1`);
-        }
-      }
+    // Get unique months from all dates for historical rate lookups
+    const uniqueMonths = new Set<string>();
+    for (const date of allDates) {
+      uniqueMonths.add(date.substring(0, 7));
     }
 
-    // Helper function for fast conversion using cached rate
-    const convertCurrency = (amount: number): number => {
-      const converted = amount * exchangeRate;
+    // Pre-fetch exchange rates for each month (historical rates)
+    const ratesByMonth = new Map<string, number>();
+    for (const yearMonth of uniqueMonths) {
+      let rate = 1.0;
+      if (userCurrency.toUpperCase() !== "USD") {
+        // Try historical rate first
+        const historicalRate = await ctx.db
+          .query("exchangeRates")
+          .withIndex("by_pair_month", (q: any) => q.eq("fromCurrency", "USD").eq("toCurrency", userCurrency.toUpperCase()).eq("yearMonth", yearMonth))
+          .first();
+        
+        if (historicalRate) {
+          rate = historicalRate.rate;
+        } else {
+          // Fall back to latest rate
+          const latestRate = await ctx.db
+            .query("exchangeRates")
+            .withIndex("by_pair", (q: any) => q.eq("fromCurrency", "USD").eq("toCurrency", userCurrency.toUpperCase()))
+            .order("desc")
+            .first();
+          
+          if (latestRate) {
+            rate = latestRate.rate;
+          } else {
+            // Try inverse
+            const inverseRate = await ctx.db
+              .query("exchangeRates")
+              .withIndex("by_pair", (q: any) => q.eq("fromCurrency", userCurrency.toUpperCase()).eq("toCurrency", "USD"))
+              .order("desc")
+              .first();
+            if (inverseRate) {
+              rate = 1 / inverseRate.rate;
+            }
+          }
+        }
+      }
+      ratesByMonth.set(yearMonth, rate);
+    }
+    console.log(`[Google Play] Pre-fetched exchange rates for ${ratesByMonth.size} months`);
+
+    // Helper function for conversion using historical rate for the date's month
+    const convertCurrency = (amount: number, date: string): number => {
+      const yearMonth = date.substring(0, 7);
+      const rate = ratesByMonth.get(yearMonth) ?? 1.0;
+      const converted = amount * rate;
       return Math.round((converted + Number.EPSILON) * 100) / 100;
     };
 
@@ -1443,8 +1466,8 @@ export const processGooglePlayReports = internalMutation({
       let weeklyRevenue = 0;
 
       if (revenueData) {
-        convertedGross = convertCurrency(revenueData.gross);
-        convertedNet = convertCurrency(revenueData.net);
+        convertedGross = convertCurrency(revenueData.gross, date);
+        convertedNet = convertCurrency(revenueData.net, date);
         weeklyRevenue = Math.round((convertedNet + Number.EPSILON) * 100) / 100;
       }
 
@@ -1550,8 +1573,9 @@ export const processGooglePlayFinancialReport = internalMutation({
     for (const [date, data] of Object.entries(revenueByDate)) {
       const { gross, net, transactions } = data as { gross: number; net: number; transactions: number };
 
-      const convertedGross = await convertAndRoundCurrency(ctx, gross, "USD", userCurrency);
-      const convertedNet = await convertAndRoundCurrency(ctx, net, "USD", userCurrency);
+      const yearMonth = date.substring(0, 7);
+      const convertedGross = await convertAndRoundCurrency(ctx, gross, "USD", userCurrency, yearMonth);
+      const convertedNet = await convertAndRoundCurrency(ctx, net, "USD", userCurrency, yearMonth);
 
       const snapshot = {
         appId,

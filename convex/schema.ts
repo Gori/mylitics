@@ -151,6 +151,9 @@ export default defineSchema({
     toCurrency: v.string(), // e.g. "EUR"
     rate: v.number(), // e.g. 0.85
     timestamp: v.number(), // when this rate was fetched
-  }).index("by_pair", ["fromCurrency", "toCurrency"]),
+    yearMonth: v.optional(v.string()), // e.g. "2024-01" for historical lookups
+  })
+    .index("by_pair", ["fromCurrency", "toCurrency"])
+    .index("by_pair_month", ["fromCurrency", "toCurrency", "yearMonth"]),
 });
 
