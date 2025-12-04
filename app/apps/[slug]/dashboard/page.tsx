@@ -544,7 +544,7 @@ export default function DashboardPage() {
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <MetricCard currency={currency}
-                  label={viewMode === "monthly" ? "Charged Revenue" : "Weekly Charged Rev."}
+                  label={viewMode === "monthly" ? "Charged Revenue (with Fees and VAT)" : "Weekly Charged Rev. (with Fees and VAT)"}
                   value={formatCurrency(viewMode === "monthly" ? metrics.unified.monthlyChargedRevenue : metrics.unified.weeklyChargedRevenue)}
                   metricKey="monthlyChargedRevenue"
                   appId={appId}
@@ -554,7 +554,7 @@ export default function DashboardPage() {
                   right={rightBlock(viewMode === "monthly" ? "monthlyChargedRevenue" : "weeklyChargedRevenue", true)}
                 />
                 <MetricCard currency={currency}
-                  label={viewMode === "monthly" ? "Revenue" : "Weekly Revenue"}
+                  label={viewMode === "monthly" ? "Revenue (with Fees, without VAT)" : "Weekly Revenue (with Fees, without VAT)"}
                   value={formatCurrency(viewMode === "monthly" ? metrics.unified.monthlyRevenue : metrics.unified.weeklyRevenue)}
                   metricKey="monthlyRevenue"
                   appId={appId}
