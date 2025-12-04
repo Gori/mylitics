@@ -139,15 +139,21 @@ export default function DashboardPage() {
     }).format(amount);
   };
 
+  // Use connected platforms from backend (actual platform connections)
+  // Fallback to deriving from platformMap if backend hasn't synced yet
   const connectedPlatforms = useMemo(() => {
+    if (metrics?.connectedPlatforms?.length) {
+      return metrics.connectedPlatforms;
+    }
+    // Fallback: derive from platformMap
     if (!metrics?.platformMap) return [];
     return Object.keys(metrics.platformMap).filter(platform => {
       const platformData = metrics.platformMap[platform];
       if (!platformData) return false;
-      // Check if platform has any non-zero values
       return Object.values(platformData).some(value => typeof value === 'number' && value > 0);
     });
   }, [metrics]);
+
 
   const platformCounts = {
     appstore: metrics?.platformMap?.appstore?.activeSubscribers ?? 0,
@@ -161,13 +167,62 @@ export default function DashboardPage() {
     stripe: "Stripe",
   };
 
-  // Check if Google Play has subscription data or just revenue
+  // Check if Google Play has any subscription data (used for warning icons)
   const googlePlayHasSubscriptionData = useMemo(() => {
     if (!metrics?.platformMap?.googleplay) return false;
     const gp = metrics.platformMap.googleplay;
-    // If active subscribers > 0, we have subscription data
     return (gp.activeSubscribers ?? 0) > 0;
   }, [metrics]);
+
+  // Check which subscription metrics Google Play has data for
+  // Google Play might have activeSubscribers but not the breakdown (trial/paid/monthly/yearly)
+  const googlePlayMetricsAvailable = useMemo(() => {
+    if (!metrics?.platformMap?.googleplay) return new Set<string>();
+    const gp = metrics.platformMap.googleplay;
+    const available = new Set<string>();
+    
+    // Check each metric - only mark as available if > 0 or if it's a flow metric that could legitimately be 0
+    if ((gp.activeSubscribers ?? 0) > 0) available.add("activeSubscribers");
+    if ((gp.trialSubscribers ?? 0) > 0) available.add("trialSubscribers");
+    if ((gp.paidSubscribers ?? 0) > 0) available.add("paidSubscribers");
+    if ((gp.monthlySubscribers ?? 0) > 0) available.add("monthlySubscribers");
+    if ((gp.yearlySubscribers ?? 0) > 0) available.add("yearlySubscribers");
+    
+    // Flow metrics - these could legitimately be 0, so check if GP has any subscription data at all
+    const hasAnySubscriptionData = available.size > 0;
+    if (hasAnySubscriptionData) {
+      // If GP has subscription data, assume flow metrics are available (0 is valid)
+      available.add("cancellations");
+      available.add("churnRate");
+      available.add("graceEvents");
+      available.add("firstPayments");
+      available.add("renewals");
+    }
+    
+    // Revenue metrics are always available if GP is in platformMap
+    available.add("monthlyChargedRevenue");
+    available.add("monthlyRevenue");
+    available.add("weeklyChargedRevenue");
+    available.add("weeklyRevenue");
+    available.add("mrr");
+    
+    return available;
+  }, [metrics]);
+
+  // Determine which platforms have data for each metric type
+  const getPlatformsWithData = (metricKey: string): string[] => {
+    return connectedPlatforms.filter(platform => {
+      // Check if platform exists in platformMap
+      if (!metrics?.platformMap?.[platform]) {
+        return false;
+      }
+      // For Google Play, check if this specific metric is available
+      if (platform === "googleplay" && !googlePlayMetricsAvailable.has(metricKey)) {
+        return false;
+      }
+      return true;
+    });
+  };
 
   const rightBlock = (key: string, isCurrency = false) => {
     const pick = (platform: string) => {
@@ -175,7 +230,7 @@ export default function DashboardPage() {
     };
     
     // For non-revenue metrics, check if Google Play has data
-    const isRevenueMetric = key === 'monthlyRevenueGross' || key === 'monthlyRevenueNet' || key === 'weeklyRevenue';
+    const isRevenueMetric = key === 'monthlyChargedRevenue' || key === 'monthlyRevenue' || key === 'weeklyChargedRevenue' || key === 'weeklyRevenue';
     
     return (
       <div className="text-xs text-right text-gray-500 leading-4">
@@ -332,6 +387,7 @@ export default function DashboardPage() {
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
                   viewMode={viewMode}
+                  platformsWithData={getPlatformsWithData("activeSubscribers")}
                   right={
                     <div className="text-xs text-right text-gray-500 leading-4">
                       {connectedPlatforms.map((platform) => {
@@ -366,6 +422,7 @@ export default function DashboardPage() {
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
                   viewMode={viewMode}
+                  platformsWithData={getPlatformsWithData("trialSubscribers")}
                   right={rightBlock("trialSubscribers")}
                 />
                 <MetricCard currency={currency}
@@ -375,6 +432,7 @@ export default function DashboardPage() {
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
                   viewMode={viewMode}
+                  platformsWithData={getPlatformsWithData("paidSubscribers")}
                   right={rightBlock("paidSubscribers")}
                 />
               </div>
@@ -386,6 +444,7 @@ export default function DashboardPage() {
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
                   viewMode={viewMode}
+                  platformsWithData={getPlatformsWithData("monthlySubscribers")}
                   right={rightBlock("monthlySubscribers")}
                 />
                 <MetricCard currency={currency}
@@ -395,6 +454,7 @@ export default function DashboardPage() {
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
                   viewMode={viewMode}
+                  platformsWithData={getPlatformsWithData("yearlySubscribers")}
                   right={rightBlock("yearlySubscribers")}
                 />
               </div>
@@ -406,6 +466,7 @@ export default function DashboardPage() {
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
                   viewMode={viewMode}
+                  platformsWithData={getPlatformsWithData("cancellations")}
                   right={rightBlock("cancellations")}
                 />
                 <MetricCard currency={currency}
@@ -415,6 +476,7 @@ export default function DashboardPage() {
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
                   viewMode={viewMode}
+                  platformsWithData={getPlatformsWithData("churnRate")}
                   right={rightBlockChurnRate(viewMode)}
                 />
               </div>
@@ -426,6 +488,7 @@ export default function DashboardPage() {
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
                   viewMode={viewMode}
+                  platformsWithData={getPlatformsWithData("graceEvents")}
                   right={rightBlock("graceEvents")}
                 />
               </div>
@@ -437,6 +500,7 @@ export default function DashboardPage() {
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
                   viewMode={viewMode}
+                  platformsWithData={getPlatformsWithData("firstPayments")}
                   right={rightBlock("firstPayments")}
                 />
                 <MetricCard currency={currency}
@@ -446,27 +510,30 @@ export default function DashboardPage() {
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
                   viewMode={viewMode}
+                  platformsWithData={getPlatformsWithData("renewals")}
                   right={rightBlock("renewals")}
                 />
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <MetricCard currency={currency}
-                  label={viewMode === "monthly" ? "Monthly Rev. (Gross)" : "Weekly Rev. (Gross)"}
-                  value={formatCurrency(viewMode === "monthly" ? metrics.unified.monthlyRevenueGross : metrics.unified.weeklyRevenueGross)}
-                  metricKey="monthlyRevenueGross"
+                  label={viewMode === "monthly" ? "Charged Revenue" : "Weekly Charged Rev."}
+                  value={formatCurrency(viewMode === "monthly" ? metrics.unified.monthlyChargedRevenue : metrics.unified.weeklyChargedRevenue)}
+                  metricKey="monthlyChargedRevenue"
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
                   viewMode={viewMode}
-                  right={rightBlock(viewMode === "monthly" ? "monthlyRevenueGross" : "weeklyRevenueGross", true)}
+                  platformsWithData={getPlatformsWithData("monthlyChargedRevenue")}
+                  right={rightBlock(viewMode === "monthly" ? "monthlyChargedRevenue" : "weeklyChargedRevenue", true)}
                 />
                 <MetricCard currency={currency}
-                  label={viewMode === "monthly" ? "Monthly Rev. (Net)" : "Weekly Rev. (Net)"}
-                  value={formatCurrency(viewMode === "monthly" ? metrics.unified.monthlyRevenueNet : metrics.unified.weeklyRevenueNet)}
-                  metricKey="monthlyRevenueNet"
+                  label={viewMode === "monthly" ? "Revenue" : "Weekly Revenue"}
+                  value={formatCurrency(viewMode === "monthly" ? metrics.unified.monthlyRevenue : metrics.unified.weeklyRevenue)}
+                  metricKey="monthlyRevenue"
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
                   viewMode={viewMode}
-                  right={rightBlock(viewMode === "monthly" ? "monthlyRevenueNet" : "weeklyRevenueNet", true)}
+                  platformsWithData={getPlatformsWithData("monthlyRevenue")}
+                  right={rightBlock(viewMode === "monthly" ? "monthlyRevenue" : "weeklyRevenue", true)}
                 />
               </div>
               <div className="grid grid-cols-1 md:grid-cols-1 gap-4">
@@ -477,6 +544,7 @@ export default function DashboardPage() {
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
                   viewMode={viewMode}
+                  platformsWithData={getPlatformsWithData("mrr")}
                   right={rightBlock("mrr", true)}
                 />
               </div>
@@ -679,8 +747,8 @@ export default function DashboardPage() {
                             {debugRevenue.sampleSnapshotsStripe.map((snap: any) => (
                               <tr key={snap.date} className="border-t">
                                 <td className="px-2 py-1">{snap.date}</td>
-                                <td className="px-2 py-1 text-right">{formatCurrency(snap.monthlyRevenueGross)}</td>
-                                <td className="px-2 py-1 text-right">{formatCurrency(snap.monthlyRevenueNet)}</td>
+                                <td className="px-2 py-1 text-right">{formatCurrency(snap.monthlyChargedRevenue)}</td>
+                                <td className="px-2 py-1 text-right">{formatCurrency(snap.monthlyRevenue)}</td>
                               </tr>
                             ))}
                           </tbody>
@@ -703,8 +771,8 @@ export default function DashboardPage() {
                             {debugRevenue.sampleSnapshotsAppStore.map((snap: any) => (
                               <tr key={snap.date} className="border-t">
                                 <td className="px-2 py-1">{snap.date}</td>
-                                <td className="px-2 py-1 text-right">{formatCurrency(snap.monthlyRevenueGross)}</td>
-                                <td className="px-2 py-1 text-right">{formatCurrency(snap.monthlyRevenueNet)}</td>
+                                <td className="px-2 py-1 text-right">{formatCurrency(snap.monthlyChargedRevenue)}</td>
+                                <td className="px-2 py-1 text-right">{formatCurrency(snap.monthlyRevenue)}</td>
                               </tr>
                             ))}
                           </tbody>
@@ -882,8 +950,17 @@ const CustomChartTooltip = ({ active, payload, label, currency, config, metricKe
     }
   };
 
-  // Calculate total based on connected platforms available in payload
-  const total = payload.reduce((acc: number, item: any) => acc + (item.value || 0), 0);
+  // For churn rate, get the unified value from the data point (not sum of percentages)
+  // For other metrics, sum the platform values
+  const getTotal = () => {
+    if (isPercent && payload.length > 0 && payload[0].payload?.unified !== undefined) {
+      // Use the pre-calculated unified churn rate from the data
+      return payload[0].payload.unified;
+    }
+    // Sum for other metrics
+    return payload.reduce((acc: number, item: any) => acc + (item.value || 0), 0);
+  };
+  const total = getTotal();
 
   return (
     <div className="border-border/50 bg-background grid min-w-[13rem] items-start gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs shadow-xl">
@@ -910,7 +987,7 @@ const CustomChartTooltip = ({ active, payload, label, currency, config, metricKe
         })}
         {connectedPlatforms.length > 1 && (
           <div className="mt-2 flex w-full items-center gap-2 border-t pt-2 font-medium">
-            <div className="text-foreground">Total</div>
+            <div className="text-foreground">{isPercent ? "Unified" : "Total"}</div>
             <div className="ml-auto font-mono font-medium tabular-nums text-foreground">
               {formatValue(total)}
             </div>
@@ -921,6 +998,15 @@ const CustomChartTooltip = ({ active, payload, label, currency, config, metricKe
   );
 };
 
+// Revenue-based metrics that are marked as LOW TRUST
+const LOW_TRUST_METRICS = new Set([
+  "monthlyChargedRevenue",
+  "monthlyRevenue",
+  "weeklyChargedRevenue", 
+  "weeklyRevenue",
+  "mrr",
+]);
+
 function MetricCard({
   label,
   value,
@@ -930,6 +1016,7 @@ function MetricCard({
   connectedPlatforms,
   viewMode,
   currency,
+  platformsWithData,
 }: {
   label: string;
   value: string | number;
@@ -939,7 +1026,12 @@ function MetricCard({
   connectedPlatforms: string[];
   viewMode: "monthly" | "weekly";
   currency: string;
+  platformsWithData?: string[];
 }) {
+  const isLowTrust = LOW_TRUST_METRICS.has(metricKey);
+  const isIncomplete = platformsWithData 
+    ? connectedPlatforms.some(p => !platformsWithData.includes(p))
+    : false;
   const weeklyData = useQuery(api.queries.getWeeklyMetricsHistory, { appId, metric: metricKey });
   const monthlyData = useQuery(api.queries.getMonthlyMetricsHistory, { appId, metric: metricKey });
   
@@ -990,7 +1082,19 @@ function MetricCard({
       <CardContent className="p-6 pb-5">
         <dd className="flex items-start justify-between space-x-2">
           <div className="truncate font-medium text-base text-muted-foreground">
-            {label}
+            <div className="flex items-center gap-2">
+              {label}
+              {isIncomplete && (
+                <span className="px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-amber-100 text-amber-700 rounded">
+                  Incomplete
+                </span>
+              )}
+              {isLowTrust && (
+                <span className="px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-rose-100 text-rose-700 rounded">
+                  Low Trust
+                </span>
+              )}
+            </div>
 
             <HoverCard>
               <HoverCardTrigger asChild>

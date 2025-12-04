@@ -70,8 +70,8 @@ export async function POST(request: Request) {
     monthlySubscribers: sum('monthlySubscribers'),
     yearlySubscribers: sum('yearlySubscribers'),
     mrr: sum('mrr'),
-    monthlyRevenueGross: sum('monthlyRevenueGross'),
-    monthlyRevenueNet: sum('monthlyRevenueNet'),
+    monthlyChargedRevenue: sum('monthlyChargedRevenue'),
+    monthlyRevenue: sum('monthlyRevenue'),
   };
 
   const breakdownLines = platformSnapshots
@@ -103,8 +103,8 @@ Paid Subscribers: ${current.paidSubscribers}
 Monthly Subscribers: ${current.monthlySubscribers}
 Yearly Subscribers: ${current.yearlySubscribers}
 MRR: ${data.currency} ${Number(current.mrr).toFixed(2)}
-Monthly Revenue Gross: ${data.currency} ${Number(current.monthlyRevenueGross).toFixed(2)}
-Monthly Revenue Net: ${data.currency} ${Number(current.monthlyRevenueNet).toFixed(2)}
+Charged Revenue (incl. VAT): ${data.currency} ${Number(current.monthlyChargedRevenue).toFixed(2)}
+Revenue (excl. VAT): ${data.currency} ${Number(current.monthlyRevenue).toFixed(2)}
 
 Per-platform breakdown:
 ${breakdownLines}

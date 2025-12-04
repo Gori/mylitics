@@ -8,8 +8,8 @@ import AdmZip from "adm-zip";
 
 // Types for different report data
 type RevenueData = {
-  gross: number;
-  net: number;
+  gross: number; // Charged amount (what customer paid, including VAT)
+  net: number; // Item price (excluding VAT, but including platform fees)
   transactions: number;
 };
 
@@ -655,31 +655,49 @@ async function parseFinancialReportCSV(
     };
 
     const dateIdx = findColumnIndex(['transaction date', 'order charged date', 'charged date', 'date', 'day']);
-    const grossIdx = findColumnIndex(['amount (merchant currency)', 'charged amount', 'item price', 'gross']);
+    // For Charged Revenue (what customer paid, including VAT):
+    // - Sales reports: 'charged amount' 
+    // - Earnings reports: 'amount (merchant currency)' (already net of VAT from Google's perspective)
+    const chargedAmountIdx = findColumnIndex(['charged amount']);
+    const merchantAmountIdx = findColumnIndex(['amount (merchant currency)']);
+    // For Revenue (excluding VAT):
+    // - Sales reports: 'item price' (before tax)
+    // - Earnings reports: same as merchant amount (Google already deducts VAT in some regions)
+    const itemPriceIdx = findColumnIndex(['item price']);
+    const taxesCollectedIdx = findColumnIndex(['taxes collected']);
     const netIdx = findColumnIndex(['developer proceeds', 'payouts', 'earnings', 'net']);
     const transactionTypeIdx = findColumnIndex(['transaction type', 'type', 'financial status']);
     const descriptionIdx = findColumnIndex(['description', 'sku description', 'product title']);
     const skuIdx = findColumnIndex(['sku id', 'product id', 'sku']);
     const currencyIdx = findColumnIndex(['currency of sale', 'buyer currency', 'currency']);
+    const countryIdx = findColumnIndex(['country of buyer', 'buyer country', 'country']);
 
     // Only log first occurrence of each file type to understand format
     const isEarningsFile = fileName.toLowerCase().includes('earnings');
     const isSalesFile = fileName.toLowerCase().includes('sales');
     const fileType = isEarningsFile ? 'EARNINGS' : isSalesFile ? 'SALES' : 'OTHER';
     
+    // Determine which columns to use based on report type
+    // Sales reports: charged amount (gross incl VAT), item price (net excl VAT)
+    // Earnings reports: merchant amount (already processed by Google)
+    const grossIdx = isSalesFile ? chargedAmountIdx : merchantAmountIdx;
+    const revenueIdx = isSalesFile ? itemPriceIdx : merchantAmountIdx;
+    
     // Log detailed info for first file of each type (for debugging format issues)
     if ((isEarningsFile && fileName.includes('202310')) || (isSalesFile && fileName.includes('202310'))) {
       console.log(`[Google Play CSV SAMPLE] ${fileType}: ${fileName}`);
       console.log(`[Google Play CSV SAMPLE] ALL Headers: ${headers.join(', ')}`);
-      console.log(`[Google Play CSV SAMPLE] Columns - date:${dateIdx}, gross:${grossIdx}, net:${netIdx}, currency:${currencyIdx}`);
-      console.log(`[Google Play CSV SAMPLE] Gross column name: "${headers[grossIdx] || 'NOT FOUND'}"`);
+      console.log(`[Google Play CSV SAMPLE] Columns - date:${dateIdx}, chargedAmount:${chargedAmountIdx}, itemPrice:${itemPriceIdx}, taxes:${taxesCollectedIdx}, country:${countryIdx}`);
+      console.log(`[Google Play CSV SAMPLE] Using: gross=${headers[grossIdx] || 'NOT FOUND'}, revenue=${headers[revenueIdx] || 'NOT FOUND'}`);
     }
 
     if (dateIdx < 0) {
       return null; // No date column - skip silently
     }
     
-    if (grossIdx < 0 && netIdx < 0) {
+    // Need at least one revenue column
+    const hasRevenueColumn = grossIdx >= 0 || revenueIdx >= 0 || netIdx >= 0 || merchantAmountIdx >= 0 || itemPriceIdx >= 0;
+    if (!hasRevenueColumn) {
       return null; // No revenue columns - skip silently
     }
 
@@ -699,14 +717,39 @@ async function parseFinancialReportCSV(
       const date = parseDateString(dateStr, startDate, endDate);
       if (!date) continue;
 
-      let gross = 0;
-      let net = 0;
+      let gross = 0; // Charged amount (including VAT)
+      let net = 0; // Revenue excluding VAT
 
-      if (grossIdx >= 0) {
-        gross = parseNumber(cols[grossIdx]);
-      }
-      if (netIdx >= 0) {
-        net = parseNumber(cols[netIdx]);
+      // For sales reports: use charged amount as gross, item price as net (revenue excl VAT)
+      // For earnings reports: use merchant amount for both (Google already handles VAT)
+      if (isSalesFile) {
+        // Sales report: charged amount includes VAT, item price excludes VAT
+        if (chargedAmountIdx >= 0) {
+          gross = parseNumber(cols[chargedAmountIdx]);
+        } else if (itemPriceIdx >= 0) {
+          // Fallback: if no charged amount, use item price + taxes
+          const itemPrice = parseNumber(cols[itemPriceIdx]);
+          const taxes = taxesCollectedIdx >= 0 ? parseNumber(cols[taxesCollectedIdx]) : 0;
+          gross = itemPrice + taxes;
+        }
+        
+        if (itemPriceIdx >= 0) {
+          net = parseNumber(cols[itemPriceIdx]);
+        } else if (chargedAmountIdx >= 0 && taxesCollectedIdx >= 0) {
+          // Fallback: charged amount - taxes
+          const charged = parseNumber(cols[chargedAmountIdx]);
+          const taxes = parseNumber(cols[taxesCollectedIdx]);
+          net = charged - taxes;
+        }
+      } else {
+        // Earnings report: merchant amount is already net of VAT in most cases
+        if (merchantAmountIdx >= 0) {
+          gross = parseNumber(cols[merchantAmountIdx]);
+          net = gross; // For earnings, gross and net are the same (Google handles VAT)
+        }
+        if (netIdx >= 0) {
+          net = parseNumber(cols[netIdx]);
+        }
       }
 
       // Track currency usage
@@ -801,11 +844,14 @@ async function parseFinancialReportCSV(
         transactionTypes.add(transactionType);
       }
 
-      // Estimate missing value (Google takes ~15% cut)
+      // For sales reports, gross (charged) and net (item price) should both be available
+      // For earnings reports or if missing, estimate based on typical VAT (~20% average)
       if (gross > 0 && net === 0) {
-        net = gross * 0.85;
+        // Estimate net (excl VAT) from gross - assume ~20% average VAT
+        net = gross / 1.20;
       } else if (net > 0 && gross === 0) {
-        gross = net / 0.85;
+        // Estimate gross from net - assume ~20% average VAT
+        gross = net * 1.20;
       }
 
       if (!revenueByDate[date]) {

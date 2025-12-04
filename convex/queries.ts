@@ -66,10 +66,10 @@ export const getLatestMetrics = query({
       "graceEvents",
       "firstPayments",
       "renewals",
-      "weeklyRevenueGross",
-      "weeklyRevenueNet",
-      "monthlyRevenueGross",
-      "monthlyRevenueNet",
+      "weeklyChargedRevenue",
+      "weeklyRevenue",
+      "monthlyChargedRevenue",
+      "monthlyRevenue",
     ];
 
     // Get the most recent snapshots for each platform (for stock metrics)
@@ -173,8 +173,8 @@ export const getLatestMetrics = query({
           graceEvents: 0,
           firstPayments: 0,
           renewals: 0,
-          monthlyRevenueGross: 0,
-          monthlyRevenueNet: 0,
+          monthlyChargedRevenue: 0,
+          monthlyRevenue: 0,
         };
         // First snapshot for this platform = starting paid subscribers
         startingPaidSubsByPlatform30[snap.platform] = snap.paidSubscribers || 0;
@@ -184,8 +184,8 @@ export const getLatestMetrics = query({
       flowSumsByPlatform[snap.platform].graceEvents += snap.graceEvents;
       flowSumsByPlatform[snap.platform].firstPayments += snap.firstPayments;
       flowSumsByPlatform[snap.platform].renewals += (snap.renewals || 0);
-      flowSumsByPlatform[snap.platform].monthlyRevenueGross += snap.monthlyRevenueGross;
-      flowSumsByPlatform[snap.platform].monthlyRevenueNet += snap.monthlyRevenueNet;
+      flowSumsByPlatform[snap.platform].monthlyChargedRevenue += snap.monthlyChargedRevenue;
+      flowSumsByPlatform[snap.platform].monthlyRevenue += snap.monthlyRevenue;
     }
 
     // Calculate 7-day sums for weekly revenue and churn by platform
@@ -198,15 +198,15 @@ export const getLatestMetrics = query({
     for (const snap of sortedSnapshots7) {
       if (!weeklySumsByPlatform[snap.platform]) {
         weeklySumsByPlatform[snap.platform] = {
-          weeklyRevenueGross: 0,
-          weeklyRevenueNet: 0,
+          weeklyChargedRevenue: 0,
+          weeklyRevenue: 0,
           weeklyChurn: 0,
         };
         // First snapshot for this platform = starting paid subscribers
         startingPaidSubsByPlatform7[snap.platform] = snap.paidSubscribers || 0;
       }
-      weeklySumsByPlatform[snap.platform].weeklyRevenueGross += snap.monthlyRevenueGross;
-      weeklySumsByPlatform[snap.platform].weeklyRevenueNet += snap.monthlyRevenueNet;
+      weeklySumsByPlatform[snap.platform].weeklyChargedRevenue += snap.monthlyChargedRevenue;
+      weeklySumsByPlatform[snap.platform].weeklyRevenue += snap.monthlyRevenue;
       weeklySumsByPlatform[snap.platform].weeklyChurn += snap.churn || 0;
     }
 
@@ -245,10 +245,10 @@ export const getLatestMetrics = query({
         graceEvents: flowSums?.graceEvents || 0,
         firstPayments: flowSums?.firstPayments || 0,
         renewals: flowSums?.renewals || 0,
-        weeklyRevenueGross: weeklySums?.weeklyRevenueGross || 0,
-        weeklyRevenueNet: weeklySums?.weeklyRevenueNet || 0,
-        monthlyRevenueGross: flowSums?.monthlyRevenueGross || 0,
-        monthlyRevenueNet: flowSums?.monthlyRevenueNet || 0,
+        weeklyChargedRevenue: weeklySums?.weeklyChargedRevenue || 0,
+        weeklyRevenue: weeklySums?.weeklyRevenue || 0,
+        monthlyChargedRevenue: flowSums?.monthlyChargedRevenue || 0,
+        monthlyRevenue: flowSums?.monthlyRevenue || 0,
         monthlySubscribers: latest?.monthlySubscribers || 0,
         yearlySubscribers: latest?.yearlySubscribers || 0,
       };
@@ -273,11 +273,11 @@ export const getLatestMetrics = query({
       paybacks: 0,
       firstPayments: (platformMap.appstore?.firstPayments || 0) + (platformMap.googleplay?.firstPayments || 0) + (platformMap.stripe?.firstPayments || 0),
       renewals: (platformMap.appstore?.renewals || 0) + (platformMap.googleplay?.renewals || 0) + (platformMap.stripe?.renewals || 0),
-      weeklyRevenueGross: Math.round(((platformMap.appstore?.weeklyRevenueGross || 0) + (platformMap.googleplay?.weeklyRevenueGross || 0) + (platformMap.stripe?.weeklyRevenueGross || 0) + Number.EPSILON) * 100) / 100,
-      weeklyRevenueNet: Math.round(((platformMap.appstore?.weeklyRevenueNet || 0) + (platformMap.googleplay?.weeklyRevenueNet || 0) + (platformMap.stripe?.weeklyRevenueNet || 0) + Number.EPSILON) * 100) / 100,
+      weeklyChargedRevenue: Math.round(((platformMap.appstore?.weeklyChargedRevenue || 0) + (platformMap.googleplay?.weeklyChargedRevenue || 0) + (platformMap.stripe?.weeklyChargedRevenue || 0) + Number.EPSILON) * 100) / 100,
+      weeklyRevenue: Math.round(((platformMap.appstore?.weeklyRevenue || 0) + (platformMap.googleplay?.weeklyRevenue || 0) + (platformMap.stripe?.weeklyRevenue || 0) + Number.EPSILON) * 100) / 100,
       mrr: Math.round(((platformMap.appstore?.mrr || 0) + (platformMap.googleplay?.mrr || 0) + (platformMap.stripe?.mrr || 0) + Number.EPSILON) * 100) / 100,
-      monthlyRevenueGross: Math.round(((platformMap.appstore?.monthlyRevenueGross || 0) + (platformMap.googleplay?.monthlyRevenueGross || 0) + (platformMap.stripe?.monthlyRevenueGross || 0) + Number.EPSILON) * 100) / 100,
-      monthlyRevenueNet: Math.round(((platformMap.appstore?.monthlyRevenueNet || 0) + (platformMap.googleplay?.monthlyRevenueNet || 0) + (platformMap.stripe?.monthlyRevenueNet || 0) + Number.EPSILON) * 100) / 100,
+      monthlyChargedRevenue: Math.round(((platformMap.appstore?.monthlyChargedRevenue || 0) + (platformMap.googleplay?.monthlyChargedRevenue || 0) + (platformMap.stripe?.monthlyChargedRevenue || 0) + Number.EPSILON) * 100) / 100,
+      monthlyRevenue: Math.round(((platformMap.appstore?.monthlyRevenue || 0) + (platformMap.googleplay?.monthlyRevenue || 0) + (platformMap.stripe?.monthlyRevenue || 0) + Number.EPSILON) * 100) / 100,
       monthlySubscribers: (platformMap.appstore?.monthlySubscribers || 0) + (platformMap.googleplay?.monthlySubscribers || 0) + (platformMap.stripe?.monthlySubscribers || 0),
       yearlySubscribers: (platformMap.appstore?.yearlySubscribers || 0) + (platformMap.googleplay?.yearlySubscribers || 0) + (platformMap.stripe?.yearlySubscribers || 0),
     };
@@ -288,6 +288,7 @@ export const getLatestMetrics = query({
       flowMetrics,
       lastSync: lastSync || null,
       dateRange: `${dateRangeStart} - ${dateRangeEnd}`,
+      connectedPlatforms: Array.from(activePlatforms),
     } as const;
   },
 });
@@ -395,8 +396,8 @@ export const getWeeklyMetricsHistory = query({
       "firstPayments",
       "renewals",
       "weeklyRevenue",
-      "monthlyRevenueGross",
-      "monthlyRevenueNet",
+      "monthlyChargedRevenue",
+      "monthlyRevenue",
     ];
     const isFlowMetric = flowMetrics.includes(metric) || isChurnRate; // churnRate uses flow logic
 
@@ -500,7 +501,7 @@ export const getWeeklyMetricsHistory = query({
         }
         
         // Round currency values to 2 decimals
-        const isCurrencyMetric = ["mrr", "weeklyRevenue", "monthlyRevenueGross", "monthlyRevenueNet"].includes(metric);
+        const isCurrencyMetric = ["mrr", "weeklyRevenue", "monthlyChargedRevenue", "monthlyRevenue"].includes(metric);
         // Sum only platforms that have data (null values are excluded)
         const sum = (appstore ?? 0) + (googleplay ?? 0) + (stripe ?? 0);
         const unified = isCurrencyMetric 
@@ -576,8 +577,8 @@ export const getMonthlyMetricsHistory = query({
       "firstPayments",
       "renewals",
       "weeklyRevenue",
-      "monthlyRevenueGross",
-      "monthlyRevenueNet",
+      "monthlyChargedRevenue",
+      "monthlyRevenue",
     ];
     const isFlowMetric = flowMetrics.includes(metric) || isChurnRate; // churnRate uses flow logic
 
@@ -668,7 +669,7 @@ export const getMonthlyMetricsHistory = query({
           googleplay = null;
         }
         
-        const isCurrencyMetric = ["mrr", "weeklyRevenue", "monthlyRevenueGross", "monthlyRevenueNet"].includes(metric);
+        const isCurrencyMetric = ["mrr", "weeklyRevenue", "monthlyChargedRevenue", "monthlyRevenue"].includes(metric);
         const sum = (appstore ?? 0) + (googleplay ?? 0) + (stripe ?? 0);
         const unified = isCurrencyMetric 
           ? Math.round((sum + Number.EPSILON) * 100) / 100
@@ -769,8 +770,8 @@ export const getAllDebugData = query({
       "renewals",
       "weeklyRevenue",
       "mrr",
-      "monthlyRevenueGross",
-      "monthlyRevenueNet",
+      "monthlyChargedRevenue",
+      "monthlyRevenue",
     ];
 
     const oneYearAgo = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
@@ -793,8 +794,8 @@ export const getAllDebugData = query({
       "firstPayments",
       "renewals",
       "weeklyRevenue",
-      "monthlyRevenueGross",
-      "monthlyRevenueNet",
+      "monthlyChargedRevenue",
+      "monthlyRevenue",
     ];
 
     // Get all snapshots from past year for weekly data
@@ -856,9 +857,10 @@ export const getAllDebugData = query({
           graceEvents: 0,
           firstPayments: 0,
           renewals: 0,
+          weeklyChargedRevenue: 0,
           weeklyRevenue: 0,
-          monthlyRevenueGross: 0,
-          monthlyRevenueNet: 0,
+          monthlyChargedRevenue: 0,
+          monthlyRevenue: 0,
         };
       }
       flowSumsByPlatform[snap.platform].cancellations += snap.cancellations;
@@ -866,10 +868,11 @@ export const getAllDebugData = query({
       flowSumsByPlatform[snap.platform].graceEvents += snap.graceEvents;
       flowSumsByPlatform[snap.platform].firstPayments += snap.firstPayments;
       flowSumsByPlatform[snap.platform].renewals += (snap.renewals || 0);
-      // weeklyRevenue is optional - fallback to monthlyRevenueNet for old data
-      flowSumsByPlatform[snap.platform].weeklyRevenue += (snap.weeklyRevenue !== undefined ? snap.weeklyRevenue : snap.monthlyRevenueNet);
-      flowSumsByPlatform[snap.platform].monthlyRevenueGross += snap.monthlyRevenueGross;
-      flowSumsByPlatform[snap.platform].monthlyRevenueNet += snap.monthlyRevenueNet;
+      // weeklyRevenue is optional - fallback to monthlyRevenue for old data
+      flowSumsByPlatform[snap.platform].weeklyChargedRevenue += (snap.weeklyChargedRevenue !== undefined ? snap.weeklyChargedRevenue : snap.monthlyChargedRevenue);
+      flowSumsByPlatform[snap.platform].weeklyRevenue += (snap.weeklyRevenue !== undefined ? snap.weeklyRevenue : snap.monthlyRevenue);
+      flowSumsByPlatform[snap.platform].monthlyChargedRevenue += snap.monthlyChargedRevenue;
+      flowSumsByPlatform[snap.platform].monthlyRevenue += snap.monthlyRevenue;
     }
 
     // Calculate weekly data for each metric
@@ -1158,8 +1161,8 @@ export const getChatContext = query({
       "firstPayments",
       "renewals",
       "mrr",
-      "monthlyRevenueGross",
-      "monthlyRevenueNet",
+      "monthlyChargedRevenue",
+      "monthlyRevenue",
     ];
 
     const flowMetrics = [
@@ -1168,8 +1171,8 @@ export const getChatContext = query({
       "graceEvents",
       "firstPayments",
       "renewals",
-      "monthlyRevenueGross",
-      "monthlyRevenueNet",
+      "monthlyChargedRevenue",
+      "monthlyRevenue",
     ];
 
     // Calculate weekly data for each metric
@@ -1247,8 +1250,8 @@ export const getChatContext = query({
         firstPayments: "New paying customers",
         renewals: "Subscription renewals",
         mrr: "Monthly Recurring Revenue",
-        monthlyRevenueGross: "Total revenue before fees",
-        monthlyRevenueNet: "Revenue after platform fees",
+        monthlyChargedRevenue: "Total charged to customers (including VAT)",
+        monthlyRevenue: "Revenue excluding VAT (still includes platform fees)",
       },
     };
   },
@@ -1289,8 +1292,8 @@ export const debugRevenueCalculation = query({
       }
       snapshotsByDate[snap.date].push({
         platform: snap.platform,
-        monthlyRevenueGross: snap.monthlyRevenueGross,
-        monthlyRevenueNet: snap.monthlyRevenueNet,
+        monthlyChargedRevenue: snap.monthlyChargedRevenue,
+        monthlyRevenue: snap.monthlyRevenue,
         firstPayments: snap.firstPayments,
         renewals: snap.renewals,
       });
@@ -1339,13 +1342,13 @@ export const debugRevenueCalculation = query({
 
     for (const snap of snapshots) {
       if (snap.platform === "stripe" || snap.platform === "appstore" || snap.platform === "googleplay") {
-        snapshotTotals[snap.platform].gross += snap.monthlyRevenueGross;
-        snapshotTotals[snap.platform].net += snap.monthlyRevenueNet;
+        snapshotTotals[snap.platform].gross += snap.monthlyChargedRevenue;
+        snapshotTotals[snap.platform].net += snap.monthlyRevenue;
         snapshotTotals[snap.platform].count += 1;
       }
       if (snap.platform === "unified") {
-        snapshotTotals.unified.gross += snap.monthlyRevenueGross;
-        snapshotTotals.unified.net += snap.monthlyRevenueNet;
+        snapshotTotals.unified.gross += snap.monthlyChargedRevenue;
+        snapshotTotals.unified.net += snap.monthlyRevenue;
         snapshotTotals.unified.count += 1;
       }
     }
@@ -1405,8 +1408,8 @@ export const debugRevenueCalculation = query({
         .map((s) => ({
           date: s.date,
           platform: s.platform,
-          monthlyRevenueGross: s.monthlyRevenueGross,
-          monthlyRevenueNet: s.monthlyRevenueNet,
+          monthlyChargedRevenue: s.monthlyChargedRevenue,
+          monthlyRevenue: s.monthlyRevenue,
           firstPayments: s.firstPayments,
           renewals: s.renewals,
         })),
@@ -1417,8 +1420,8 @@ export const debugRevenueCalculation = query({
         .map((s) => ({
           date: s.date,
           platform: s.platform,
-          monthlyRevenueGross: s.monthlyRevenueGross,
-          monthlyRevenueNet: s.monthlyRevenueNet,
+          monthlyChargedRevenue: s.monthlyChargedRevenue,
+          monthlyRevenue: s.monthlyRevenue,
           firstPayments: s.firstPayments,
           renewals: s.renewals,
         })),
@@ -1429,8 +1432,8 @@ export const debugRevenueCalculation = query({
         .map((s) => ({
           date: s.date,
           platform: s.platform,
-          monthlyRevenueGross: s.monthlyRevenueGross,
-          monthlyRevenueNet: s.monthlyRevenueNet,
+          monthlyChargedRevenue: s.monthlyChargedRevenue,
+          monthlyRevenue: s.monthlyRevenue,
           firstPayments: s.firstPayments,
           renewals: s.renewals,
         })),
@@ -1476,8 +1479,8 @@ export const validateRevenueData = query({
       if (!octTotals[snap.platform]) {
         octTotals[snap.platform] = { gross: 0, net: 0, days: 0, avgDaily: 0 };
       }
-      octTotals[snap.platform].gross += snap.monthlyRevenueGross;
-      octTotals[snap.platform].net += snap.monthlyRevenueNet;
+      octTotals[snap.platform].gross += snap.monthlyChargedRevenue;
+      octTotals[snap.platform].net += snap.monthlyRevenue;
       octTotals[snap.platform].days += 1;
     }
     
@@ -1496,8 +1499,8 @@ export const validateRevenueData = query({
       if (sampleDates.includes(snap.date)) {
         if (!sampleSnapshots[snap.date]) sampleSnapshots[snap.date] = {};
         sampleSnapshots[snap.date][snap.platform] = {
-          gross: snap.monthlyRevenueGross,
-          net: snap.monthlyRevenueNet,
+          gross: snap.monthlyChargedRevenue,
+          net: snap.monthlyRevenue,
         };
       }
     }

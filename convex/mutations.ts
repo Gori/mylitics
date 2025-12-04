@@ -231,12 +231,13 @@ export const fixAppStoreRevenue = mutation({
 
     for (const snap of appStoreSnapshots) {
       // Only fix if revenue is non-zero (indicating bad data)
-      if (snap.monthlyRevenueGross > 0 || snap.monthlyRevenueNet > 0) {
-        totalRevenueRemoved += snap.monthlyRevenueNet;
+      if (snap.monthlyChargedRevenue > 0 || snap.monthlyRevenue > 0) {
+        totalRevenueRemoved += snap.monthlyRevenue;
         
         await ctx.db.patch(snap._id, {
-          monthlyRevenueGross: 0,
-          monthlyRevenueNet: 0,
+          monthlyChargedRevenue: 0,
+          monthlyRevenue: 0,
+          weeklyChargedRevenue: 0,
           weeklyRevenue: 0,
         });
         
@@ -259,9 +260,10 @@ export const fixAppStoreRevenue = mutation({
 
       if (platformSnapshots.length > 0) {
         const unified = {
-          monthlyRevenueGross: Math.round((platformSnapshots.reduce((acc, s) => acc + s.monthlyRevenueGross, 0) + Number.EPSILON) * 100) / 100,
-          monthlyRevenueNet: Math.round((platformSnapshots.reduce((acc, s) => acc + s.monthlyRevenueNet, 0) + Number.EPSILON) * 100) / 100,
-          weeklyRevenue: Math.round((platformSnapshots.reduce((acc, s) => acc + (s.weeklyRevenue || s.monthlyRevenueNet || 0), 0) + Number.EPSILON) * 100) / 100,
+          monthlyChargedRevenue: Math.round((platformSnapshots.reduce((acc, s) => acc + s.monthlyChargedRevenue, 0) + Number.EPSILON) * 100) / 100,
+          monthlyRevenue: Math.round((platformSnapshots.reduce((acc, s) => acc + s.monthlyRevenue, 0) + Number.EPSILON) * 100) / 100,
+          weeklyChargedRevenue: Math.round((platformSnapshots.reduce((acc, s) => acc + (s.weeklyChargedRevenue || s.monthlyChargedRevenue || 0), 0) + Number.EPSILON) * 100) / 100,
+          weeklyRevenue: Math.round((platformSnapshots.reduce((acc, s) => acc + (s.weeklyRevenue || s.monthlyRevenue || 0), 0) + Number.EPSILON) * 100) / 100,
         };
 
         const existingUnified = await ctx.db
@@ -285,6 +287,36 @@ export const fixAppStoreRevenue = mutation({
       totalRevenueRemoved,
       unifiedSnapshotsUpdated: unifiedFixed,
     };
+  },
+});
+
+// Clear all metrics snapshots for revenue refactor migration
+export const clearAllMetricsSnapshots = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const snapshots = await ctx.db.query("metricsSnapshots").collect();
+    let deleted = 0;
+    for (const snap of snapshots) {
+      await ctx.db.delete(snap._id);
+      deleted++;
+    }
+    console.log(`[Migration] Deleted ${deleted} metricsSnapshots`);
+    return { deleted };
+  },
+});
+
+// Clear all revenue events for revenue refactor migration
+export const clearAllRevenueEvents = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const events = await ctx.db.query("revenueEvents").collect();
+    let deleted = 0;
+    for (const event of events) {
+      await ctx.db.delete(event._id);
+      deleted++;
+    }
+    console.log(`[Migration] Deleted ${deleted} revenueEvents`);
+    return { deleted };
   },
 });
 

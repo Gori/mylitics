@@ -4,7 +4,7 @@ export function MetricsDefinitions() {
   const SRC = {
     stripe: {
       stock: "Stripe API: subscriptions.list",
-      mrr: "Stripe API: subscriptions.list price.unit_amount & price.recurring.interval",
+      mrr: "Stripe API: subscriptions.list → MRR = monthly prices + (yearly prices / 12)",
       monthlyYearly: "Stripe API: subscriptions.list price.recurring.interval",
       cancellations: "Stripe API: subscriptions.list cancel_at_period_end flag",
       grace: "Stripe API: subscriptions.status = 'past_due'",
@@ -19,7 +19,7 @@ export function MetricsDefinitions() {
       firstPayments: "SUBSCRIBER report (DETAILED v1_3) event data OR day-over-day Paid gains",
       renewals: "SUBSCRIBER report (DETAILED v1_3): Proceeds Reason column (Renew/Rate After One Year)",
       revenue: "SUBSCRIPTION_SUMMARY: Customer Price (gross) and Developer Proceeds (net)",
-      mrr: "Estimated from active subscribers × (monthlyRevenueNet / activeSubscribers)",
+      mrr: "SUBSCRIPTION_SUMMARY: MRR = monthly prices + (yearly prices / 12)",
       monthlyYearly: "SUBSCRIPTION_SUMMARY: Product ID patterns (month/year/annual) + Subscription Duration column",
     },
     googleplay: {
@@ -145,12 +145,12 @@ export function MetricsDefinitions() {
     {
       name: "MRR (Monthly Recurring Revenue)",
       type: "Stock Metric",
-      total: "Current monthly recurring revenue calculated from active subscription prices (annual subscriptions ÷ 12). Uses latest snapshot.",
+      total: "Monthly recurring revenue: MRR = (monthly subscription prices) + (yearly subscription prices / 12). Unified formula across all platforms.",
       chart: "Weekly snapshot showing MRR at the end of each week.",
       sources: {
         stripe: SRC.stripe.mrr,
         appstore: SRC.appstore.mrr,
-        googleplay: "Estimated from daily revenue × 30 (if subscription data available)",
+        googleplay: "GCS Reports: MRR = monthly revenue + (yearly revenue / 12), estimated from subscriber counts",
       },
     },
     {

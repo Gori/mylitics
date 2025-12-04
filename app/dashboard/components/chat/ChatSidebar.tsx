@@ -66,10 +66,11 @@ const METRIC_LABELS: Record<string, string> = {
   graceEvents: "Grace Events",
   firstPayments: "First Payments",
   renewals: "Renewals",
+  weeklyChargedRevenue: "Weekly Charged Revenue",
   weeklyRevenue: "Weekly Revenue",
   mrr: "MRR",
-  monthlyRevenueGross: "Monthly Rev. (Gross)",
-  monthlyRevenueNet: "Monthly Rev. (Net)",
+  monthlyChargedRevenue: "Charged Revenue",
+  monthlyRevenue: "Revenue",
 };
 
 const PLATFORMS = ["appstore", "googleplay", "stripe"] as const;

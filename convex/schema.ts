@@ -51,9 +51,10 @@ export default defineSchema({
     firstPayments: v.number(),
     renewals: v.number(),
     mrr: v.number(),
-    weeklyRevenue: v.optional(v.number()), // Actual revenue received this day (for weekly aggregation)
-    monthlyRevenueGross: v.number(),
-    monthlyRevenueNet: v.number(),
+    weeklyChargedRevenue: v.optional(v.number()), // Charged revenue this day including VAT (for weekly aggregation)
+    weeklyRevenue: v.optional(v.number()), // Revenue this day excluding VAT (for weekly aggregation)
+    monthlyChargedRevenue: v.number(), // Total charged including VAT
+    monthlyRevenue: v.number(), // Total revenue excluding VAT (still includes platform fees)
     monthlySubscribers: v.optional(v.number()), // Count of monthly subscription subscribers
     yearlySubscribers: v.optional(v.number()), // Count of yearly subscription subscribers
   })
@@ -95,8 +96,10 @@ export default defineSchema({
       v.literal("renewal"),
       v.literal("refund")
     ),
-    amount: v.number(),
+    amount: v.number(), // Charged amount (including VAT)
+    amountExcludingTax: v.optional(v.number()), // Amount excluding VAT
     currency: v.string(),
+    country: v.optional(v.string()), // ISO country code for VAT calculation
     timestamp: v.number(),
     rawData: v.string(),
   })

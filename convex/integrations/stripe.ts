@@ -34,8 +34,10 @@ export async function fetchStripe(apiKey: string, startDate?: number, endDate?: 
   const revenueEvents: Array<{
     subscriptionExternalId: string;
     eventType: "first_payment" | "renewal" | "refund";
-    amount: number;
+    amount: number; // Charged amount (including VAT)
+    amountExcludingTax?: number; // Amount excluding VAT (only if Stripe Tax provided it)
     currency: string;
+    country?: string; // ISO country code
     timestamp: number;
     rawData: string;
   }> = [];
@@ -124,11 +126,22 @@ export async function fetchStripe(apiKey: string, startDate?: number, endDate?: 
         
         let eventType: "first_payment" | "renewal" | "refund" = "renewal";
         let amount = (invAny.amount_paid || 0) / 100;
+        // Extract tax-excluded amount from Stripe Tax - only if actually provided
+        // If null/undefined, we'll calculate VAT manually from country in metrics.ts
+        let amountExcludingTax: number | undefined = invAny.total_excluding_tax != null 
+          ? invAny.total_excluding_tax / 100 
+          : undefined;
+        
+        // Extract country from customer address
+        const country = invAny.customer_address?.country || undefined;
         
         // Check if this is a refund (negative amount or specific billing reason)
         if (amount < 0 || invAny.billing_reason === "subscription_cycle" && invAny.amount_paid < 0) {
           eventType = "refund";
           amount = Math.abs(amount);
+          if (amountExcludingTax !== undefined) {
+            amountExcludingTax = Math.abs(amountExcludingTax);
+          }
         } else if (invAny.billing_reason === "subscription_create") {
           eventType = "first_payment";
         }
@@ -139,7 +152,9 @@ export async function fetchStripe(apiKey: string, startDate?: number, endDate?: 
           subscriptionExternalId: subscriptionId,
           eventType,
           amount,
+          amountExcludingTax,
           currency: invoice.currency || "usd",
+          country,
           timestamp: createdAt,
           rawData: JSON.stringify(invoice),
         });
@@ -176,11 +191,14 @@ export async function fetchStripe(apiKey: string, startDate?: number, endDate?: 
             const invoice = await stripe.invoices.retrieve(chargeAny.invoice);
             const invoiceAny = invoice as any;
             if (typeof invoiceAny.subscription === "string") {
+              const refundAmount = (refund.amount || 0) / 100;
               revenueEvents.push({
                 subscriptionExternalId: invoiceAny.subscription,
                 eventType: "refund",
-                amount: (refund.amount || 0) / 100,
+                amount: refundAmount,
+                amountExcludingTax: refundAmount, // Refunds don't have separate tax-excluded amount
                 currency: refund.currency || "usd",
+                country: invoiceAny.customer_address?.country || undefined,
                 timestamp: refundedAt,
                 rawData: JSON.stringify(refund),
               });

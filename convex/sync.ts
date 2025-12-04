@@ -504,7 +504,7 @@ export const syncAllPlatforms = action({
                       date: dateStr,
                       tsv: subscriberRes.tsv,
                     });
-                    console.log(`[Sync] SUBSCRIBER report for ${dateStr}: renewals=${eventData?.renewals || 0}, firstPayments=${eventData?.firstPayments || 0}, revenueGross=${eventData?.revenueGross?.toFixed(2) || '0.00'}, revenueNet=${eventData?.revenueNet?.toFixed(2) || '0.00'}`);
+                    console.log(`[Sync] SUBSCRIBER report for ${dateStr}: renewals=${eventData?.renewals || 0}, firstPayments=${eventData?.firstPayments || 0}, chargedRevenue=${eventData?.revenueGross?.toFixed(2) || '0.00'}, revenue=${eventData?.revenueNet?.toFixed(2) || '0.00'}`);
                   } else {
                     console.log(`[Sync] SUBSCRIBER report for ${dateStr}: FAILED - HTTP ${subscriberRes.status}`);
                   }
@@ -861,8 +861,8 @@ export const syncAppStoreChunk = internalAction({
       firstPayments: number;
       cancellations: number;
       grace: number;
-      revenueGross: number;
-      revenueNet: number;
+      chargedRevenue: number;
+      revenue: number;
       mrr: number;
       productIds: string[];
       currencies: Record<string, number>;
@@ -958,8 +958,8 @@ export const syncAppStoreChunk = internalAction({
               firstPayments: snapshot.firstPayments,
               cancellations: snapshot.cancellations,
               grace: snapshot.graceEvents,
-              revenueGross: snapshot.monthlyRevenueGross,
-              revenueNet: snapshot.monthlyRevenueNet,
+              chargedRevenue: snapshot.monthlyChargedRevenue,
+              revenue: snapshot.monthlyRevenue,
               mrr: snapshot.mrr,
               productIds: parsing.productIds,
               currencies: eventData?.currenciesSeen || {},
@@ -1051,9 +1051,9 @@ export const syncAppStoreChunk = internalAction({
           firstPayments: acc.firstPayments + day.firstPayments,
           cancellations: acc.cancellations + day.cancellations,
           grace: acc.grace + day.grace,
-          revenueGross: acc.revenueGross + day.revenueGross,
-          revenueNet: acc.revenueNet + day.revenueNet,
-        }), { renewals: 0, firstPayments: 0, cancellations: 0, grace: 0, revenueGross: 0, revenueNet: 0 });
+          chargedRevenue: acc.chargedRevenue + day.chargedRevenue,
+          revenue: acc.revenue + day.revenue,
+        }), { renewals: 0, firstPayments: 0, cancellations: 0, grace: 0, chargedRevenue: 0, revenue: 0 });
         
         // Latest snapshot values (end of chunk)
         const latest = chunkData[chunkData.length - 1];
@@ -1065,7 +1065,7 @@ export const syncAppStoreChunk = internalAction({
         console.log(`EVENTS (chunk total): Renewals=${totals.renewals} | FirstPayments=${totals.firstPayments} | Cancellations=${totals.cancellations} | Grace=${totals.grace}`);
         
         // Revenue (aggregated)
-        console.log(`REVENUE (chunk total): Gross=${totals.revenueGross.toFixed(2)} | Net=${totals.revenueNet.toFixed(2)} | MRR(latest)=${latest.mrr.toFixed(2)}`);
+        console.log(`REVENUE (chunk total): Charged=${totals.chargedRevenue.toFixed(2)} | Revenue=${totals.revenue.toFixed(2)} | MRR(latest)=${latest.mrr.toFixed(2)}`);
         
         // Product IDs
         if (allProductIds.size > 0) {
@@ -1096,7 +1096,7 @@ export const syncAppStoreChunk = internalAction({
         
         // Show each day's data in compact format
         for (const day of chunkData) {
-          console.log(`  ${day.date}: Active=${day.active} Paid=${day.paid} Trial=${day.trial} | Mo=${day.monthly} Yr=${day.yearly} | Ren=${day.renewals} 1st=${day.firstPayments} Can=${day.cancellations} Grace=${day.grace} | GrossRev=${day.revenueGross.toFixed(2)} NetRev=${day.revenueNet.toFixed(2)} MRR=${day.mrr.toFixed(2)}`);
+          console.log(`  ${day.date}: Active=${day.active} Paid=${day.paid} Trial=${day.trial} | Mo=${day.monthly} Yr=${day.yearly} | Ren=${day.renewals} 1st=${day.firstPayments} Can=${day.cancellations} Grace=${day.grace} | Charged=${day.chargedRevenue.toFixed(2)} Rev=${day.revenue.toFixed(2)} MRR=${day.mrr.toFixed(2)}`);
         }
       }
       
@@ -1110,7 +1110,7 @@ export const syncAppStoreChunk = internalAction({
       // Also save a summary to syncLogs for the UI
       await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
         appId,
-        message: `App Store: Batch ${chunkNum}/${totalChunks} complete [${firstDate} → ${lastDate}] - ${successCount} days, ${chunkData.length > 0 ? chunkData.reduce((a, d) => a + d.renewals, 0) : 0} renewals, ${chunkData.length > 0 ? chunkData.reduce((a, d) => a + d.revenueNet, 0).toFixed(2) : '0'} net revenue`,
+        message: `App Store: Batch ${chunkNum}/${totalChunks} complete [${firstDate} → ${lastDate}] - ${successCount} days, ${chunkData.length > 0 ? chunkData.reduce((a, d) => a + d.renewals, 0) : 0} renewals, ${chunkData.length > 0 ? chunkData.reduce((a, d) => a + d.revenue, 0).toFixed(2) : '0'} revenue`,
         level: successCount > 0 ? "success" : "info",
       });
 
