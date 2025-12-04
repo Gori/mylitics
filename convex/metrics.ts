@@ -89,7 +89,12 @@ export const processAndStoreMetrics = internalMutation({
         isTrial: v.boolean(),
         willCancel: v.boolean(),
         isInGrace: v.boolean(),
-        rawData: v.string(),
+        // Extracted fields (new format)
+        trialEnd: v.optional(v.number()),
+        priceAmount: v.optional(v.number()),
+        priceInterval: v.optional(v.string()),
+        priceCurrency: v.optional(v.string()),
+        rawData: v.optional(v.string()), // Deprecated: for backward compat
       })
     ),
     revenueEvents: v.array(
@@ -105,7 +110,8 @@ export const processAndStoreMetrics = internalMutation({
         currency: v.string(),
         country: v.optional(v.string()), // ISO country code
         timestamp: v.number(),
-        rawData: v.string(),
+        externalId: v.optional(v.string()), // Invoice ID (new format)
+        rawData: v.optional(v.string()), // Deprecated: for backward compat
       })
     ),
     snapshotDate: v.optional(v.string()),
@@ -118,16 +124,29 @@ export const processAndStoreMetrics = internalMutation({
     const app = await ctx.db.get(appId);
     const userCurrency = app?.currency || "USD";
 
-    // Store raw subscription data
+    // Store subscription data with extracted fields
     console.log(`[Metrics ${platform}] Storing ${subscriptions.length} subscriptions...`);
     for (const sub of subscriptions) {
-    const existing = await ctx.db
-      .query("subscriptions")
-      .withIndex("by_external_id", (q) =>
-        q.eq("platform", platform).eq("externalId", sub.externalId)
-      )
-      .filter((q) => q.eq(q.field("appId"), appId))
-      .first();
+      // Extract fields from rawData if not provided (backward compat)
+      let { trialEnd, priceAmount, priceInterval, priceCurrency } = sub;
+      if (sub.rawData && (!priceAmount || !priceInterval)) {
+        try {
+          const raw = JSON.parse(sub.rawData);
+          trialEnd = trialEnd ?? (raw.trial_end ? raw.trial_end * 1000 : undefined);
+          const item = raw?.items?.data?.[0];
+          priceAmount = priceAmount ?? item?.price?.unit_amount;
+          priceInterval = priceInterval ?? item?.price?.recurring?.interval;
+          priceCurrency = priceCurrency ?? item?.price?.currency;
+        } catch {}
+      }
+      
+      const existing = await ctx.db
+        .query("subscriptions")
+        .withIndex("by_external_id", (q) =>
+          q.eq("platform", platform).eq("externalId", sub.externalId)
+        )
+        .filter((q) => q.eq(q.field("appId"), appId))
+        .first();
 
       if (existing) {
         await ctx.db.patch(existing._id, {
@@ -135,13 +154,28 @@ export const processAndStoreMetrics = internalMutation({
           endDate: sub.endDate,
           willCancel: sub.willCancel,
           isInGrace: sub.isInGrace,
-          rawData: sub.rawData,
+          trialEnd,
+          priceAmount,
+          priceInterval,
+          priceCurrency,
         });
       } else {
         await ctx.db.insert("subscriptions", {
           appId,
           platform,
-          ...sub,
+          externalId: sub.externalId,
+          customerId: sub.customerId,
+          status: sub.status,
+          productId: sub.productId,
+          startDate: sub.startDate,
+          endDate: sub.endDate,
+          isTrial: sub.isTrial,
+          willCancel: sub.willCancel,
+          isInGrace: sub.isInGrace,
+          trialEnd,
+          priceAmount,
+          priceInterval,
+          priceCurrency,
         });
       }
     }
@@ -159,39 +193,45 @@ export const processAndStoreMetrics = internalMutation({
       console.log(`[Metrics ${platform}] Sample revenue event: subscriptionExternalId="${revenueEvents[0].subscriptionExternalId}", eventType="${revenueEvents[0].eventType}", amount=${revenueEvents[0].amount}, timestamp=${revenueEvents[0].timestamp}`);
     }
     
-    // Get all subscriptions for this user/platform for debugging
+    // Get all subscriptions for this user/platform
     const allSubs = await ctx.db
       .query("subscriptions")
       .withIndex("by_app_platform", (q) => q.eq("appId", appId).eq("platform", platform))
       .collect();
     console.log(`[Metrics ${platform}] Found ${allSubs.length} subscriptions in database for matching`);
-    if (allSubs.length > 0 && allSubs.length <= 5) {
-      console.log(`[Metrics ${platform}] Sample subscription externalIds: ${allSubs.map(s => s.externalId).join(", ")}`);
-    }
-    
-    // Load all existing revenue events for this user/platform ONCE to avoid repeated queries
-    const existingRevenue = await ctx.db
-      .query("revenueEvents")
-      .withIndex("by_app_platform", (q) => q.eq("appId", appId).eq("platform", platform))
-      .collect();
-    
-    // Create a Set for fast duplicate checking: "subId_timestamp_amount"
-    const existingKeys = new Set(
-      existingRevenue.map(r => `${r.subscriptionId}_${r.timestamp}_${r.amount}`)
-    );
-    console.log(`[Metrics ${platform}] Found ${existingRevenue.length} existing revenue events in database`);
     
     // Create a map of externalId -> subscription for fast lookup
     const subMap = new Map(allSubs.map(s => [s.externalId, s]));
     
+    // Process revenue events with per-event deduplication to avoid 16MB read limit
     for (const event of revenueEvents) {
       const sub = subMap.get(event.subscriptionExternalId);
       
       if (sub) {
-        // Check if this revenue event already exists using the Set
-        const key = `${sub._id}_${event.timestamp}_${event.amount}`;
+        // Check for duplicate by querying per-event (avoids loading all events into memory)
+        const existingEvent = await ctx.db
+          .query("revenueEvents")
+          .withIndex("by_app_platform_time", (q) => 
+            q.eq("appId", appId).eq("platform", platform).eq("timestamp", event.timestamp)
+          )
+          .filter((q) => 
+            q.and(
+              q.eq(q.field("subscriptionId"), sub._id),
+              q.eq(q.field("amount"), event.amount)
+            )
+          )
+          .first();
         
-        if (!existingKeys.has(key)) {
+        if (!existingEvent) {
+          // Extract externalId from rawData if not provided (backward compat)
+          let externalId = event.externalId;
+          if (!externalId && event.rawData) {
+            try {
+              const parsed = JSON.parse(event.rawData);
+              externalId = parsed.id;
+            } catch {}
+          }
+          
           await ctx.db.insert("revenueEvents", {
             appId,
             platform,
@@ -202,7 +242,7 @@ export const processAndStoreMetrics = internalMutation({
             currency: event.currency,
             country: event.country,
             timestamp: event.timestamp,
-            rawData: event.rawData,
+            externalId,
           });
           revenueStored++;
         } else {
@@ -210,17 +250,12 @@ export const processAndStoreMetrics = internalMutation({
         }
       } else {
         revenueSkippedNoSub++;
-        // Log first few mismatches to debug
         if (revenueSkippedNoSub <= 3) {
-          console.log(`[Metrics ${platform}] MISMATCH: Revenue event for subscriptionExternalId="${event.subscriptionExternalId}" (amount=${event.amount}) has no matching subscription in database`);
+          console.log(`[Metrics ${platform}] MISMATCH: Revenue event for subscriptionExternalId="${event.subscriptionExternalId}" (amount=${event.amount}) has no matching subscription`);
         }
       }
     }
     console.log(`[Metrics ${platform}] Revenue events: ${revenueStored} stored, ${revenueSkippedDuplicate} duplicates skipped, ${revenueSkippedNoSub} skipped (no subscription found)`);
-    if (revenueSkippedNoSub > 0) {
-      console.log(`[Metrics ${platform}] WARNING: ${revenueSkippedNoSub} revenue events could not be linked to subscriptions - they will not appear in metrics`);
-    }
-    console.log(`[Metrics ${platform}] Total revenue events in database: ${existingRevenue.length + revenueStored}`);
     
     const thirtyDaysAgo = now.getTime() - 30 * 24 * 60 * 60 * 1000;
 
@@ -233,60 +268,49 @@ export const processAndStoreMetrics = internalMutation({
     const trialSubscribers = subscriptions.filter((s) => s.isTrial).length;
     const paidSubscribers = activeSubscribers - trialSubscribers;
 
-    // Track monthly vs yearly subscribers
+    // Track monthly vs yearly subscribers using extracted fields
     let monthlySubscribers = 0;
     let yearlySubscribers = 0;
     for (const s of subscriptions) {
       if (s.isTrial) continue;
       if (!(s.status === "active" || s.status === "trialing")) continue;
       
-      try {
-        const raw = JSON.parse(s.rawData);
-        const interval = raw?.items?.data?.[0]?.price?.recurring?.interval;
-        if (interval === "year") {
-          yearlySubscribers++;
-        } else if (interval === "month") {
-          monthlySubscribers++;
-        }
-      } catch {}
+      if (s.priceInterval === "year") {
+        yearlySubscribers++;
+      } else if (s.priceInterval === "month") {
+        monthlySubscribers++;
+      }
     }
 
-    // Flow metrics from subscription states (snapshot metrics - current counts)
-    const cancellations = subscriptions.filter((s) => s.willCancel).length;
-    const graceEvents = subscriptions.filter((s) => s.isInGrace).length;
-    
     // Flow metrics from today's events only
     const todayStart = new Date(today).getTime();  // Start of day (00:00:00)
     const todayEnd = todayStart + 24 * 60 * 60 * 1000 - 1;  // End of day (23:59:59.999)
+    
+    // Cancellations = subscriptions that actually ended/canceled today (not just scheduled to cancel)
     const churn = subscriptions.filter((s) => s.status === "canceled" && s.endDate && s.endDate >= todayStart && s.endDate <= todayEnd).length;
+    const cancellations = churn; // Use actual cancellations, not pending (willCancel is cumulative snapshot, not daily flow)
+    const graceEvents = subscriptions.filter((s) => s.isInGrace).length;
     const firstPayments = revenueEvents.filter((e) => e.eventType === "first_payment" && e.timestamp >= todayStart && e.timestamp <= todayEnd).length;
     const renewals = revenueEvents.filter((e) => e.eventType === "renewal" && e.timestamp >= todayStart && e.timestamp <= todayEnd).length;
 
-    // MRR from current active PAID subscription prices (exclude trials)
+    // MRR from current active PAID subscription prices using extracted fields
     // Formula: MRR = monthly revenue + (yearly revenue / 12)
     let monthlyMRR = 0;
     let yearlyMRR = 0;
     for (const s of subscriptions) {
       if (s.isTrial) continue;
       if (s.status !== "active") continue;
-      try {
-        const raw = JSON.parse(s.rawData);
-        const items = raw?.items?.data || [];
-        for (const item of items) {
-          const unit = item?.price?.unit_amount;
-          const interval = item?.price?.recurring?.interval;
-          const currency = item?.price?.currency || "usd";
-          if (typeof unit === "number") {
-            const amount = unit / 100;
-            const convertedAmount = await convertAndRoundCurrency(ctx, amount, currency, userCurrency);
-            if (interval === "year") {
-              yearlyMRR += convertedAmount;
-            } else {
-              monthlyMRR += convertedAmount;
-            }
-          }
+      
+      if (typeof s.priceAmount === "number") {
+        const amount = s.priceAmount / 100;
+        const currency = s.priceCurrency || "usd";
+        const convertedAmount = await convertAndRoundCurrency(ctx, amount, currency, userCurrency);
+        if (s.priceInterval === "year") {
+          yearlyMRR += convertedAmount;
+        } else {
+          monthlyMRR += convertedAmount;
         }
-      } catch {}
+      }
     }
     const mrr = calculateMRR(monthlyMRR, yearlyMRR);
 
@@ -482,17 +506,15 @@ export const generateHistoricalSnapshots = internalMutation({
       .withIndex("by_app_platform", (q) => q.eq("appId", appId).eq("platform", platform))
       .collect();
 
+    // Only load revenue events within the date range being processed to avoid 16MB limit
     const revenue = await ctx.db
       .query("revenueEvents")
-      .withIndex("by_app_platform", (q) => q.eq("appId", appId).eq("platform", platform))
+      .withIndex("by_app_platform_time", (q) => 
+        q.eq("appId", appId).eq("platform", platform).gte("timestamp", startMs).lte("timestamp", endMs)
+      )
       .collect();
     
-    console.log(`[Historical ${platform}] Found ${subs.length} subscriptions and ${revenue.length} revenue events in database for historical calculation`);
-    if (revenue.length > 0) {
-      const minTimestamp = Math.min(...revenue.map(r => r.timestamp));
-      const maxTimestamp = Math.max(...revenue.map(r => r.timestamp));
-      console.log(`[Historical ${platform}] Revenue events date range: ${new Date(minTimestamp).toISOString()} to ${new Date(maxTimestamp).toISOString()}`);
-    }
+    console.log(`[Historical ${platform}] Found ${subs.length} subscriptions and ${revenue.length} revenue events for date range`)
 
     let daysProcessed = 0;
     let lastProcessedDate: string | null = null;
@@ -507,63 +529,45 @@ export const generateHistoricalSnapshots = internalMutation({
         (s) => s.startDate <= dayEnd && (!s.endDate || s.endDate > dayStart)
       );
 
-      // Calculate trials and MRR from active subs
+      // Calculate trials and MRR from active subs using extracted fields
       // Formula: MRR = monthly revenue + (yearly revenue / 12)
       let trialSubscribers = 0;
       let monthlyMRR = 0;
       let yearlyMRR = 0;
+      let monthlySubscribers = 0;
+      let yearlySubscribers = 0;
       const yearMonth = date.substring(0, 7);
+      
       for (const s of activeSubs) {
-        try {
-          const raw = JSON.parse(s.rawData);
-          const trialEnd = raw?.trial_end ? raw.trial_end * 1000 : null;
-          if (trialEnd && dayStart < trialEnd) trialSubscribers += 1;
+        // Count trials using extracted trialEnd field
+        if (s.trialEnd && dayStart < s.trialEnd) {
+          trialSubscribers += 1;
+        }
 
-          if (!s.isTrial && s.status === "active") {
-            const items = raw?.items?.data || [];
-            for (const item of items) {
-              const unit = item?.price?.unit_amount;
-              const interval = item?.price?.recurring?.interval;
-              const currency = item?.price?.currency || "usd";
-              if (typeof unit === "number") {
-                const amount = unit / 100;
-                const convertedAmount = await convertAndRoundCurrency(ctx, amount, currency, userCurrency, yearMonth);
-                if (interval === "year") {
-                  yearlyMRR += convertedAmount;
-                } else {
-                  monthlyMRR += convertedAmount;
-                }
-              }
+        // MRR and subscriber type from extracted fields
+        if (!s.isTrial && s.status === "active") {
+          if (typeof s.priceAmount === "number") {
+            const amount = s.priceAmount / 100;
+            const currency = s.priceCurrency || "usd";
+            const convertedAmount = await convertAndRoundCurrency(ctx, amount, currency, userCurrency, yearMonth);
+            if (s.priceInterval === "year") {
+              yearlyMRR += convertedAmount;
+              yearlySubscribers++;
+            } else {
+              monthlyMRR += convertedAmount;
+              monthlySubscribers++;
             }
           }
-        } catch {}
+        }
       }
       const mrr = calculateMRR(monthlyMRR, yearlyMRR);
 
       const activeSubscribers = activeSubs.length;
       const paidSubscribers = activeSubscribers - trialSubscribers;
       
-      // Track monthly vs yearly subscribers
-      let monthlySubscribers = 0;
-      let yearlySubscribers = 0;
-      for (const s of activeSubs) {
-        if (s.isTrial) continue;
-        if (!(s.status === "active" || s.status === "trialing")) continue;
-        
-        try {
-          const raw = JSON.parse(s.rawData);
-          const interval = raw?.items?.data?.[0]?.price?.recurring?.interval;
-          if (interval === "year") {
-            yearlySubscribers++;
-          } else if (interval === "month") {
-            monthlySubscribers++;
-          }
-        } catch {}
-      }
-      
       // Flow metrics for this day
-      const cancellations = activeSubs.filter((s) => s.willCancel).length;
       const churn = subs.filter((s) => s.status === "canceled" && s.endDate && s.endDate >= dayStart && s.endDate <= dayEnd).length;
+      const cancellations = churn; // Use actual cancellations (not willCancel which is cumulative)
       const graceEvents = activeSubs.filter((s) => s.isInGrace).length;
 
       // Revenue events on this day

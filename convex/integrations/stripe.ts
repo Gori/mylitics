@@ -28,7 +28,11 @@ export async function fetchStripe(apiKey: string, startDate?: number, endDate?: 
     isTrial: boolean;
     willCancel: boolean;
     isInGrace: boolean;
-    rawData: string;
+    // Extracted fields for efficient storage
+    trialEnd?: number;
+    priceAmount?: number;
+    priceInterval?: string;
+    priceCurrency?: string;
   }> = [];
 
   const revenueEvents: Array<{
@@ -39,7 +43,7 @@ export async function fetchStripe(apiKey: string, startDate?: number, endDate?: 
     currency: string;
     country?: string; // ISO country code
     timestamp: number;
-    rawData: string;
+    externalId: string; // Invoice ID for reference
   }> = [];
 
   const listParams: any = { limit: 100, expand: ["data.items.data.price"], status: "all" };
@@ -60,17 +64,27 @@ export async function fetchStripe(apiKey: string, startDate?: number, endDate?: 
       ? (subAny.canceled_at || subAny.ended_at || subAny.current_period_end || 0) * 1000
       : (subAny.current_period_end || 0) * 1000;
     
+    // Extract pricing from primary subscription item
+    const primaryItem = subscription.items.data[0];
+    const priceAmount = primaryItem?.price?.unit_amount ?? undefined;
+    const priceInterval = primaryItem?.price?.recurring?.interval ?? undefined;
+    const priceCurrency = primaryItem?.price?.currency ?? undefined;
+    const trialEnd = subAny.trial_end ? subAny.trial_end * 1000 : undefined;
+    
     subscriptions.push({
       externalId: subscription.id,
       customerId: subscription.customer as string,
       status: subscription.status,
-      productId: subscription.items.data[0]?.price.product as string,
+      productId: primaryItem?.price.product as string,
       startDate: createdAt,
       endDate: endTimestamp,
       isTrial: subscription.status === "trialing",
       willCancel: subAny.cancel_at_period_end || false,
       isInGrace: subscription.status === "past_due",
-      rawData: JSON.stringify(subscription),
+      trialEnd,
+      priceAmount,
+      priceInterval,
+      priceCurrency,
     });
     subCount++;
   }
@@ -95,9 +109,18 @@ export async function fetchStripe(apiKey: string, startDate?: number, endDate?: 
   for await (const invoice of stripe.invoices.list(invoiceParams)) {
     invoiceCount++;
     const invAny = invoice as any;
-    const createdAt = (invoice.created || 0) * 1000;
     
-    if (endDate && createdAt > endDate) {
+    // Use paid_at (when payment succeeded) for accurate revenue timing
+    // Fall back to created if paid_at not available (shouldn't happen for paid invoices)
+    const paidAt = invAny.status_transitions?.paid_at;
+    const eventTimestamp = paidAt ? paidAt * 1000 : (invoice.created || 0) * 1000;
+    
+    // Filter by paid_at timestamp (not created) for accurate date range
+    if (startDate && eventTimestamp < startDate) {
+      skippedInvoices++;
+      continue;
+    }
+    if (endDate && eventTimestamp > endDate) {
       skippedInvoices++;
       continue;
     }
@@ -114,7 +137,7 @@ export async function fetchStripe(apiKey: string, startDate?: number, endDate?: 
     
     // Debug logging for first few invoices
     if (invoiceCount <= 5) {
-      console.log(`[Stripe] Invoice #${invoiceCount}: id=${invoice.id}, status=${invoice.status}, billing_reason=${invAny.billing_reason}, extracted subId=${subscriptionId || "NULL"}, will_create_revenue=${subscriptionId && invoice.status === "paid" ? "YES" : "NO"}, amount_paid=${invAny.amount_paid}`);
+      console.log(`[Stripe] Invoice #${invoiceCount}: id=${invoice.id}, status=${invoice.status}, billing_reason=${invAny.billing_reason}, paid_at=${paidAt || 'null'}, subId=${subscriptionId || "NULL"}, amount_paid=${invAny.amount_paid}`);
     }
     
     if (subscriptionId) {
@@ -155,8 +178,8 @@ export async function fetchStripe(apiKey: string, startDate?: number, endDate?: 
           amountExcludingTax,
           currency: invoice.currency || "usd",
           country,
-          timestamp: createdAt,
-          rawData: JSON.stringify(invoice),
+          timestamp: eventTimestamp,
+          externalId: invoice.id,
         });
       }
     }
@@ -200,7 +223,7 @@ export async function fetchStripe(apiKey: string, startDate?: number, endDate?: 
                 currency: refund.currency || "usd",
                 country: invoiceAny.customer_address?.country || undefined,
                 timestamp: refundedAt,
-                rawData: JSON.stringify(refund),
+                externalId: refund.id,
               });
               refundCount++;
             }

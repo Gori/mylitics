@@ -77,7 +77,12 @@ export default defineSchema({
     isTrial: v.boolean(),
     willCancel: v.boolean(),
     isInGrace: v.boolean(),
-    rawData: v.string(), // JSON string of raw platform data
+    // Extracted fields for efficient querying (avoids loading full rawData)
+    trialEnd: v.optional(v.number()), // Unix timestamp in ms
+    priceAmount: v.optional(v.number()), // Price in cents (from primary item)
+    priceInterval: v.optional(v.string()), // "month" or "year"
+    priceCurrency: v.optional(v.string()), // Currency code e.g. "usd"
+    rawData: v.optional(v.string()), // Deprecated: only for backward compat
   })
     .index("by_app", ["appId"])
     .index("by_app_platform", ["appId", "platform"])
@@ -101,7 +106,8 @@ export default defineSchema({
     currency: v.string(),
     country: v.optional(v.string()), // ISO country code for VAT calculation
     timestamp: v.number(),
-    rawData: v.string(),
+    externalId: v.optional(v.string()), // Invoice/transaction ID for reference
+    rawData: v.optional(v.string()), // Deprecated: was full JSON, now optional
   })
     .index("by_app", ["appId"])
     .index("by_app_platform", ["appId", "platform"])
