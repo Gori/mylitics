@@ -205,6 +205,7 @@ export default function DashboardPage() {
     available.add("weeklyChargedRevenue");
     available.add("weeklyRevenue");
     available.add("mrr");
+    available.add("arpu");
     
     return available;
   }, [metrics]);
@@ -271,6 +272,23 @@ export default function DashboardPage() {
           return (
             <div key={platform}>
               {platformLabels[platform]}: {formatPercent(value)}
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  // Right block for ARPU (shows currency per platform)
+  const rightBlockArpu = (viewMode: "monthly" | "weekly") => {
+    const key = viewMode === "monthly" ? "arpu" : "weeklyArpu";
+    return (
+      <div className="text-xs text-right text-gray-500 leading-4">
+        {connectedPlatforms.map((platform) => {
+          const value = metrics?.platformMap?.[platform]?.[key] ?? 0;
+          return (
+            <div key={platform}>
+              {platformLabels[platform]}: {formatCurrency(value)}
             </div>
           );
         })}
@@ -470,6 +488,18 @@ export default function DashboardPage() {
                   right={rightBlock("cancellations")}
                 />
                 <MetricCard currency={currency}
+                  label="Grace Events"
+                  value={metrics.unified.graceEvents}
+                  metricKey="graceEvents"
+                  appId={appId}
+                  connectedPlatforms={connectedPlatforms}
+                  viewMode={viewMode}
+                  platformsWithData={getPlatformsWithData("graceEvents")}
+                  right={rightBlock("graceEvents")}
+                />
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <MetricCard currency={currency}
                   label="Churn Rate"
                   value={formatPercent(viewMode === "monthly" ? metrics.unified.churnRate : metrics.unified.weeklyChurnRate)}
                   metricKey="churnRate"
@@ -479,17 +509,15 @@ export default function DashboardPage() {
                   platformsWithData={getPlatformsWithData("churnRate")}
                   right={rightBlockChurnRate(viewMode)}
                 />
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <MetricCard currency={currency}
-                  label="Grace Events"
-                  value={metrics.unified.graceEvents}
-                  metricKey="graceEvents"
+                  label="ARPU"
+                  value={formatCurrency(viewMode === "monthly" ? metrics.unified.arpu : metrics.unified.weeklyArpu)}
+                  metricKey="arpu"
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
                   viewMode={viewMode}
-                  platformsWithData={getPlatformsWithData("graceEvents")}
-                  right={rightBlock("graceEvents")}
+                  platformsWithData={getPlatformsWithData("arpu")}
+                  right={rightBlockArpu(viewMode)}
                 />
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -903,7 +931,7 @@ export default function DashboardPage() {
 const CustomChartTooltip = ({ active, payload, label, currency, config, metricKey, connectedPlatforms, viewMode }: any) => {
   if (!active || !payload || !payload.length) return null;
 
-  const isCurrency = metricKey.toLowerCase().includes("revenue") || metricKey === "mrr";
+  const isCurrency = metricKey.toLowerCase().includes("revenue") || metricKey === "mrr" || metricKey === "arpu";
   const isPercent = metricKey === "churnRate";
   const formatValue = (val: number) => {
     if (isPercent) {

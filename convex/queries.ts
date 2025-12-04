@@ -38,6 +38,13 @@ function calculateChurnRate(churnCount: number, startingPaidSubscribers: number)
   return Math.round((rate + Number.EPSILON) * 100) / 100; // Round to 2 decimals
 }
 
+// Shared ARPU calculation - single source of truth
+// Formula: revenue / active subscribers
+function calculateArpu(revenue: number, activeSubscribers: number): number {
+  if (activeSubscribers <= 0) return 0;
+  return Math.round((revenue / activeSubscribers + Number.EPSILON) * 100) / 100; // Round to 2 decimals
+}
+
 export const getLatestMetrics = query({
   args: { appId: v.id("apps") },
   handler: async (ctx, { appId }) => {
@@ -233,8 +240,13 @@ export const getLatestMetrics = query({
         startingPaidSubsByPlatform7[platform] || 0
       );
       
+      // Calculate ARPU: revenue / active subscribers
+      const platformActiveSubscribers = latest?.activeSubscribers || 0;
+      const monthlyArpu = calculateArpu(flowSums?.monthlyRevenue || 0, platformActiveSubscribers);
+      const weeklyArpu = calculateArpu(weeklySums?.weeklyRevenue || 0, platformActiveSubscribers);
+      
       platformMap[platform] = {
-        activeSubscribers: latest?.activeSubscribers || 0,
+        activeSubscribers: platformActiveSubscribers,
         trialSubscribers: latest?.trialSubscribers || 0,
         paidSubscribers: latest?.paidSubscribers || 0,
         mrr: latest?.mrr || 0,
@@ -242,6 +254,8 @@ export const getLatestMetrics = query({
         churn: flowSums?.churn || 0,
         churnRate: monthlyChurnRate,
         weeklyChurnRate: weeklyChurnRate,
+        arpu: monthlyArpu,
+        weeklyArpu: weeklyArpu,
         graceEvents: flowSums?.graceEvents || 0,
         firstPayments: flowSums?.firstPayments || 0,
         renewals: flowSums?.renewals || 0,
@@ -261,23 +275,30 @@ export const getLatestMetrics = query({
     const totalWeeklyChurn = (weeklySumsByPlatform.appstore?.weeklyChurn || 0) + (weeklySumsByPlatform.googleplay?.weeklyChurn || 0) + (weeklySumsByPlatform.stripe?.weeklyChurn || 0);
     const totalStartingPaidSubs7 = (startingPaidSubsByPlatform7.appstore || 0) + (startingPaidSubsByPlatform7.googleplay || 0) + (startingPaidSubsByPlatform7.stripe || 0);
     
+    // Calculate unified ARPU from total revenue / total active subscribers
+    const totalActiveSubscribers = (platformMap.appstore?.activeSubscribers || 0) + (platformMap.googleplay?.activeSubscribers || 0) + (platformMap.stripe?.activeSubscribers || 0);
+    const totalMonthlyRevenue = (platformMap.appstore?.monthlyRevenue || 0) + (platformMap.googleplay?.monthlyRevenue || 0) + (platformMap.stripe?.monthlyRevenue || 0);
+    const totalWeeklyRevenue = (platformMap.appstore?.weeklyRevenue || 0) + (platformMap.googleplay?.weeklyRevenue || 0) + (platformMap.stripe?.weeklyRevenue || 0);
+    
     const unified = {
-      activeSubscribers: (platformMap.appstore?.activeSubscribers || 0) + (platformMap.googleplay?.activeSubscribers || 0) + (platformMap.stripe?.activeSubscribers || 0),
+      activeSubscribers: totalActiveSubscribers,
       trialSubscribers: (platformMap.appstore?.trialSubscribers || 0) + (platformMap.googleplay?.trialSubscribers || 0) + (platformMap.stripe?.trialSubscribers || 0),
       paidSubscribers: (platformMap.appstore?.paidSubscribers || 0) + (platformMap.googleplay?.paidSubscribers || 0) + (platformMap.stripe?.paidSubscribers || 0),
       cancellations: (platformMap.appstore?.cancellations || 0) + (platformMap.googleplay?.cancellations || 0) + (platformMap.stripe?.cancellations || 0),
       churn: totalChurn,
       churnRate: calculateChurnRate(totalChurn, totalStartingPaidSubs30),
       weeklyChurnRate: calculateChurnRate(totalWeeklyChurn, totalStartingPaidSubs7),
+      arpu: calculateArpu(totalMonthlyRevenue, totalActiveSubscribers),
+      weeklyArpu: calculateArpu(totalWeeklyRevenue, totalActiveSubscribers),
       graceEvents: (platformMap.appstore?.graceEvents || 0) + (platformMap.googleplay?.graceEvents || 0) + (platformMap.stripe?.graceEvents || 0),
       paybacks: 0,
       firstPayments: (platformMap.appstore?.firstPayments || 0) + (platformMap.googleplay?.firstPayments || 0) + (platformMap.stripe?.firstPayments || 0),
       renewals: (platformMap.appstore?.renewals || 0) + (platformMap.googleplay?.renewals || 0) + (platformMap.stripe?.renewals || 0),
       weeklyChargedRevenue: Math.round(((platformMap.appstore?.weeklyChargedRevenue || 0) + (platformMap.googleplay?.weeklyChargedRevenue || 0) + (platformMap.stripe?.weeklyChargedRevenue || 0) + Number.EPSILON) * 100) / 100,
-      weeklyRevenue: Math.round(((platformMap.appstore?.weeklyRevenue || 0) + (platformMap.googleplay?.weeklyRevenue || 0) + (platformMap.stripe?.weeklyRevenue || 0) + Number.EPSILON) * 100) / 100,
+      weeklyRevenue: Math.round((totalWeeklyRevenue + Number.EPSILON) * 100) / 100,
       mrr: Math.round(((platformMap.appstore?.mrr || 0) + (platformMap.googleplay?.mrr || 0) + (platformMap.stripe?.mrr || 0) + Number.EPSILON) * 100) / 100,
       monthlyChargedRevenue: Math.round(((platformMap.appstore?.monthlyChargedRevenue || 0) + (platformMap.googleplay?.monthlyChargedRevenue || 0) + (platformMap.stripe?.monthlyChargedRevenue || 0) + Number.EPSILON) * 100) / 100,
-      monthlyRevenue: Math.round(((platformMap.appstore?.monthlyRevenue || 0) + (platformMap.googleplay?.monthlyRevenue || 0) + (platformMap.stripe?.monthlyRevenue || 0) + Number.EPSILON) * 100) / 100,
+      monthlyRevenue: Math.round((totalMonthlyRevenue + Number.EPSILON) * 100) / 100,
       monthlySubscribers: (platformMap.appstore?.monthlySubscribers || 0) + (platformMap.googleplay?.monthlySubscribers || 0) + (platformMap.stripe?.monthlySubscribers || 0),
       yearlySubscribers: (platformMap.appstore?.yearlySubscribers || 0) + (platformMap.googleplay?.yearlySubscribers || 0) + (platformMap.stripe?.yearlySubscribers || 0),
     };
@@ -385,8 +406,9 @@ export const getWeeklyMetricsHistory = query({
     
     const activePlatforms = platformsWithData;
     
-    // Special handling for churnRate - it's a calculated metric
+    // Special handling for churnRate and arpu - they're calculated metrics
     const isChurnRate = metric === "churnRate";
+    const isArpu = metric === "arpu";
     
     // Determine if this is a flow metric (sum weekly) or stock metric (last value)
     const flowMetrics = [
@@ -399,14 +421,15 @@ export const getWeeklyMetricsHistory = query({
       "monthlyChargedRevenue",
       "monthlyRevenue",
     ];
-    const isFlowMetric = flowMetrics.includes(metric) || isChurnRate; // churnRate uses flow logic
+    const isFlowMetric = flowMetrics.includes(metric) || isChurnRate || isArpu; // churnRate and arpu use flow logic
 
     // Use the snapshots we already fetched
     const snapshots = allSnapshots;
 
     // Group by week and platform
     // For churnRate, we need both churn (sum) and paidSubscribers (first value of week)
-    const weeklyData: Record<string, Record<string, { sum: number; last: number; lastDate: string; churnSum?: number; startingPaidSubs?: number; firstDate?: string }>> = {};
+    // For arpu, we need revenue (sum) and activeSubscribers (last value of week)
+    const weeklyData: Record<string, Record<string, { sum: number; last: number; lastDate: string; churnSum?: number; startingPaidSubs?: number; firstDate?: string; revenueSum?: number; lastActiveSubscribers?: number }>> = {};
     
     for (const snap of snapshots) {
       // Skip unified platform - we'll calculate it from the sum of platforms
@@ -417,8 +440,8 @@ export const getWeeklyMetricsHistory = query({
       const weekKey = weekStart.toISOString().split("T")[0];
       
       if (!weeklyData[weekKey]) weeklyData[weekKey] = {} as any;
-      const value = isChurnRate ? 0 : ((snap as any)[metric] || 0); // For churnRate, we calculate separately
-      const entry = weeklyData[weekKey][snap.platform] || { sum: 0, last: 0, lastDate: "", churnSum: 0, startingPaidSubs: 0, firstDate: "9999-99-99" };
+      const value = (isChurnRate || isArpu) ? 0 : ((snap as any)[metric] || 0); // For calculated metrics, we calculate separately
+      const entry = weeklyData[weekKey][snap.platform] || { sum: 0, last: 0, lastDate: "", churnSum: 0, startingPaidSubs: 0, firstDate: "9999-99-99", revenueSum: 0, lastActiveSubscribers: 0 };
       entry.sum += value;
       // Only update last if this is a more recent date
       if (snap.date >= entry.lastDate) {
@@ -433,6 +456,15 @@ export const getWeeklyMetricsHistory = query({
         if (snap.date < (entry.firstDate || "9999-99-99")) {
           entry.startingPaidSubs = snap.paidSubscribers || 0;
           entry.firstDate = snap.date;
+        }
+      }
+      
+      // For arpu calculation: track revenue sum and last active subscribers
+      if (isArpu) {
+        entry.revenueSum = (entry.revenueSum || 0) + (snap.monthlyRevenue || 0);
+        // Track the most recent date's activeSubscribers
+        if (snap.date >= entry.lastDate) {
+          entry.lastActiveSubscribers = snap.activeSubscribers || 0;
         }
       }
       
@@ -484,6 +516,32 @@ export const getWeeklyMetricsHistory = query({
           };
         }
         
+        // For arpu, calculate using the shared helper
+        if (isArpu) {
+          const getArpu = (p?: { revenueSum?: number; lastActiveSubscribers?: number }) => {
+            if (!p) return null;
+            return calculateArpu(p.revenueSum || 0, p.lastActiveSubscribers || 0);
+          };
+          const appstore = getArpu((platforms as any).appstore);
+          const googleplay = getArpu((platforms as any).googleplay);
+          const stripe = getArpu((platforms as any).stripe);
+          
+          // Calculate unified ARPU from total revenue / total active subscribers
+          const totalRevenue = ((platforms as any).appstore?.revenueSum || 0) + ((platforms as any).googleplay?.revenueSum || 0) + ((platforms as any).stripe?.revenueSum || 0);
+          const totalActiveSubs = ((platforms as any).appstore?.lastActiveSubscribers || 0) + ((platforms as any).googleplay?.lastActiveSubscribers || 0) + ((platforms as any).stripe?.lastActiveSubscribers || 0);
+          const unified = calculateArpu(totalRevenue, totalActiveSubs);
+          
+          return {
+            week,
+            appstore,
+            googleplay,
+            stripe,
+            unified,
+            hasAllPlatforms,
+            hasValidStockData: true, // arpu is always valid if we have data
+          };
+        }
+        
         // For flow metrics, use sum of all days in the week; for stock metrics, use last day
         // Return null if platform has no data for this week (so chart line stops instead of dropping to 0)
         const val = (p?: { sum: number; last: number; lastDate: string }) => (p ? (isFlowMetric ? p.sum : p.last) : null);
@@ -491,12 +549,11 @@ export const getWeeklyMetricsHistory = query({
         let googleplay = val((platforms as any).googleplay);
         const stripe = val((platforms as any).stripe);
         
-        // For Google Play subscriber metrics, treat 0 as null (no data) so line stops
+        // For Google Play subscriber/stock metrics, treat 0 as null (no data) so line stops
         // Google Play subscription reports have delays, so 0 means no data, not zero subscribers
-        // BUT: MRR is a calculated value, so 0 is valid (not missing data)
-        const subscriberMetrics = ["activeSubscribers", "trialSubscribers", "paidSubscribers", "monthlySubscribers", "yearlySubscribers"];
-        const isSubscriberMetric = subscriberMetrics.includes(metric);
-        if (isSubscriberMetric && googleplay === 0) {
+        // MRR is calculated from subscriber data, so 0 MRR also indicates missing data
+        const googlePlayDelayedMetrics = ["activeSubscribers", "trialSubscribers", "paidSubscribers", "monthlySubscribers", "yearlySubscribers", "mrr"];
+        if (googlePlayDelayedMetrics.includes(metric) && googleplay === 0) {
           googleplay = null;
         }
         
@@ -567,8 +624,9 @@ export const getMonthlyMetricsHistory = query({
     
     const activePlatforms = platformsWithData;
     
-    // Special handling for churnRate - it's a calculated metric
+    // Special handling for churnRate and arpu - they're calculated metrics
     const isChurnRate = metric === "churnRate";
+    const isArpu = metric === "arpu";
     
     const flowMetrics = [
       "cancellations",
@@ -580,13 +638,14 @@ export const getMonthlyMetricsHistory = query({
       "monthlyChargedRevenue",
       "monthlyRevenue",
     ];
-    const isFlowMetric = flowMetrics.includes(metric) || isChurnRate; // churnRate uses flow logic
+    const isFlowMetric = flowMetrics.includes(metric) || isChurnRate || isArpu; // churnRate and arpu use flow logic
 
     const snapshots = allSnapshots;
 
     // Group by month (YYYY-MM) and platform
     // For churnRate, we need both churn (sum) and paidSubscribers (first value of month)
-    const monthlyData: Record<string, Record<string, { sum: number; last: number; lastDate: string; churnSum?: number; startingPaidSubs?: number; firstDate?: string }>> = {};
+    // For arpu, we need revenue (sum) and activeSubscribers (last value of month)
+    const monthlyData: Record<string, Record<string, { sum: number; last: number; lastDate: string; churnSum?: number; startingPaidSubs?: number; firstDate?: string; revenueSum?: number; lastActiveSubscribers?: number }>> = {};
     
     for (const snap of snapshots) {
       if (snap.platform === "unified") continue;
@@ -595,8 +654,8 @@ export const getMonthlyMetricsHistory = query({
       const monthKey = snap.date.substring(0, 7);
       
       if (!monthlyData[monthKey]) monthlyData[monthKey] = {} as any;
-      const value = isChurnRate ? 0 : ((snap as any)[metric] || 0); // For churnRate, we calculate separately
-      const entry = monthlyData[monthKey][snap.platform] || { sum: 0, last: 0, lastDate: "", churnSum: 0, startingPaidSubs: 0, firstDate: "9999-99-99" };
+      const value = (isChurnRate || isArpu) ? 0 : ((snap as any)[metric] || 0); // For calculated metrics, we calculate separately
+      const entry = monthlyData[monthKey][snap.platform] || { sum: 0, last: 0, lastDate: "", churnSum: 0, startingPaidSubs: 0, firstDate: "9999-99-99", revenueSum: 0, lastActiveSubscribers: 0 };
       entry.sum += value;
       if (snap.date >= entry.lastDate) {
         entry.last = value;
@@ -610,6 +669,15 @@ export const getMonthlyMetricsHistory = query({
         if (snap.date < (entry.firstDate || "9999-99-99")) {
           entry.startingPaidSubs = snap.paidSubscribers || 0;
           entry.firstDate = snap.date;
+        }
+      }
+      
+      // For arpu calculation: track revenue sum and last active subscribers
+      if (isArpu) {
+        entry.revenueSum = (entry.revenueSum || 0) + (snap.monthlyRevenue || 0);
+        // Track the most recent date's activeSubscribers
+        if (snap.date >= entry.lastDate) {
+          entry.lastActiveSubscribers = snap.activeSubscribers || 0;
         }
       }
       
@@ -657,15 +725,41 @@ export const getMonthlyMetricsHistory = query({
           };
         }
         
+        // For arpu, calculate using the shared helper
+        if (isArpu) {
+          const getArpu = (p?: { revenueSum?: number; lastActiveSubscribers?: number }) => {
+            if (!p) return null;
+            return calculateArpu(p.revenueSum || 0, p.lastActiveSubscribers || 0);
+          };
+          const appstore = getArpu((platforms as any).appstore);
+          const googleplay = getArpu((platforms as any).googleplay);
+          const stripe = getArpu((platforms as any).stripe);
+          
+          // Calculate unified ARPU from total revenue / total active subscribers
+          const totalRevenue = ((platforms as any).appstore?.revenueSum || 0) + ((platforms as any).googleplay?.revenueSum || 0) + ((platforms as any).stripe?.revenueSum || 0);
+          const totalActiveSubs = ((platforms as any).appstore?.lastActiveSubscribers || 0) + ((platforms as any).googleplay?.lastActiveSubscribers || 0) + ((platforms as any).stripe?.lastActiveSubscribers || 0);
+          const unified = calculateArpu(totalRevenue, totalActiveSubs);
+          
+          return {
+            month,
+            appstore,
+            googleplay,
+            stripe,
+            unified,
+            hasAllPlatforms,
+            hasValidStockData: true, // arpu is always valid if we have data
+          };
+        }
+        
         const val = (p?: { sum: number; last: number; lastDate: string }) => (p ? (isFlowMetric ? p.sum : p.last) : null);
         const appstore = val((platforms as any).appstore);
         let googleplay = val((platforms as any).googleplay);
         const stripe = val((platforms as any).stripe);
         
-        // For Google Play subscriber metrics, treat 0 as null (no data)
-        // MRR is calculated, so 0 is valid
-        const subscriberMetrics = ["activeSubscribers", "trialSubscribers", "paidSubscribers", "monthlySubscribers", "yearlySubscribers"];
-        if (subscriberMetrics.includes(metric) && googleplay === 0) {
+        // For Google Play subscriber/stock metrics, treat 0 as null (no data)
+        // MRR is calculated from subscriber data, so 0 MRR also indicates missing data
+        const googlePlayDelayedMetrics = ["activeSubscribers", "trialSubscribers", "paidSubscribers", "monthlySubscribers", "yearlySubscribers", "mrr"];
+        if (googlePlayDelayedMetrics.includes(metric) && googleplay === 0) {
           googleplay = null;
         }
         
@@ -974,10 +1068,10 @@ export const getAllDebugData = query({
           let googleplay = val((platforms as any).googleplay);
           const stripe = val((platforms as any).stripe);
           
-          // For Google Play subscriber metrics, treat 0 as null (no data)
-          // MRR is calculated, so 0 is valid
-          const subscriberMetrics = ["activeSubscribers", "trialSubscribers", "paidSubscribers", "monthlySubscribers", "yearlySubscribers"];
-          if (subscriberMetrics.includes(metric) && googleplay === 0) {
+          // For Google Play subscriber/stock metrics, treat 0 as null (no data)
+          // MRR is calculated from subscriber data, so 0 MRR also indicates missing data
+          const googlePlayDelayedMetrics = ["activeSubscribers", "trialSubscribers", "paidSubscribers", "monthlySubscribers", "yearlySubscribers", "mrr"];
+          if (googlePlayDelayedMetrics.includes(metric) && googleplay === 0) {
             googleplay = null;
           }
           
@@ -1039,10 +1133,10 @@ export const getAllDebugData = query({
           let googleplay = val((platforms as any).googleplay);
           const stripe = val((platforms as any).stripe);
           
-          // For Google Play subscriber metrics, treat 0 as null (no data)
-          // MRR is calculated, so 0 is valid
-          const subscriberMetrics = ["activeSubscribers", "trialSubscribers", "paidSubscribers", "monthlySubscribers", "yearlySubscribers"];
-          if (subscriberMetrics.includes(metric) && googleplay === 0) {
+          // For Google Play subscriber/stock metrics, treat 0 as null (no data)
+          // MRR is calculated from subscriber data, so 0 MRR also indicates missing data
+          const googlePlayDelayedMetrics = ["activeSubscribers", "trialSubscribers", "paidSubscribers", "monthlySubscribers", "yearlySubscribers", "mrr"];
+          if (googlePlayDelayedMetrics.includes(metric) && googleplay === 0) {
             googleplay = null;
           }
           
@@ -1218,10 +1312,10 @@ export const getChatContext = query({
           let googleplay: number | null = val((platforms as any).googleplay);
           const stripe = val((platforms as any).stripe);
           
-          // For Google Play subscriber metrics, treat 0 as null (no data)
-          // MRR is calculated, so 0 is valid
-          const subscriberMetrics = ["activeSubscribers", "trialSubscribers", "paidSubscribers", "monthlySubscribers", "yearlySubscribers"];
-          if (subscriberMetrics.includes(metric) && googleplay === 0) {
+          // For Google Play subscriber/stock metrics, treat 0 as null (no data)
+          // MRR is calculated from subscriber data, so 0 MRR also indicates missing data
+          const googlePlayDelayedMetrics = ["activeSubscribers", "trialSubscribers", "paidSubscribers", "monthlySubscribers", "yearlySubscribers", "mrr"];
+          if (googlePlayDelayedMetrics.includes(metric) && googleplay === 0) {
             googleplay = null;
           }
           
