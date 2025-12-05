@@ -10,6 +10,7 @@ import AdmZip from "adm-zip";
 type RevenueData = {
   gross: number; // Charged amount (what customer paid, including VAT)
   net: number; // Item price (excluding VAT, but including platform fees)
+  proceeds: number; // Developer proceeds (what you actually receive after VAT and platform fees)
   transactions: number;
 };
 
@@ -108,7 +109,7 @@ export async function fetchGooglePlayFromGCS(
   const discoveredReportTypes: Set<ReportType> = new Set();
 
   // Track revenue by source for debugging duplicate counting
-  const revenueBySource: Record<string, { gross: number; net: number; transactions: number; dates: number }> = {};
+  const revenueBySource: Record<string, { gross: number; net: number; proceeds: number; transactions: number; dates: number }> = {};
   
   try {
     console.log(`[Google Play] Scanning bucket gs://${gcsBucketName}/${gcsReportPrefix || "(root)"}`);
@@ -270,6 +271,7 @@ export async function fetchGooglePlayFromGCS(
           const dates = Object.keys(parsed.revenueByDate);
           const totalGross = Object.values(parsed.revenueByDate).reduce((sum, d) => sum + d.gross, 0);
           const totalNet = Object.values(parsed.revenueByDate).reduce((sum, d) => sum + d.net, 0);
+          const totalProceeds = Object.values(parsed.revenueByDate).reduce((sum, d) => sum + d.proceeds, 0);
           const totalTx = Object.values(parsed.revenueByDate).reduce((sum, d) => sum + d.transactions, 0);
           
           // Log each file's contribution
@@ -277,9 +279,10 @@ export async function fetchGooglePlayFromGCS(
           
           const sourceKey = file.name.toLowerCase().includes('earnings/') ? 'csv-earnings' 
             : file.name.toLowerCase().includes('sales/') ? 'csv-sales' : 'csv-other';
-          if (!revenueBySource[sourceKey]) revenueBySource[sourceKey] = { gross: 0, net: 0, transactions: 0, dates: 0 };
+          if (!revenueBySource[sourceKey]) revenueBySource[sourceKey] = { gross: 0, net: 0, proceeds: 0, transactions: 0, dates: 0 };
           revenueBySource[sourceKey].gross += totalGross;
           revenueBySource[sourceKey].net += totalNet;
+          revenueBySource[sourceKey].proceeds += totalProceeds;
           revenueBySource[sourceKey].transactions += totalTx;
           revenueBySource[sourceKey].dates += dates.length;
         }
@@ -320,6 +323,7 @@ export async function fetchGooglePlayFromGCS(
                 const dates = Object.keys(parsed.revenueByDate);
                 const totalGross = Object.values(parsed.revenueByDate).reduce((sum, d) => sum + d.gross, 0);
                 const totalNet = Object.values(parsed.revenueByDate).reduce((sum, d) => sum + d.net, 0);
+                const totalProceeds = Object.values(parsed.revenueByDate).reduce((sum, d) => sum + d.proceeds, 0);
                 const totalTx = Object.values(parsed.revenueByDate).reduce((sum, d) => sum + d.transactions, 0);
                 
                 // Log each ZIP entry's contribution
@@ -330,9 +334,10 @@ export async function fetchGooglePlayFromGCS(
                   sampleDates: dates.slice(0, 3) 
                 });
                 
-                if (!revenueBySource[zipSourceKey]) revenueBySource[zipSourceKey] = { gross: 0, net: 0, transactions: 0, dates: 0 };
+                if (!revenueBySource[zipSourceKey]) revenueBySource[zipSourceKey] = { gross: 0, net: 0, proceeds: 0, transactions: 0, dates: 0 };
                 revenueBySource[zipSourceKey].gross += totalGross;
                 revenueBySource[zipSourceKey].net += totalNet;
+                revenueBySource[zipSourceKey].proceeds += totalProceeds;
                 revenueBySource[zipSourceKey].transactions += totalTx;
                 revenueBySource[zipSourceKey].dates += dates.length;
               }
@@ -355,10 +360,11 @@ export async function fetchGooglePlayFromGCS(
     // DEBUG: Summary of revenue by source
     console.log(`[Google Play DEBUG] ========== REVENUE BY SOURCE ==========`);
     for (const [source, data] of Object.entries(revenueBySource)) {
-      console.log(`[Google Play DEBUG] ${source}: $${data.gross.toFixed(2)} gross, $${data.net.toFixed(2)} net, ${data.transactions} tx, ${data.dates} date entries`);
+      console.log(`[Google Play DEBUG] ${source}: $${data.gross.toFixed(2)} gross, $${data.net.toFixed(2)} net, $${data.proceeds.toFixed(2)} proceeds, ${data.transactions} tx, ${data.dates} date entries`);
     }
     const totalFromAllSources = Object.values(revenueBySource).reduce((sum, d) => sum + d.gross, 0);
-    console.log(`[Google Play DEBUG] TOTAL from all sources: $${totalFromAllSources.toFixed(2)} gross`);
+    const totalProceedsFromAllSources = Object.values(revenueBySource).reduce((sum, d) => sum + d.proceeds, 0);
+    console.log(`[Google Play DEBUG] TOTAL from all sources: $${totalFromAllSources.toFixed(2)} gross, $${totalProceedsFromAllSources.toFixed(2)} proceeds`);
     console.log(`[Google Play DEBUG] =======================================`);
     
     // DEBUG: Log all file contributions to identify duplicates
@@ -395,10 +401,11 @@ export async function fetchGooglePlayFromGCS(
       if (report.revenueByDate) {
         for (const [date, data] of Object.entries(report.revenueByDate)) {
           if (!revenueByDate[date]) {
-            revenueByDate[date] = { gross: 0, net: 0, transactions: 0 };
+            revenueByDate[date] = { gross: 0, net: 0, proceeds: 0, transactions: 0 };
           }
           revenueByDate[date].gross += data.gross;
           revenueByDate[date].net += data.net;
+          revenueByDate[date].proceeds += data.proceeds;
           revenueByDate[date].transactions += data.transactions;
         }
       }
@@ -456,7 +463,7 @@ export async function fetchGooglePlayFromGCS(
     // Show revenue by source
     console.log(`[Google Play Summary] REVENUE BY SOURCE:`);
     for (const [source, data] of Object.entries(revenueBySource)) {
-      console.log(`  ${source}: $${data.gross.toFixed(2)} gross, $${data.net.toFixed(2)} net, ${data.transactions} tx, ${data.dates} date entries`);
+      console.log(`  ${source}: $${data.gross.toFixed(2)} gross, $${data.net.toFixed(2)} net, $${data.proceeds.toFixed(2)} proceeds, ${data.transactions} tx, ${data.dates} date entries`);
     }
 
     if (Object.keys(revenueByDate).length > 0) {
@@ -670,12 +677,21 @@ async function parseFinancialReportCSV(
     const descriptionIdx = findColumnIndex(['description', 'sku description', 'product title']);
     const skuIdx = findColumnIndex(['sku id', 'product id', 'sku']);
     const currencyIdx = findColumnIndex(['currency of sale', 'buyer currency', 'currency']);
+    const merchantCurrencyIdx = findColumnIndex(['merchant currency']); // For earnings files
+    const feeDescriptionIdx = findColumnIndex(['fee description']); // To identify fee rows in earnings
     const countryIdx = findColumnIndex(['country of buyer', 'buyer country', 'country']);
 
     // Only log first occurrence of each file type to understand format
     const isEarningsFile = fileName.toLowerCase().includes('earnings');
     const isSalesFile = fileName.toLowerCase().includes('sales');
     const fileType = isEarningsFile ? 'EARNINGS' : isSalesFile ? 'SALES' : 'OTHER';
+    
+    // Debug: Log when earnings file is detected
+    if (isEarningsFile) {
+      console.log(`[Google Play EARNINGS] Found earnings file: ${fileName}`);
+      console.log(`[Google Play EARNINGS] Headers: ${headers.join(', ')}`);
+      console.log(`[Google Play EARNINGS] merchantAmountIdx=${merchantAmountIdx}, netIdx=${netIdx} (column names: ${merchantAmountIdx >= 0 ? headers[merchantAmountIdx] : 'NOT FOUND'}, ${netIdx >= 0 ? headers[netIdx] : 'NOT FOUND'})`);
+    }
     
     // Determine which columns to use based on report type
     // Sales reports: charged amount (gross incl VAT), item price (net excl VAT)
@@ -703,27 +719,58 @@ async function parseFinancialReportCSV(
 
     // Track unique transaction types and currencies for debugging
     const transactionTypes = new Set<string>();
+    const transactionTypeCounts = new Map<string, { count: number; totalAmount: number }>();
     const currenciesUsed = new Map<string, { count: number; totalGross: number }>();
 
-    // Parse data rows
+    // Parse data rows - track skipped rows for debugging
+    let rowsTotal = 0;
+    let rowsNoDate = 0;
+    let rowsBadDate = 0;
+    let rowsProcessed = 0;
+    
     for (let i = 1; i < lines.length; i++) {
+      rowsTotal++;
       const line = lines[i].trim();
       if (!line) continue;
 
       const cols = parseCSVLine(line);
       const dateStr = cols[dateIdx]?.replace(/"/g, '').trim();
-      if (!dateStr) continue;
+      
+      // Debug: Log first 5 data rows of earnings files with transaction type
+      if (isEarningsFile && i <= 5) {
+        const merchantVal = merchantAmountIdx >= 0 ? cols[merchantAmountIdx] : 'N/A';
+        const merchCurr = merchantCurrencyIdx >= 0 ? cols[merchantCurrencyIdx] : 'N/A';
+        const txType = transactionTypeIdx >= 0 ? cols[transactionTypeIdx] : 'N/A';
+        const desc = descriptionIdx >= 0 ? cols[descriptionIdx] : 'N/A';
+        const feeDesc = feeDescriptionIdx >= 0 ? cols[feeDescriptionIdx] : 'N/A';
+        console.log(`[EARNINGS ROW ${i}] date="${dateStr}", amount="${merchantVal}", txType="${txType}", desc="${desc}", feeDesc="${feeDesc}"`);
+      }
+      
+      if (!dateStr) {
+        rowsNoDate++;
+        continue;
+      }
 
       const date = parseDateString(dateStr, startDate, endDate);
-      if (!date) continue;
+      if (!date) {
+        rowsBadDate++;
+        if (isEarningsFile && rowsBadDate === 1) {
+          console.log(`[EARNINGS DATE FAIL] First unparseable: "${dateStr}"`);
+        }
+        continue;
+      }
+      
+      rowsProcessed++;
 
       let gross = 0; // Charged amount (including VAT)
       let net = 0; // Revenue excluding VAT
+      let proceeds = 0; // Developer proceeds (after VAT and platform fees)
 
       // For sales reports: use charged amount as gross, item price as net (revenue excl VAT)
-      // For earnings reports: use merchant amount for both (Google already handles VAT)
+      // For earnings reports: merchant amount IS the proceeds (what you actually receive)
       if (isSalesFile) {
         // Sales report: charged amount includes VAT, item price excludes VAT
+        // Proceeds NOT available in sales reports
         if (chargedAmountIdx >= 0) {
           gross = parseNumber(cols[chargedAmountIdx]);
         } else if (itemPriceIdx >= 0) {
@@ -741,14 +788,23 @@ async function parseFinancialReportCSV(
           const taxes = parseNumber(cols[taxesCollectedIdx]);
           net = charged - taxes;
         }
+        // Sales reports don't have proceeds - would need to estimate from gross * 0.70/0.85
+        proceeds = 0;
       } else {
-        // Earnings report: merchant amount is already net of VAT in most cases
+        // EARNINGS report: "amount (merchant currency)" IS the proceeds (what Google pays you)
+        // This is AFTER Google's 15-30% fee and after any tax handling
+        // IMPORTANT: Only set proceeds here. Gross/net come from SALES files.
+        // Do NOT estimate gross/net from proceeds - that causes double counting!
         if (merchantAmountIdx >= 0) {
-          gross = parseNumber(cols[merchantAmountIdx]);
-          net = gross; // For earnings, gross and net are the same (Google handles VAT)
+          proceeds = parseNumber(cols[merchantAmountIdx]);
+          // Leave gross=0 and net=0 - those come from sales files
         }
+        // If there's a separate developer proceeds column, use it
         if (netIdx >= 0) {
-          net = parseNumber(cols[netIdx]);
+          const directProceeds = parseNumber(cols[netIdx]);
+          if (directProceeds > 0) {
+            proceeds = directProceeds;
+          }
         }
       }
 
@@ -763,14 +819,23 @@ async function parseFinancialReportCSV(
       currencyStats.count += 1;
       currencyStats.totalGross += gross;
 
-      // CRITICAL: Sales reports have amounts in BUYER CURRENCY, not USD!
-      // We need to convert to USD since downstream expects USD and will convert to user currency.
-      // For earnings reports, "amount (merchant currency)" is already in merchant's currency (typically USD).
+      // CRITICAL: Amounts need to be converted to USD!
+      // - Sales reports: amounts are in BUYER CURRENCY
+      // - Earnings reports: amounts are in MERCHANT CURRENCY (developer's payout currency)
       // 
-      // These are approximate rates used ONLY for normalizing sales report data to USD.
+      // These are approximate rates used ONLY for normalizing data to USD.
       // The actual USD → user currency conversion uses live rates from the exchangeRates table.
       // Small inaccuracies here (±5%) are acceptable as they're normalized across all transactions.
-      if (isSalesFile && currency !== 'USD' && currency !== 'UNKNOWN') {
+      
+      // Get the merchant currency for earnings files
+      const merchantCurrency = merchantCurrencyIdx >= 0 
+        ? (cols[merchantCurrencyIdx] || 'USD').toUpperCase().trim().replace(/"/g, '')
+        : 'USD';
+      
+      // Use buyer currency for sales files, merchant currency for earnings files
+      const effectiveCurrency = isSalesFile ? currency : merchantCurrency;
+      
+      if (effectiveCurrency !== 'USD' && effectiveCurrency !== 'UNKNOWN') {
         // Approximate exchange rates to USD (updated December 2024)
         // Source: approximate mid-market rates
         const toUsdRates: Record<string, number> = {
@@ -827,9 +892,10 @@ async function parseFinancialReportCSV(
           'NGN': 0.00062,// Nigerian Naira
           'KES': 0.0077, // Kenyan Shilling
         };
-        const rate = toUsdRates[currency] || 0.1; // Default fallback for unknown currencies
+        const rate = toUsdRates[effectiveCurrency] || 0.1; // Default fallback for unknown currencies
         gross = gross * rate;
         net = net * rate;
+        proceeds = proceeds * rate; // Also convert proceeds for earnings files
       }
 
       // Get transaction type for renewal/refund detection
@@ -842,6 +908,13 @@ async function parseFinancialReportCSV(
 
       if (transactionType) {
         transactionTypes.add(transactionType);
+        // Track counts and amounts per transaction type
+        if (!transactionTypeCounts.has(transactionType)) {
+          transactionTypeCounts.set(transactionType, { count: 0, totalAmount: 0 });
+        }
+        const stats = transactionTypeCounts.get(transactionType)!;
+        stats.count++;
+        stats.totalAmount += proceeds || gross || 0;
       }
 
       // For sales reports, gross (charged) and net (item price) should both be available
@@ -855,39 +928,67 @@ async function parseFinancialReportCSV(
       }
 
       if (!revenueByDate[date]) {
-        revenueByDate[date] = { gross: 0, net: 0, transactions: 0 };
+        revenueByDate[date] = { gross: 0, net: 0, proceeds: 0, transactions: 0 };
       }
 
-      // Only count positive charges as revenue (skip Google fees, taxes, etc.)
+      // Determine how to handle this row based on file type
       const isCharge = transactionType.includes('charge') && !transactionType.includes('refund');
       const isRefund = transactionType.includes('refund');
       const isGoogleFee = transactionType.includes('fee') || transactionType.includes('tax');
 
-      if (isRefund) {
-        // Track refunds separately
-        if (!refundsByDate[date]) refundsByDate[date] = 0;
-        refundsByDate[date] += 1;
-        // Refunds are typically negative, but ensure we subtract
-        revenueByDate[date].gross -= Math.abs(gross);
-        revenueByDate[date].net -= Math.abs(net);
-      } else if (!isGoogleFee && gross !== 0) {
-        revenueByDate[date].gross += gross;
-        revenueByDate[date].net += net;
-        revenueByDate[date].transactions += 1;
+      // For EARNINGS files: The "amount (merchant currency)" is already NET proceeds
+      // We want ALL charge rows (not just those without "fee" in name)
+      // For SALES files: Filter out fee/tax rows since we want gross charges only
+      const shouldSkipRow = isSalesFile && isGoogleFee;
 
-        // Count as renewal if it's a subscription charge (renewals are charges on existing subscriptions)
-        // Note: Google Play doesn't distinguish new vs renewal in basic reports
-        // But every charge transaction is either a new sub or a renewal
-        if (isCharge || gross > 0) {
-          if (!renewalsByDate[date]) renewalsByDate[date] = 0;
-          renewalsByDate[date] += 1;
+      if (isRefund) {
+        // Track refunds separately - only from sales files (earnings refunds would double count)
+        if (isSalesFile) {
+          if (!refundsByDate[date]) refundsByDate[date] = 0;
+          refundsByDate[date] += 1;
+          revenueByDate[date].gross -= Math.abs(gross);
+          revenueByDate[date].net -= Math.abs(net);
+        }
+        // Earnings files contribute to proceeds refunds
+        if (isEarningsFile) {
+          revenueByDate[date].proceeds -= Math.abs(proceeds);
+        }
+      } else if (!shouldSkipRow && (gross !== 0 || proceeds !== 0)) {
+        // Add values based on file type to avoid double counting
+        if (isSalesFile) {
+          // Sales files: contribute gross, net, transactions, renewals
+          revenueByDate[date].gross += gross;
+          revenueByDate[date].net += net;
+          revenueByDate[date].transactions += 1;
+
+          // Count as renewal if it's a subscription charge
+          if (isCharge || gross > 0) {
+            if (!renewalsByDate[date]) renewalsByDate[date] = 0;
+            renewalsByDate[date] += 1;
+          }
+        }
+        if (isEarningsFile) {
+          // Earnings files: ONLY contribute proceeds (gross/net come from sales)
+          // IMPORTANT: Skip rows with empty description - these are "net payout" summary rows
+          // that Google added in Nov 2025. They duplicate the charge-minus-fee calculation.
+          // We want: charge rows (positive) + fee rows (negative) = net proceeds
+          // We DON'T want: the separate "net payout" row (empty desc) which would double count
+          if (description === '') {
+            // Skip net payout summary rows (they have no description/GPA ID)
+            continue;
+          }
+          revenueByDate[date].proceeds += proceeds;
         }
       }
     }
 
-    // Log transaction types found (once per file pattern)
-    if ((fileName.includes('earnings_202411') || fileName.includes('salesreport_202411')) && transactionTypes.size > 0) {
-      console.log(`[Google Play Financial CSV] Transaction types found: ${Array.from(transactionTypes).join(', ')}`);
+    // Log transaction types found for debugging
+    if (transactionTypes.size > 0) {
+      const fileType = isEarningsFile ? 'EARNINGS' : 'SALES';
+      // Only log first occurrence of each file type pattern
+      if (fileName.includes('202411') || fileName.includes('202310')) {
+        console.log(`[Google Play ${fileType} CSV] Transaction types found: ${Array.from(transactionTypes).join(', ')}`);
+      }
     }
 
     // Log currency breakdown for November 2024 file (to debug currency issue)
@@ -903,6 +1004,25 @@ async function parseFinancialReportCSV(
       console.log(`[Google Play CURRENCY DEBUG] After USD conversion: $${totalRevenueUsd.toFixed(2)} USD`);
       console.log(`[Google Play CURRENCY DEBUG] Expected: ~$${(84396.80 * 0.09).toFixed(2)} USD (84396 NOK * 0.09)`);
       console.log(`[Google Play CURRENCY DEBUG] ===================================================`);
+    }
+    
+    // Log summary for earnings files with currency info
+    if (isEarningsFile) {
+      const totalProceeds = Object.values(revenueByDate).reduce((sum, d) => sum + d.proceeds, 0);
+      // Detect merchant currency from first data row
+      const firstDataRow = lines[1] ? parseCSVLine(lines[1]) : [];
+      const detectedMerchCurrency = merchantCurrencyIdx >= 0 ? (firstDataRow[merchantCurrencyIdx] || 'USD').toUpperCase().trim() : 'USD';
+      
+      // For November 2025, log transaction type breakdown with amounts
+      if (fileName.includes('202511')) {
+        console.log(`[EARNINGS NOV2025] Transaction types breakdown:`);
+        for (const [type, stats] of transactionTypeCounts.entries()) {
+          console.log(`[EARNINGS NOV2025]   ${type}: ${stats.count} rows, $${stats.totalAmount.toFixed(2)}`);
+        }
+        console.log(`[EARNINGS NOV2025] ${rowsProcessed}/${rowsTotal} rows, ${Object.keys(revenueByDate).length} dates`);
+      }
+      
+      console.log(`[EARNINGS SUMMARY] ${fileName}: ${rowsProcessed}/${rowsTotal} rows, currency=${detectedMerchCurrency}, $${totalProceeds.toFixed(2)} USD proceeds (after conversion)`);
     }
 
     return {
@@ -990,8 +1110,10 @@ function parseDateString(dateStr: string, startDate?: number, endDate?: number):
   let dateMs: number;
   try {
     if (dateStr.includes('-')) {
+      // Format: YYYY-MM-DD or similar
       dateMs = new Date(dateStr).getTime();
     } else if (dateStr.includes('/')) {
+      // Format: MM/DD/YYYY
       const parts = dateStr.split('/');
       if (parts.length === 3) {
         const mm = parseInt(parts[0]);
@@ -1002,6 +1124,14 @@ function parseDateString(dateStr: string, startDate?: number, endDate?: number):
         } else {
           return null;
         }
+      } else {
+        return null;
+      }
+    } else if (dateStr.includes(',')) {
+      // Format: "Oct 28, 2023" or "Nov 1, 2023" (Google Play earnings reports)
+      const parsed = new Date(dateStr);
+      if (!isNaN(parsed.getTime())) {
+        dateMs = parsed.getTime();
       } else {
         return null;
       }

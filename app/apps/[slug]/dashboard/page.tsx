@@ -202,8 +202,10 @@ export default function DashboardPage() {
     // Revenue metrics are always available if GP is in platformMap
     available.add("monthlyChargedRevenue");
     available.add("monthlyRevenue");
+    available.add("monthlyProceeds");
     available.add("weeklyChargedRevenue");
     available.add("weeklyRevenue");
+    available.add("weeklyProceeds");
     available.add("mrr");
     available.add("arpu");
     
@@ -231,7 +233,7 @@ export default function DashboardPage() {
     };
     
     // For non-revenue metrics, check if Google Play has data
-    const isRevenueMetric = key === 'monthlyChargedRevenue' || key === 'monthlyRevenue' || key === 'weeklyChargedRevenue' || key === 'weeklyRevenue';
+    const isRevenueMetric = key === 'monthlyChargedRevenue' || key === 'monthlyRevenue' || key === 'monthlyProceeds' || key === 'weeklyChargedRevenue' || key === 'weeklyRevenue' || key === 'weeklyProceeds';
     
     return (
       <div className="text-xs text-right text-gray-500 leading-4">
@@ -542,9 +544,9 @@ export default function DashboardPage() {
                   right={rightBlock("renewals")}
                 />
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <MetricCard currency={currency}
-                  label={viewMode === "monthly" ? "Charged Revenue (with Fees and VAT)" : "Weekly Charged Rev. (with Fees and VAT)"}
+                  label={viewMode === "monthly" ? "Charged Revenue (incl. VAT & Fees)" : "Weekly Charged Rev. (incl. VAT & Fees)"}
                   value={formatCurrency(viewMode === "monthly" ? metrics.unified.monthlyChargedRevenue : metrics.unified.weeklyChargedRevenue)}
                   metricKey="monthlyChargedRevenue"
                   appId={appId}
@@ -554,7 +556,7 @@ export default function DashboardPage() {
                   right={rightBlock(viewMode === "monthly" ? "monthlyChargedRevenue" : "weeklyChargedRevenue", true)}
                 />
                 <MetricCard currency={currency}
-                  label={viewMode === "monthly" ? "Revenue (with Fees, without VAT)" : "Weekly Revenue (with Fees, without VAT)"}
+                  label={viewMode === "monthly" ? "Revenue (excl. VAT, incl. Fees)" : "Weekly Revenue (excl. VAT, incl. Fees)"}
                   value={formatCurrency(viewMode === "monthly" ? metrics.unified.monthlyRevenue : metrics.unified.weeklyRevenue)}
                   metricKey="monthlyRevenue"
                   appId={appId}
@@ -562,6 +564,16 @@ export default function DashboardPage() {
                   viewMode={viewMode}
                   platformsWithData={getPlatformsWithData("monthlyRevenue")}
                   right={rightBlock(viewMode === "monthly" ? "monthlyRevenue" : "weeklyRevenue", true)}
+                />
+                <MetricCard currency={currency}
+                  label={viewMode === "monthly" ? "Proceeds (excl. VAT & Fees)" : "Weekly Proceeds (excl. VAT & Fees)"}
+                  value={formatCurrency(viewMode === "monthly" ? (metrics.unified.monthlyProceeds ?? 0) : (metrics.unified.weeklyProceeds ?? 0))}
+                  metricKey="monthlyProceeds"
+                  appId={appId}
+                  connectedPlatforms={connectedPlatforms}
+                  viewMode={viewMode}
+                  platformsWithData={getPlatformsWithData("monthlyProceeds")}
+                  right={rightBlock(viewMode === "monthly" ? "monthlyProceeds" : "weeklyProceeds", true)}
                 />
               </div>
               <div className="grid grid-cols-1 md:grid-cols-1 gap-4">
@@ -931,7 +943,7 @@ export default function DashboardPage() {
 const CustomChartTooltip = ({ active, payload, label, currency, config, metricKey, connectedPlatforms, viewMode }: any) => {
   if (!active || !payload || !payload.length) return null;
 
-  const isCurrency = metricKey.toLowerCase().includes("revenue") || metricKey === "mrr" || metricKey === "arpu";
+  const isCurrency = metricKey.toLowerCase().includes("revenue") || metricKey.toLowerCase().includes("proceeds") || metricKey === "mrr" || metricKey === "arpu";
   const isPercent = metricKey === "churnRate";
   const formatValue = (val: number) => {
     if (isPercent) {
@@ -1030,8 +1042,10 @@ const CustomChartTooltip = ({ active, payload, label, currency, config, metricKe
 const LOW_TRUST_METRICS = new Set([
   "monthlyChargedRevenue",
   "monthlyRevenue",
+  "monthlyProceeds",
   "weeklyChargedRevenue", 
   "weeklyRevenue",
+  "weeklyProceeds",
   "mrr",
 ]);
 

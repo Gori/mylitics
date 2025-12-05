@@ -175,6 +175,17 @@ export function MetricsDefinitions() {
         googleplay: SRC.googleplay.revenue,
       },
     },
+    {
+      name: "Proceeds (excl. VAT & Fees)",
+      type: "Flow Metric",
+      total: "Sum of actual money you receive from stores over the past 30 days after VAT and platform fees. This is what lands in your bank account.",
+      chart: "Each week shows the total proceeds for THAT specific 7-day period only. Each bar represents one week's proceeds.",
+      sources: {
+        stripe: "Stripe API: charge.balance_transaction.net (actual amount after Stripe fees)",
+        appstore: "SUBSCRIBER report: Developer Proceeds column (directly from Apple)",
+        googleplay: "GCS Earnings reports: Amount (Merchant Currency) - this is your actual payout",
+      },
+    },
   ];
 
   return (

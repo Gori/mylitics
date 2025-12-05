@@ -51,10 +51,14 @@ export default defineSchema({
     firstPayments: v.number(),
     renewals: v.number(),
     mrr: v.number(),
-    weeklyChargedRevenue: v.optional(v.number()), // Charged revenue this day including VAT (for weekly aggregation)
-    weeklyRevenue: v.optional(v.number()), // Revenue this day excluding VAT (for weekly aggregation)
-    monthlyChargedRevenue: v.number(), // Total charged including VAT
-    monthlyRevenue: v.number(), // Total revenue excluding VAT (still includes platform fees)
+    // Revenue fields
+    monthlyChargedRevenue: v.number(), // Gross revenue (what customer paid, including VAT)
+    monthlyRevenue: v.number(), // Net revenue (excluding VAT, but including platform fees)
+    monthlyProceeds: v.optional(v.number()), // Actual payout (after VAT and platform fees)
+    weeklyChargedRevenue: v.optional(v.number()), // Weekly gross
+    weeklyRevenue: v.optional(v.number()), // Weekly net
+    weeklyProceeds: v.optional(v.number()), // Weekly proceeds
+    // Subscriber breakdown
     monthlySubscribers: v.optional(v.number()), // Count of monthly subscription subscribers
     yearlySubscribers: v.optional(v.number()), // Count of yearly subscription subscribers
   })
@@ -77,12 +81,12 @@ export default defineSchema({
     isTrial: v.boolean(),
     willCancel: v.boolean(),
     isInGrace: v.boolean(),
-    // Extracted fields for efficient querying (avoids loading full rawData)
-    trialEnd: v.optional(v.number()), // Unix timestamp in ms
-    priceAmount: v.optional(v.number()), // Price in cents (from primary item)
+    rawData: v.optional(v.string()), // JSON string of raw platform data
+    // Stripe-specific fields for efficient MRR calculation
+    trialEnd: v.optional(v.number()),
+    priceAmount: v.optional(v.number()), // Price in smallest currency unit
     priceInterval: v.optional(v.string()), // "month" or "year"
-    priceCurrency: v.optional(v.string()), // Currency code e.g. "usd"
-    rawData: v.optional(v.string()), // Deprecated: only for backward compat
+    priceCurrency: v.optional(v.string()), // Currency code
   })
     .index("by_app", ["appId"])
     .index("by_app_platform", ["appId", "platform"])
@@ -103,11 +107,12 @@ export default defineSchema({
     ),
     amount: v.number(), // Charged amount (including VAT)
     amountExcludingTax: v.optional(v.number()), // Amount excluding VAT
+    amountProceeds: v.optional(v.number()), // Amount after platform fees (what you receive)
     currency: v.string(),
     country: v.optional(v.string()), // ISO country code for VAT calculation
     timestamp: v.number(),
-    externalId: v.optional(v.string()), // Invoice/transaction ID for reference
-    rawData: v.optional(v.string()), // Deprecated: was full JSON, now optional
+    rawData: v.optional(v.string()),
+    externalId: v.optional(v.string()), // Invoice ID or transaction ID
   })
     .index("by_app", ["appId"])
     .index("by_app_platform", ["appId", "platform"])
@@ -160,30 +165,34 @@ export default defineSchema({
     toCurrency: v.string(), // e.g. "EUR"
     rate: v.number(), // e.g. 0.85
     timestamp: v.number(), // when this rate was fetched
-    yearMonth: v.optional(v.string()), // e.g. "2024-01" for historical lookups
+    yearMonth: v.optional(v.string()), // e.g. "2024-01" for historical rates
   })
     .index("by_pair", ["fromCurrency", "toCurrency"])
     .index("by_pair_month", ["fromCurrency", "toCurrency", "yearMonth"]),
 
-  // Track progress for chunked sync operations (to avoid action timeouts)
+  // Track chunked sync progress for App Store
   syncProgress: defineTable({
-    syncId: v.id("syncStatus"), // Links to parent sync session
     appId: v.id("apps"),
-    platform: v.union(v.literal("appstore"), v.literal("googleplay"), v.literal("stripe")),
-    phase: v.string(), // "historical" | "unified" | "complete"
-    currentChunk: v.number(), // Current chunk being processed
-    totalChunks: v.number(), // Total chunks to process
-    processedDays: v.number(), // Days processed so far
-    totalDays: v.number(), // Total days to process
-    startDate: v.string(), // YYYY-MM-DD - start of the range
-    lastProcessedDate: v.optional(v.string()), // YYYY-MM-DD - last date processed
-    connectionId: v.id("platformConnections"), // Connection being synced
-    credentials: v.string(), // Cached credentials (encrypted)
-    error: v.optional(v.string()), // Last error if any
+    platform: v.union(
+      v.literal("appstore"),
+      v.literal("googleplay"),
+      v.literal("stripe")
+    ),
+    connectionId: v.id("platformConnections"),
+    syncId: v.optional(v.id("syncStatus")),
+    status: v.optional(v.union(v.literal("active"), v.literal("completed"), v.literal("failed"))),
+    phase: v.optional(v.string()),
+    credentials: v.string(),
+    startDate: v.string(), // ISO date string
+    totalDays: v.number(),
+    processedDays: v.number(),
+    currentChunk: v.number(),
+    totalChunks: v.number(),
+    lastProcessedDate: v.optional(v.string()),
+    error: v.optional(v.string()),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
-    .index("by_sync", ["syncId"])
-    .index("by_app_platform", ["appId", "platform"]),
+    .index("by_app_platform", ["appId", "platform"])
+    .index("by_status", ["status"]),
 });
-

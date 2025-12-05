@@ -105,3 +105,4 @@ export function calculateRevenueExcludingVat(
   return chargedAmount / (1 + vatRate);
 }
 
+

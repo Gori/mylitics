@@ -40,6 +40,7 @@ export async function fetchStripe(apiKey: string, startDate?: number, endDate?: 
     eventType: "first_payment" | "renewal" | "refund";
     amount: number; // Charged amount (including VAT)
     amountExcludingTax?: number; // Amount excluding VAT (only if Stripe Tax provided it)
+    amountProceeds?: number; // Amount after Stripe fees (what you receive)
     currency: string;
     country?: string; // ISO country code
     timestamp: number;
@@ -155,6 +156,50 @@ export async function fetchStripe(apiKey: string, startDate?: number, endDate?: 
           ? invAny.total_excluding_tax / 100 
           : undefined;
         
+        // Fetch actual proceeds from the balance transaction
+        // This gives us the ACTUAL fee Stripe charged, not an estimate
+        // Try multiple paths: direct charge, payment_intent's charge
+        let amountProceeds: number | undefined = undefined;
+        let chargeId: string | null = null;
+        
+        // Path 1: Direct charge field
+        if (invAny.charge && typeof invAny.charge === "string") {
+          chargeId = invAny.charge;
+        }
+        // Path 2: Through payment_intent (newer Stripe API)
+        else if (invAny.payment_intent && typeof invAny.payment_intent === "string") {
+          try {
+            const pi = await stripe.paymentIntents.retrieve(invAny.payment_intent);
+            const piAny = pi as any;
+            if (piAny.latest_charge && typeof piAny.latest_charge === "string") {
+              chargeId = piAny.latest_charge;
+            }
+          } catch (e) {
+            // Ignore errors fetching payment intent
+          }
+        }
+        
+        // Fetch balance transaction from charge
+        if (chargeId) {
+          try {
+            const charge = await stripe.charges.retrieve(chargeId, {
+              expand: ["balance_transaction"],
+            });
+            const balanceTransaction = (charge as any).balance_transaction;
+            if (balanceTransaction && typeof balanceTransaction === "object") {
+              // net = amount after Stripe fees, in smallest currency unit
+              amountProceeds = (balanceTransaction.net || 0) / 100;
+            }
+          } catch (e) {
+            // If we can't fetch the charge, leave proceeds undefined
+          }
+        }
+        
+        // Log first few to debug
+        if (invoiceCount <= 3) {
+          console.log(`[Stripe] Invoice ${invoice.id}: charge=${invAny.charge || 'null'}, payment_intent=${invAny.payment_intent || 'null'}, amountProceeds=${amountProceeds}`);
+        }
+        
         // Extract country from customer address
         const country = invAny.customer_address?.country || undefined;
         
@@ -164,6 +209,9 @@ export async function fetchStripe(apiKey: string, startDate?: number, endDate?: 
           amount = Math.abs(amount);
           if (amountExcludingTax !== undefined) {
             amountExcludingTax = Math.abs(amountExcludingTax);
+          }
+          if (amountProceeds !== undefined) {
+            amountProceeds = Math.abs(amountProceeds);
           }
         } else if (invAny.billing_reason === "subscription_create") {
           eventType = "first_payment";
@@ -176,6 +224,7 @@ export async function fetchStripe(apiKey: string, startDate?: number, endDate?: 
           eventType,
           amount,
           amountExcludingTax,
+          amountProceeds,
           currency: invoice.currency || "usd",
           country,
           timestamp: eventTimestamp,
@@ -215,11 +264,23 @@ export async function fetchStripe(apiKey: string, startDate?: number, endDate?: 
             const invoiceAny = invoice as any;
             if (typeof invoiceAny.subscription === "string") {
               const refundAmount = (refund.amount || 0) / 100;
+              // For refunds, try to get actual proceeds from balance transaction
+              let refundProceeds: number | undefined = undefined;
+              if (refundAny.balance_transaction) {
+                try {
+                  const balanceTx = await stripe.balanceTransactions.retrieve(refundAny.balance_transaction);
+                  // For refunds, net is negative (money leaving your account)
+                  refundProceeds = Math.abs((balanceTx.net || 0) / 100);
+                } catch (e) {
+                  // If we can't fetch, leave undefined
+                }
+              }
               revenueEvents.push({
                 subscriptionExternalId: invoiceAny.subscription,
                 eventType: "refund",
                 amount: refundAmount,
                 amountExcludingTax: refundAmount, // Refunds don't have separate tax-excluded amount
+                amountProceeds: refundProceeds,
                 currency: refund.currency || "usd",
                 country: invoiceAny.customer_address?.country || undefined,
                 timestamp: refundedAt,

@@ -75,8 +75,10 @@ export const getLatestMetrics = query({
       "renewals",
       "weeklyChargedRevenue",
       "weeklyRevenue",
+      "weeklyProceeds",
       "monthlyChargedRevenue",
       "monthlyRevenue",
+      "monthlyProceeds",
     ];
 
     // Get the most recent snapshots for each platform (for stock metrics)
@@ -182,6 +184,7 @@ export const getLatestMetrics = query({
           renewals: 0,
           monthlyChargedRevenue: 0,
           monthlyRevenue: 0,
+          monthlyProceeds: 0,
         };
         // First snapshot for this platform = starting paid subscribers
         startingPaidSubsByPlatform30[snap.platform] = snap.paidSubscribers || 0;
@@ -193,6 +196,7 @@ export const getLatestMetrics = query({
       flowSumsByPlatform[snap.platform].renewals += (snap.renewals || 0);
       flowSumsByPlatform[snap.platform].monthlyChargedRevenue += snap.monthlyChargedRevenue;
       flowSumsByPlatform[snap.platform].monthlyRevenue += snap.monthlyRevenue;
+      flowSumsByPlatform[snap.platform].monthlyProceeds += (snap.monthlyProceeds || 0);
     }
 
     // Calculate 7-day sums for weekly revenue and churn by platform
@@ -207,6 +211,7 @@ export const getLatestMetrics = query({
         weeklySumsByPlatform[snap.platform] = {
           weeklyChargedRevenue: 0,
           weeklyRevenue: 0,
+          weeklyProceeds: 0,
           weeklyChurn: 0,
         };
         // First snapshot for this platform = starting paid subscribers
@@ -214,6 +219,7 @@ export const getLatestMetrics = query({
       }
       weeklySumsByPlatform[snap.platform].weeklyChargedRevenue += snap.monthlyChargedRevenue;
       weeklySumsByPlatform[snap.platform].weeklyRevenue += snap.monthlyRevenue;
+      weeklySumsByPlatform[snap.platform].weeklyProceeds += (snap.monthlyProceeds || 0);
       weeklySumsByPlatform[snap.platform].weeklyChurn += snap.churn || 0;
     }
 
@@ -261,8 +267,10 @@ export const getLatestMetrics = query({
         renewals: flowSums?.renewals || 0,
         weeklyChargedRevenue: weeklySums?.weeklyChargedRevenue || 0,
         weeklyRevenue: weeklySums?.weeklyRevenue || 0,
+        weeklyProceeds: weeklySums?.weeklyProceeds || 0,
         monthlyChargedRevenue: flowSums?.monthlyChargedRevenue || 0,
         monthlyRevenue: flowSums?.monthlyRevenue || 0,
+        monthlyProceeds: flowSums?.monthlyProceeds || 0,
         monthlySubscribers: latest?.monthlySubscribers || 0,
         yearlySubscribers: latest?.yearlySubscribers || 0,
       };
@@ -279,6 +287,8 @@ export const getLatestMetrics = query({
     const totalActiveSubscribers = (platformMap.appstore?.activeSubscribers || 0) + (platformMap.googleplay?.activeSubscribers || 0) + (platformMap.stripe?.activeSubscribers || 0);
     const totalMonthlyRevenue = (platformMap.appstore?.monthlyRevenue || 0) + (platformMap.googleplay?.monthlyRevenue || 0) + (platformMap.stripe?.monthlyRevenue || 0);
     const totalWeeklyRevenue = (platformMap.appstore?.weeklyRevenue || 0) + (platformMap.googleplay?.weeklyRevenue || 0) + (platformMap.stripe?.weeklyRevenue || 0);
+    const totalMonthlyProceeds = (platformMap.appstore?.monthlyProceeds || 0) + (platformMap.googleplay?.monthlyProceeds || 0) + (platformMap.stripe?.monthlyProceeds || 0);
+    const totalWeeklyProceeds = (platformMap.appstore?.weeklyProceeds || 0) + (platformMap.googleplay?.weeklyProceeds || 0) + (platformMap.stripe?.weeklyProceeds || 0);
     
     const unified = {
       activeSubscribers: totalActiveSubscribers,
@@ -296,9 +306,11 @@ export const getLatestMetrics = query({
       renewals: (platformMap.appstore?.renewals || 0) + (platformMap.googleplay?.renewals || 0) + (platformMap.stripe?.renewals || 0),
       weeklyChargedRevenue: Math.round(((platformMap.appstore?.weeklyChargedRevenue || 0) + (platformMap.googleplay?.weeklyChargedRevenue || 0) + (platformMap.stripe?.weeklyChargedRevenue || 0) + Number.EPSILON) * 100) / 100,
       weeklyRevenue: Math.round((totalWeeklyRevenue + Number.EPSILON) * 100) / 100,
+      weeklyProceeds: Math.round((totalWeeklyProceeds + Number.EPSILON) * 100) / 100,
       mrr: Math.round(((platformMap.appstore?.mrr || 0) + (platformMap.googleplay?.mrr || 0) + (platformMap.stripe?.mrr || 0) + Number.EPSILON) * 100) / 100,
       monthlyChargedRevenue: Math.round(((platformMap.appstore?.monthlyChargedRevenue || 0) + (platformMap.googleplay?.monthlyChargedRevenue || 0) + (platformMap.stripe?.monthlyChargedRevenue || 0) + Number.EPSILON) * 100) / 100,
       monthlyRevenue: Math.round((totalMonthlyRevenue + Number.EPSILON) * 100) / 100,
+      monthlyProceeds: Math.round((totalMonthlyProceeds + Number.EPSILON) * 100) / 100,
       monthlySubscribers: (platformMap.appstore?.monthlySubscribers || 0) + (platformMap.googleplay?.monthlySubscribers || 0) + (platformMap.stripe?.monthlySubscribers || 0),
       yearlySubscribers: (platformMap.appstore?.yearlySubscribers || 0) + (platformMap.googleplay?.yearlySubscribers || 0) + (platformMap.stripe?.yearlySubscribers || 0),
     };
@@ -418,8 +430,10 @@ export const getWeeklyMetricsHistory = query({
       "firstPayments",
       "renewals",
       "weeklyRevenue",
+      "weeklyProceeds",
       "monthlyChargedRevenue",
       "monthlyRevenue",
+      "monthlyProceeds",
     ];
     const isFlowMetric = flowMetrics.includes(metric) || isChurnRate || isArpu; // churnRate and arpu use flow logic
 
@@ -635,8 +649,10 @@ export const getMonthlyMetricsHistory = query({
       "firstPayments",
       "renewals",
       "weeklyRevenue",
+      "weeklyProceeds",
       "monthlyChargedRevenue",
       "monthlyRevenue",
+      "monthlyProceeds",
     ];
     const isFlowMetric = flowMetrics.includes(metric) || isChurnRate || isArpu; // churnRate and arpu use flow logic
 
@@ -888,8 +904,10 @@ export const getAllDebugData = query({
       "firstPayments",
       "renewals",
       "weeklyRevenue",
+      "weeklyProceeds",
       "monthlyChargedRevenue",
       "monthlyRevenue",
+      "monthlyProceeds",
     ];
 
     // Get all snapshots from past year for weekly data
@@ -1267,6 +1285,7 @@ export const getChatContext = query({
       "renewals",
       "monthlyChargedRevenue",
       "monthlyRevenue",
+      "monthlyProceeds",
     ];
 
     // Calculate weekly data for each metric

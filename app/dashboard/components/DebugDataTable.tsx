@@ -46,10 +46,11 @@ export function DebugDataTable({ debugData, userCurrency = "USD", periodType }: 
       graceEvents: "Grace Events",
       firstPayments: "First Payments",
       renewals: "Renewals",
+      weeklyChargedRevenue: "Weekly Charged Revenue",
       weeklyRevenue: "Weekly Revenue",
       mrr: "MRR",
-      monthlyRevenueGross: "Monthly Rev. (Gross)",
-      monthlyRevenueNet: "Monthly Rev. (Net)",
+      monthlyChargedRevenue: "Charged Revenue",
+      monthlyRevenue: "Revenue",
     };
 
     const metrics = Object.keys(metricLabels);
@@ -175,7 +176,7 @@ export function DebugDataTable({ debugData, userCurrency = "USD", periodType }: 
   };
 
   const formatValue = (metricName: string, value: number) => {
-    const currencyMetrics = ["MRR", "Monthly Rev. (Gross)", "Monthly Rev. (Net)", "Weekly Revenue"];
+    const currencyMetrics = ["MRR", "Charged Revenue", "Revenue", "Weekly Charged Revenue", "Weekly Revenue"];
     const percentMetrics = ["Churn Rate (%)"];
     if (percentMetrics.includes(metricName)) {
       return `${value.toFixed(2)}%`;
