@@ -110,8 +110,9 @@ export const updateApp = mutation({
     name: v.optional(v.string()),
     currency: v.optional(v.string()),
     weekStartDay: v.optional(v.union(v.literal("monday"), v.literal("sunday"))),
+    useAppStoreRatioForGooglePlay: v.optional(v.boolean()),
   },
-  handler: async (ctx, { appId, name, currency, weekStartDay }) => {
+  handler: async (ctx, { appId, name, currency, weekStartDay, useAppStoreRatioForGooglePlay }) => {
     await validateAppOwnership(ctx, appId);
     
     const updates: any = {
@@ -121,6 +122,7 @@ export const updateApp = mutation({
     if (name !== undefined) updates.name = name;
     if (currency !== undefined) updates.currency = currency;
     if (weekStartDay !== undefined) updates.weekStartDay = weekStartDay;
+    if (useAppStoreRatioForGooglePlay !== undefined) updates.useAppStoreRatioForGooglePlay = useAppStoreRatioForGooglePlay;
     
     await ctx.db.patch(appId, updates);
     

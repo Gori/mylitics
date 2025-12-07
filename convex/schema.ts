@@ -14,6 +14,7 @@ export default defineSchema({
     slug: v.string(),
     currency: v.optional(v.string()),
     weekStartDay: v.optional(v.union(v.literal("monday"), v.literal("sunday"))),
+    useAppStoreRatioForGooglePlay: v.optional(v.boolean()), // Derive Google Play plan split from App Store ratio
     createdAt: v.number(),
     updatedAt: v.number(),
   })
@@ -61,6 +62,13 @@ export default defineSchema({
     // Subscriber breakdown
     monthlySubscribers: v.optional(v.number()), // Count of monthly subscription subscribers
     yearlySubscribers: v.optional(v.number()), // Count of yearly subscription subscribers
+    // Revenue breakdown by plan type (monthly vs yearly)
+    monthlyPlanChargedRevenue: v.optional(v.number()), // Charged revenue from monthly plans
+    yearlyPlanChargedRevenue: v.optional(v.number()), // Charged revenue from yearly plans
+    monthlyPlanRevenue: v.optional(v.number()), // Revenue (excl VAT) from monthly plans
+    yearlyPlanRevenue: v.optional(v.number()), // Revenue (excl VAT) from yearly plans
+    monthlyPlanProceeds: v.optional(v.number()), // Proceeds from monthly plans
+    yearlyPlanProceeds: v.optional(v.number()), // Proceeds from yearly plans
   })
     .index("by_app_date", ["appId", "date"])
     .index("by_app_platform", ["appId", "platform"]),

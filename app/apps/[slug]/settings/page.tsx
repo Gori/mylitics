@@ -34,7 +34,7 @@ const CURRENCIES = [
 ];
 
 export default function SettingsPage() {
-  const { appId, appName, currency, weekStartDay } = useApp();
+  const { appId, appName, currency, weekStartDay, useAppStoreRatioForGooglePlay } = useApp();
   const connections = useQuery(api.queries.getPlatformConnections, { appId });
   const addConnection = useMutation(api.mutations.addPlatformConnection);
   const removeConnection = useMutation(api.mutations.removePlatformConnection);
@@ -44,6 +44,7 @@ export default function SettingsPage() {
   const [showForm, setShowForm] = useState<string | null>(null);
   const [selectedCurrency, setSelectedCurrency] = useState(currency);
   const [selectedWeekStartDay, setSelectedWeekStartDay] = useState<"monday" | "sunday">(weekStartDay);
+  const [useGooglePlayRatio, setUseGooglePlayRatio] = useState(useAppStoreRatioForGooglePlay);
   const [appNameInput, setAppNameInput] = useState(appName);
   const [isSavingAppName, setIsSavingAppName] = useState(false);
   const [gcsDebugResult, setGcsDebugResult] = useState<any>(null);
@@ -59,6 +60,10 @@ export default function SettingsPage() {
   useEffect(() => {
     setSelectedWeekStartDay(weekStartDay);
   }, [weekStartDay]);
+
+  useEffect(() => {
+    setUseGooglePlayRatio(useAppStoreRatioForGooglePlay);
+  }, [useAppStoreRatioForGooglePlay]);
 
   useEffect(() => {
     setAppNameInput(appName);
@@ -87,6 +92,11 @@ export default function SettingsPage() {
   const handleWeekStartDayChange = async (newWeekStartDay: "monday" | "sunday") => {
     setSelectedWeekStartDay(newWeekStartDay);
     await updateApp({ appId, weekStartDay: newWeekStartDay });
+  };
+
+  const handleGooglePlayRatioChange = async (newValue: boolean) => {
+    setUseGooglePlayRatio(newValue);
+    await updateApp({ appId, useAppStoreRatioForGooglePlay: newValue });
   };
 
   return (
@@ -176,6 +186,33 @@ export default function SettingsPage() {
                 <span className="text-base">Monday (recommended)</span>
               </label>
             </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Google Play Plan Split</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-base text-gray-600 mb-4">
+              Google Play doesn't provide a breakdown of revenue by plan type (monthly vs yearly). 
+              Enable this option to estimate Google Play's split using App Store's historical ratios.
+            </p>
+            <label className="flex items-center gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={useGooglePlayRatio}
+                onChange={(e) => handleGooglePlayRatioChange(e.target.checked)}
+                className="w-5 h-5 rounded border-gray-300"
+              />
+              <span className="text-base">Derive Google Play plan split from App Store</span>
+            </label>
+            {useGooglePlayRatio && (
+              <p className="text-sm text-gray-500 mt-3 ml-8">
+                When enabled, Google Play revenue and subscriber data will appear in the monthly/yearly breakdown cards, 
+                using the same monthly/yearly ratio as App Store for the corresponding time period.
+              </p>
+            )}
           </CardContent>
         </Card>
 

@@ -48,7 +48,8 @@ function calculateArpu(revenue: number, activeSubscribers: number): number {
 export const getLatestMetrics = query({
   args: { appId: v.id("apps") },
   handler: async (ctx, { appId }) => {
-    await validateAppOwnership(ctx, appId);
+    const app = await validateAppOwnership(ctx, appId);
+    const useAppStoreRatioForGooglePlay = app.useAppStoreRatioForGooglePlay ?? false;
 
     const now = new Date();
     const today = now.toISOString().split("T")[0];
@@ -185,6 +186,13 @@ export const getLatestMetrics = query({
           monthlyChargedRevenue: 0,
           monthlyRevenue: 0,
           monthlyProceeds: 0,
+          // Plan-split revenue fields
+          monthlyPlanChargedRevenue: 0,
+          yearlyPlanChargedRevenue: 0,
+          monthlyPlanRevenue: 0,
+          yearlyPlanRevenue: 0,
+          monthlyPlanProceeds: 0,
+          yearlyPlanProceeds: 0,
         };
         // First snapshot for this platform = starting paid subscribers
         startingPaidSubsByPlatform30[snap.platform] = snap.paidSubscribers || 0;
@@ -197,6 +205,13 @@ export const getLatestMetrics = query({
       flowSumsByPlatform[snap.platform].monthlyChargedRevenue += snap.monthlyChargedRevenue;
       flowSumsByPlatform[snap.platform].monthlyRevenue += snap.monthlyRevenue;
       flowSumsByPlatform[snap.platform].monthlyProceeds += (snap.monthlyProceeds || 0);
+      // Plan-split revenue fields
+      flowSumsByPlatform[snap.platform].monthlyPlanChargedRevenue += (snap.monthlyPlanChargedRevenue || 0);
+      flowSumsByPlatform[snap.platform].yearlyPlanChargedRevenue += (snap.yearlyPlanChargedRevenue || 0);
+      flowSumsByPlatform[snap.platform].monthlyPlanRevenue += (snap.monthlyPlanRevenue || 0);
+      flowSumsByPlatform[snap.platform].yearlyPlanRevenue += (snap.yearlyPlanRevenue || 0);
+      flowSumsByPlatform[snap.platform].monthlyPlanProceeds += (snap.monthlyPlanProceeds || 0);
+      flowSumsByPlatform[snap.platform].yearlyPlanProceeds += (snap.yearlyPlanProceeds || 0);
     }
 
     // Calculate 7-day sums for weekly revenue and churn by platform
@@ -213,6 +228,13 @@ export const getLatestMetrics = query({
           weeklyRevenue: 0,
           weeklyProceeds: 0,
           weeklyChurn: 0,
+          // Plan-split revenue fields
+          weeklyPlanChargedRevenueMonthly: 0,
+          weeklyPlanChargedRevenueYearly: 0,
+          weeklyPlanRevenueMonthly: 0,
+          weeklyPlanRevenueYearly: 0,
+          weeklyPlanProceedsMonthly: 0,
+          weeklyPlanProceedsYearly: 0,
         };
         // First snapshot for this platform = starting paid subscribers
         startingPaidSubsByPlatform7[snap.platform] = snap.paidSubscribers || 0;
@@ -221,6 +243,13 @@ export const getLatestMetrics = query({
       weeklySumsByPlatform[snap.platform].weeklyRevenue += snap.monthlyRevenue;
       weeklySumsByPlatform[snap.platform].weeklyProceeds += (snap.monthlyProceeds || 0);
       weeklySumsByPlatform[snap.platform].weeklyChurn += snap.churn || 0;
+      // Plan-split revenue fields
+      weeklySumsByPlatform[snap.platform].weeklyPlanChargedRevenueMonthly += (snap.monthlyPlanChargedRevenue || 0);
+      weeklySumsByPlatform[snap.platform].weeklyPlanChargedRevenueYearly += (snap.yearlyPlanChargedRevenue || 0);
+      weeklySumsByPlatform[snap.platform].weeklyPlanRevenueMonthly += (snap.monthlyPlanRevenue || 0);
+      weeklySumsByPlatform[snap.platform].weeklyPlanRevenueYearly += (snap.yearlyPlanRevenue || 0);
+      weeklySumsByPlatform[snap.platform].weeklyPlanProceedsMonthly += (snap.monthlyPlanProceeds || 0);
+      weeklySumsByPlatform[snap.platform].weeklyPlanProceedsYearly += (snap.yearlyPlanProceeds || 0);
     }
 
     // Build platformMap with correct values for each metric type
@@ -230,8 +259,10 @@ export const getLatestMetrics = query({
       const flowSums = flowSumsByPlatform[platform];
       const weeklySums = weeklySumsByPlatform[platform];
       
-      // Only include platform in map if it has at least one snapshot
-      if (!latest && !flowSums) {
+      // Include platform if it has snapshots OR if it's a connected platform
+      // Connected platforms need to be in the map so ratio calculations can work
+      const isConnectedPlatform = activePlatforms.has(platform as "appstore" | "googleplay" | "stripe");
+      if (!latest && !flowSums && !isConnectedPlatform) {
         continue;
       }
       
@@ -273,7 +304,84 @@ export const getLatestMetrics = query({
         monthlyProceeds: flowSums?.monthlyProceeds || 0,
         monthlySubscribers: latest?.monthlySubscribers || 0,
         yearlySubscribers: latest?.yearlySubscribers || 0,
+        // Plan-split revenue (30-day)
+        monthlyPlanChargedRevenue: flowSums?.monthlyPlanChargedRevenue || 0,
+        yearlyPlanChargedRevenue: flowSums?.yearlyPlanChargedRevenue || 0,
+        monthlyPlanRevenue: flowSums?.monthlyPlanRevenue || 0,
+        yearlyPlanRevenue: flowSums?.yearlyPlanRevenue || 0,
+        monthlyPlanProceeds: flowSums?.monthlyPlanProceeds || 0,
+        yearlyPlanProceeds: flowSums?.yearlyPlanProceeds || 0,
+        // Plan-split revenue (7-day)
+        weeklyPlanChargedRevenueMonthly: weeklySums?.weeklyPlanChargedRevenueMonthly || 0,
+        weeklyPlanChargedRevenueYearly: weeklySums?.weeklyPlanChargedRevenueYearly || 0,
+        weeklyPlanRevenueMonthly: weeklySums?.weeklyPlanRevenueMonthly || 0,
+        weeklyPlanRevenueYearly: weeklySums?.weeklyPlanRevenueYearly || 0,
+        weeklyPlanProceedsMonthly: weeklySums?.weeklyPlanProceedsMonthly || 0,
+        weeklyPlanProceedsYearly: weeklySums?.weeklyPlanProceedsYearly || 0,
       };
+    }
+    
+    // Calculate Google Play plan split from App Store ratio if setting is enabled
+    console.log(`[Google Play Ratio] Setting enabled: ${useAppStoreRatioForGooglePlay}, GooglePlay in map: ${!!platformMap.googleplay}, AppStore in map: ${!!platformMap.appstore}`);
+    console.log(`[Google Play Ratio] Connected platforms: ${Array.from(activePlatforms).join(', ')}`);
+    
+    if (useAppStoreRatioForGooglePlay && platformMap.googleplay && platformMap.appstore) {
+      const appStore = platformMap.appstore;
+      const googlePlay = platformMap.googleplay;
+      
+      console.log(`[Google Play Ratio] App Store plan split: monthly=${appStore.monthlyPlanChargedRevenue}, yearly=${appStore.yearlyPlanChargedRevenue}`);
+      console.log(`[Google Play Ratio] Google Play total revenue: monthlyCharged=${googlePlay.monthlyChargedRevenue}, monthlyRevenue=${googlePlay.monthlyRevenue}, monthlyProceeds=${googlePlay.monthlyProceeds}`);
+      
+      // Calculate App Store's monthly/yearly ratio from total revenue
+      const appStoreTotal = appStore.monthlyPlanChargedRevenue + appStore.yearlyPlanChargedRevenue;
+      const appStoreWeeklyTotal = appStore.weeklyPlanChargedRevenueMonthly + appStore.weeklyPlanChargedRevenueYearly;
+      
+      console.log(`[Google Play Ratio] App Store totals: 30-day=${appStoreTotal}, 7-day=${appStoreWeeklyTotal}`);
+      
+      if (appStoreTotal > 0) {
+        const monthlyRatio = appStore.monthlyPlanChargedRevenue / appStoreTotal;
+        const yearlyRatio = appStore.yearlyPlanChargedRevenue / appStoreTotal;
+        
+        console.log(`[Google Play Ratio] Calculated ratios: monthly=${(monthlyRatio * 100).toFixed(1)}%, yearly=${(yearlyRatio * 100).toFixed(1)}%`);
+        
+        // Apply ratio to Google Play revenue
+        platformMap.googleplay.monthlyPlanChargedRevenue = Math.round((googlePlay.monthlyChargedRevenue * monthlyRatio + Number.EPSILON) * 100) / 100;
+        platformMap.googleplay.yearlyPlanChargedRevenue = Math.round((googlePlay.monthlyChargedRevenue * yearlyRatio + Number.EPSILON) * 100) / 100;
+        platformMap.googleplay.monthlyPlanRevenue = Math.round((googlePlay.monthlyRevenue * monthlyRatio + Number.EPSILON) * 100) / 100;
+        platformMap.googleplay.yearlyPlanRevenue = Math.round((googlePlay.monthlyRevenue * yearlyRatio + Number.EPSILON) * 100) / 100;
+        platformMap.googleplay.monthlyPlanProceeds = Math.round((googlePlay.monthlyProceeds * monthlyRatio + Number.EPSILON) * 100) / 100;
+        platformMap.googleplay.yearlyPlanProceeds = Math.round((googlePlay.monthlyProceeds * yearlyRatio + Number.EPSILON) * 100) / 100;
+        
+        console.log(`[Google Play Ratio] Derived Google Play plan split: monthlyCharged=${platformMap.googleplay.monthlyPlanChargedRevenue}, yearlyCharged=${platformMap.googleplay.yearlyPlanChargedRevenue}`);
+        
+        // Apply ratio to subscribers
+        const totalSubs = googlePlay.monthlySubscribers + googlePlay.yearlySubscribers;
+        if (totalSubs === 0 && googlePlay.paidSubscribers > 0) {
+          // Derive subscriber counts from ratio if we have paid subs but no split
+          platformMap.googleplay.monthlySubscribers = Math.round(googlePlay.paidSubscribers * monthlyRatio);
+          platformMap.googleplay.yearlySubscribers = Math.round(googlePlay.paidSubscribers * yearlyRatio);
+          console.log(`[Google Play Ratio] Derived subscriber split: monthly=${platformMap.googleplay.monthlySubscribers}, yearly=${platformMap.googleplay.yearlySubscribers}`);
+        }
+      } else {
+        console.log(`[Google Play Ratio] SKIPPED: App Store total is 0, no ratio to calculate`);
+      }
+      
+      if (appStoreWeeklyTotal > 0) {
+        const weeklyMonthlyRatio = appStore.weeklyPlanChargedRevenueMonthly / appStoreWeeklyTotal;
+        const weeklyYearlyRatio = appStore.weeklyPlanChargedRevenueYearly / appStoreWeeklyTotal;
+        
+        // Apply ratio to Google Play weekly revenue
+        platformMap.googleplay.weeklyPlanChargedRevenueMonthly = Math.round((googlePlay.weeklyChargedRevenue * weeklyMonthlyRatio + Number.EPSILON) * 100) / 100;
+        platformMap.googleplay.weeklyPlanChargedRevenueYearly = Math.round((googlePlay.weeklyChargedRevenue * weeklyYearlyRatio + Number.EPSILON) * 100) / 100;
+        platformMap.googleplay.weeklyPlanRevenueMonthly = Math.round((googlePlay.weeklyRevenue * weeklyMonthlyRatio + Number.EPSILON) * 100) / 100;
+        platformMap.googleplay.weeklyPlanRevenueYearly = Math.round((googlePlay.weeklyRevenue * weeklyYearlyRatio + Number.EPSILON) * 100) / 100;
+        platformMap.googleplay.weeklyPlanProceedsMonthly = Math.round((googlePlay.weeklyProceeds * weeklyMonthlyRatio + Number.EPSILON) * 100) / 100;
+        platformMap.googleplay.weeklyPlanProceedsYearly = Math.round((googlePlay.weeklyProceeds * weeklyYearlyRatio + Number.EPSILON) * 100) / 100;
+        
+        console.log(`[Google Play Ratio] Derived weekly split: monthlyCharged=${platformMap.googleplay.weeklyPlanChargedRevenueMonthly}, yearlyCharged=${platformMap.googleplay.weeklyPlanChargedRevenueYearly}`);
+      }
+    } else {
+      console.log(`[Google Play Ratio] SKIPPED: Condition not met - setting=${useAppStoreRatioForGooglePlay}, gp=${!!platformMap.googleplay}, as=${!!platformMap.appstore}`);
     }
 
     // Calculate unified by summing all platforms (use 0 if platform not in map)
@@ -289,6 +397,9 @@ export const getLatestMetrics = query({
     const totalWeeklyRevenue = (platformMap.appstore?.weeklyRevenue || 0) + (platformMap.googleplay?.weeklyRevenue || 0) + (platformMap.stripe?.weeklyRevenue || 0);
     const totalMonthlyProceeds = (platformMap.appstore?.monthlyProceeds || 0) + (platformMap.googleplay?.monthlyProceeds || 0) + (platformMap.stripe?.monthlyProceeds || 0);
     const totalWeeklyProceeds = (platformMap.appstore?.weeklyProceeds || 0) + (platformMap.googleplay?.weeklyProceeds || 0) + (platformMap.stripe?.weeklyProceeds || 0);
+    
+    // For unified plan-split, only include Google Play if ratio setting is enabled
+    const shouldIncludeGooglePlayInPlanSplit = useAppStoreRatioForGooglePlay && platformMap.googleplay;
     
     const unified = {
       activeSubscribers: totalActiveSubscribers,
@@ -311,8 +422,22 @@ export const getLatestMetrics = query({
       monthlyChargedRevenue: Math.round(((platformMap.appstore?.monthlyChargedRevenue || 0) + (platformMap.googleplay?.monthlyChargedRevenue || 0) + (platformMap.stripe?.monthlyChargedRevenue || 0) + Number.EPSILON) * 100) / 100,
       monthlyRevenue: Math.round((totalMonthlyRevenue + Number.EPSILON) * 100) / 100,
       monthlyProceeds: Math.round((totalMonthlyProceeds + Number.EPSILON) * 100) / 100,
-      monthlySubscribers: (platformMap.appstore?.monthlySubscribers || 0) + (platformMap.googleplay?.monthlySubscribers || 0) + (platformMap.stripe?.monthlySubscribers || 0),
-      yearlySubscribers: (platformMap.appstore?.yearlySubscribers || 0) + (platformMap.googleplay?.yearlySubscribers || 0) + (platformMap.stripe?.yearlySubscribers || 0),
+      monthlySubscribers: (platformMap.appstore?.monthlySubscribers || 0) + (shouldIncludeGooglePlayInPlanSplit ? (platformMap.googleplay?.monthlySubscribers || 0) : 0) + (platformMap.stripe?.monthlySubscribers || 0),
+      yearlySubscribers: (platformMap.appstore?.yearlySubscribers || 0) + (shouldIncludeGooglePlayInPlanSplit ? (platformMap.googleplay?.yearlySubscribers || 0) : 0) + (platformMap.stripe?.yearlySubscribers || 0),
+      // Plan-split revenue (30-day) - only include Google Play if ratio setting is enabled
+      monthlyPlanChargedRevenue: Math.round(((platformMap.appstore?.monthlyPlanChargedRevenue || 0) + (shouldIncludeGooglePlayInPlanSplit ? (platformMap.googleplay?.monthlyPlanChargedRevenue || 0) : 0) + (platformMap.stripe?.monthlyPlanChargedRevenue || 0) + Number.EPSILON) * 100) / 100,
+      yearlyPlanChargedRevenue: Math.round(((platformMap.appstore?.yearlyPlanChargedRevenue || 0) + (shouldIncludeGooglePlayInPlanSplit ? (platformMap.googleplay?.yearlyPlanChargedRevenue || 0) : 0) + (platformMap.stripe?.yearlyPlanChargedRevenue || 0) + Number.EPSILON) * 100) / 100,
+      monthlyPlanRevenue: Math.round(((platformMap.appstore?.monthlyPlanRevenue || 0) + (shouldIncludeGooglePlayInPlanSplit ? (platformMap.googleplay?.monthlyPlanRevenue || 0) : 0) + (platformMap.stripe?.monthlyPlanRevenue || 0) + Number.EPSILON) * 100) / 100,
+      yearlyPlanRevenue: Math.round(((platformMap.appstore?.yearlyPlanRevenue || 0) + (shouldIncludeGooglePlayInPlanSplit ? (platformMap.googleplay?.yearlyPlanRevenue || 0) : 0) + (platformMap.stripe?.yearlyPlanRevenue || 0) + Number.EPSILON) * 100) / 100,
+      monthlyPlanProceeds: Math.round(((platformMap.appstore?.monthlyPlanProceeds || 0) + (shouldIncludeGooglePlayInPlanSplit ? (platformMap.googleplay?.monthlyPlanProceeds || 0) : 0) + (platformMap.stripe?.monthlyPlanProceeds || 0) + Number.EPSILON) * 100) / 100,
+      yearlyPlanProceeds: Math.round(((platformMap.appstore?.yearlyPlanProceeds || 0) + (shouldIncludeGooglePlayInPlanSplit ? (platformMap.googleplay?.yearlyPlanProceeds || 0) : 0) + (platformMap.stripe?.yearlyPlanProceeds || 0) + Number.EPSILON) * 100) / 100,
+      // Plan-split revenue (7-day)
+      weeklyPlanChargedRevenueMonthly: Math.round(((platformMap.appstore?.weeklyPlanChargedRevenueMonthly || 0) + (shouldIncludeGooglePlayInPlanSplit ? (platformMap.googleplay?.weeklyPlanChargedRevenueMonthly || 0) : 0) + (platformMap.stripe?.weeklyPlanChargedRevenueMonthly || 0) + Number.EPSILON) * 100) / 100,
+      weeklyPlanChargedRevenueYearly: Math.round(((platformMap.appstore?.weeklyPlanChargedRevenueYearly || 0) + (shouldIncludeGooglePlayInPlanSplit ? (platformMap.googleplay?.weeklyPlanChargedRevenueYearly || 0) : 0) + (platformMap.stripe?.weeklyPlanChargedRevenueYearly || 0) + Number.EPSILON) * 100) / 100,
+      weeklyPlanRevenueMonthly: Math.round(((platformMap.appstore?.weeklyPlanRevenueMonthly || 0) + (shouldIncludeGooglePlayInPlanSplit ? (platformMap.googleplay?.weeklyPlanRevenueMonthly || 0) : 0) + (platformMap.stripe?.weeklyPlanRevenueMonthly || 0) + Number.EPSILON) * 100) / 100,
+      weeklyPlanRevenueYearly: Math.round(((platformMap.appstore?.weeklyPlanRevenueYearly || 0) + (shouldIncludeGooglePlayInPlanSplit ? (platformMap.googleplay?.weeklyPlanRevenueYearly || 0) : 0) + (platformMap.stripe?.weeklyPlanRevenueYearly || 0) + Number.EPSILON) * 100) / 100,
+      weeklyPlanProceedsMonthly: Math.round(((platformMap.appstore?.weeklyPlanProceedsMonthly || 0) + (shouldIncludeGooglePlayInPlanSplit ? (platformMap.googleplay?.weeklyPlanProceedsMonthly || 0) : 0) + (platformMap.stripe?.weeklyPlanProceedsMonthly || 0) + Number.EPSILON) * 100) / 100,
+      weeklyPlanProceedsYearly: Math.round(((platformMap.appstore?.weeklyPlanProceedsYearly || 0) + (shouldIncludeGooglePlayInPlanSplit ? (platformMap.googleplay?.weeklyPlanProceedsYearly || 0) : 0) + (platformMap.stripe?.weeklyPlanProceedsYearly || 0) + Number.EPSILON) * 100) / 100,
     };
 
     return {
@@ -322,6 +447,7 @@ export const getLatestMetrics = query({
       lastSync: lastSync || null,
       dateRange: `${dateRangeStart} - ${dateRangeEnd}`,
       connectedPlatforms: Array.from(activePlatforms),
+      useAppStoreRatioForGooglePlay,
     } as const;
   },
 });
@@ -399,6 +525,7 @@ export const getWeeklyMetricsHistory = query({
   },
   handler: async (ctx, { appId, metric }) => {
     const app = await validateAppOwnership(ctx, appId);
+    const useAppStoreRatioForGooglePlay = app.useAppStoreRatioForGooglePlay ?? false;
 
     const oneYearAgo = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
     
@@ -434,6 +561,19 @@ export const getWeeklyMetricsHistory = query({
       "monthlyChargedRevenue",
       "monthlyRevenue",
       "monthlyProceeds",
+      // Plan split metrics should be summed over the period (not last value)
+      "monthlyPlanChargedRevenue",
+      "yearlyPlanChargedRevenue",
+      "monthlyPlanRevenue",
+      "yearlyPlanRevenue",
+      "monthlyPlanProceeds",
+      "yearlyPlanProceeds",
+      "weeklyPlanChargedRevenueMonthly",
+      "weeklyPlanChargedRevenueYearly",
+      "weeklyPlanRevenueMonthly",
+      "weeklyPlanRevenueYearly",
+      "weeklyPlanProceedsMonthly",
+      "weeklyPlanProceedsYearly",
     ];
     const isFlowMetric = flowMetrics.includes(metric) || isChurnRate || isArpu; // churnRate and arpu use flow logic
 
@@ -445,6 +585,18 @@ export const getWeeklyMetricsHistory = query({
     // For arpu, we need revenue (sum) and activeSubscribers (last value of week)
     const weeklyData: Record<string, Record<string, { sum: number; last: number; lastDate: string; churnSum?: number; startingPaidSubs?: number; firstDate?: string; revenueSum?: number; lastActiveSubscribers?: number }>> = {};
     
+    // Track App Store plan split (sum) and Google Play totals (sum) per week so we can derive
+    // Google Play plan-split values historically (using App Store ratios)
+    const ratioByWeek: Record<string, {
+      appStorePlanMonthly: number;
+      appStorePlanYearly: number;
+      googleCharged: number;
+      googleRevenue: number;
+      googleProceeds: number;
+      googlePaidSubs: number;
+      googlePaidSubsDate: string;
+    }> = {};
+
     for (const snap of snapshots) {
       // Skip unified platform - we'll calculate it from the sum of platforms
       if (snap.platform === "unified") continue;
@@ -453,6 +605,32 @@ export const getWeeklyMetricsHistory = query({
       const weekStart = getWeekStart(date, app.weekStartDay || "monday");
       const weekKey = weekStart.toISOString().split("T")[0];
       
+      // Track ratios/totals needed for historical Google Play derivation
+      if (!ratioByWeek[weekKey]) {
+        ratioByWeek[weekKey] = {
+          appStorePlanMonthly: 0,
+          appStorePlanYearly: 0,
+          googleCharged: 0,
+          googleRevenue: 0,
+          googleProceeds: 0,
+          googlePaidSubs: 0,
+          googlePaidSubsDate: "",
+        };
+      }
+      if (snap.platform === "appstore") {
+        ratioByWeek[weekKey].appStorePlanMonthly += snap.monthlyPlanChargedRevenue || 0;
+        ratioByWeek[weekKey].appStorePlanYearly += snap.yearlyPlanChargedRevenue || 0;
+      } else if (snap.platform === "googleplay") {
+        ratioByWeek[weekKey].googleCharged += snap.monthlyChargedRevenue || 0;
+        ratioByWeek[weekKey].googleRevenue += snap.monthlyRevenue || 0;
+        ratioByWeek[weekKey].googleProceeds += snap.monthlyProceeds || 0;
+        // Track the most recent paidSubscribers value in this week for subscriber split
+        if (!ratioByWeek[weekKey].googlePaidSubsDate || snap.date >= ratioByWeek[weekKey].googlePaidSubsDate) {
+          ratioByWeek[weekKey].googlePaidSubs = snap.paidSubscribers || 0;
+          ratioByWeek[weekKey].googlePaidSubsDate = snap.date;
+        }
+      }
+
       if (!weeklyData[weekKey]) weeklyData[weekKey] = {} as any;
       const value = (isChurnRate || isArpu) ? 0 : ((snap as any)[metric] || 0); // For calculated metrics, we calculate separately
       const entry = weeklyData[weekKey][snap.platform] || { sum: 0, last: 0, lastDate: "", churnSum: 0, startingPaidSubs: 0, firstDate: "9999-99-99", revenueSum: 0, lastActiveSubscribers: 0 };
@@ -571,8 +749,40 @@ export const getWeeklyMetricsHistory = query({
           googleplay = null;
         }
         
+        // Apply App Store ratio to derive Google Play split for plan metrics and subs (historical)
+        if (useAppStoreRatioForGooglePlay && (googleplay === null || googleplay === 0)) {
+          const ratioInfo = ratioByWeek[week];
+          const totalPlan = (ratioInfo?.appStorePlanMonthly || 0) + (ratioInfo?.appStorePlanYearly || 0);
+          if (ratioInfo && totalPlan > 0) {
+            const monthlyRatio = ratioInfo.appStorePlanMonthly / totalPlan;
+            const yearlyRatio = ratioInfo.appStorePlanYearly / totalPlan;
+
+            const deriveFromTotals = () => {
+              if (metric === "monthlyPlanChargedRevenue" || metric === "weeklyPlanChargedRevenueMonthly") {
+                googleplay = Math.round(((ratioInfo.googleCharged || 0) * monthlyRatio + Number.EPSILON) * 100) / 100;
+              } else if (metric === "yearlyPlanChargedRevenue" || metric === "weeklyPlanChargedRevenueYearly") {
+                googleplay = Math.round(((ratioInfo.googleCharged || 0) * yearlyRatio + Number.EPSILON) * 100) / 100;
+              } else if (metric === "monthlyPlanRevenue" || metric === "weeklyPlanRevenueMonthly") {
+                googleplay = Math.round(((ratioInfo.googleRevenue || 0) * monthlyRatio + Number.EPSILON) * 100) / 100;
+              } else if (metric === "yearlyPlanRevenue" || metric === "weeklyPlanRevenueYearly") {
+                googleplay = Math.round(((ratioInfo.googleRevenue || 0) * yearlyRatio + Number.EPSILON) * 100) / 100;
+              } else if (metric === "monthlyPlanProceeds" || metric === "weeklyPlanProceedsMonthly") {
+                googleplay = Math.round(((ratioInfo.googleProceeds || 0) * monthlyRatio + Number.EPSILON) * 100) / 100;
+              } else if (metric === "yearlyPlanProceeds" || metric === "weeklyPlanProceedsYearly") {
+                googleplay = Math.round(((ratioInfo.googleProceeds || 0) * yearlyRatio + Number.EPSILON) * 100) / 100;
+              } else if (metric === "monthlySubscribers") {
+                googleplay = Math.round((ratioInfo.googlePaidSubs || 0) * monthlyRatio);
+              } else if (metric === "yearlySubscribers") {
+                googleplay = Math.round((ratioInfo.googlePaidSubs || 0) * yearlyRatio);
+              }
+            };
+
+            deriveFromTotals();
+          }
+        }
+
         // Round currency values to 2 decimals
-        const isCurrencyMetric = ["mrr", "weeklyRevenue", "monthlyChargedRevenue", "monthlyRevenue"].includes(metric);
+        const isCurrencyMetric = ["mrr", "weeklyRevenue", "monthlyChargedRevenue", "monthlyRevenue", "monthlyPlanChargedRevenue", "yearlyPlanChargedRevenue", "monthlyPlanRevenue", "yearlyPlanRevenue", "monthlyPlanProceeds", "yearlyPlanProceeds", "weeklyPlanChargedRevenueMonthly", "weeklyPlanChargedRevenueYearly", "weeklyPlanRevenueMonthly", "weeklyPlanRevenueYearly", "weeklyPlanProceedsMonthly", "weeklyPlanProceedsYearly"].includes(metric);
         // Sum only platforms that have data (null values are excluded)
         const sum = (appstore ?? 0) + (googleplay ?? 0) + (stripe ?? 0);
         const unified = isCurrencyMetric 
@@ -620,7 +830,8 @@ export const getMonthlyMetricsHistory = query({
     metric: v.string(),
   },
   handler: async (ctx, { appId, metric }) => {
-    await validateAppOwnership(ctx, appId);
+    const app = await validateAppOwnership(ctx, appId);
+    const useAppStoreRatioForGooglePlay = app.useAppStoreRatioForGooglePlay ?? false;
 
     const oneYearAgo = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
     
@@ -653,10 +864,34 @@ export const getMonthlyMetricsHistory = query({
       "monthlyChargedRevenue",
       "monthlyRevenue",
       "monthlyProceeds",
+      // Plan split metrics should be summed over the period (not last value)
+      "monthlyPlanChargedRevenue",
+      "yearlyPlanChargedRevenue",
+      "monthlyPlanRevenue",
+      "yearlyPlanRevenue",
+      "monthlyPlanProceeds",
+      "yearlyPlanProceeds",
+      "weeklyPlanChargedRevenueMonthly",
+      "weeklyPlanChargedRevenueYearly",
+      "weeklyPlanRevenueMonthly",
+      "weeklyPlanRevenueYearly",
+      "weeklyPlanProceedsMonthly",
+      "weeklyPlanProceedsYearly",
     ];
     const isFlowMetric = flowMetrics.includes(metric) || isChurnRate || isArpu; // churnRate and arpu use flow logic
 
     const snapshots = allSnapshots;
+
+    // Track App Store plan split (sum) and Google Play totals (sum) per month for historical derivation
+    const ratioByMonth: Record<string, {
+      appStorePlanMonthly: number;
+      appStorePlanYearly: number;
+      googleCharged: number;
+      googleRevenue: number;
+      googleProceeds: number;
+      googlePaidSubs: number;
+      googlePaidSubsDate: string;
+    }> = {};
 
     // Group by month (YYYY-MM) and platform
     // For churnRate, we need both churn (sum) and paidSubscribers (first value of month)
@@ -668,6 +903,30 @@ export const getMonthlyMetricsHistory = query({
 
       // Extract YYYY-MM from date
       const monthKey = snap.date.substring(0, 7);
+
+      if (!ratioByMonth[monthKey]) {
+        ratioByMonth[monthKey] = {
+          appStorePlanMonthly: 0,
+          appStorePlanYearly: 0,
+          googleCharged: 0,
+          googleRevenue: 0,
+          googleProceeds: 0,
+          googlePaidSubs: 0,
+          googlePaidSubsDate: "",
+        };
+      }
+      if (snap.platform === "appstore") {
+        ratioByMonth[monthKey].appStorePlanMonthly += snap.monthlyPlanChargedRevenue || 0;
+        ratioByMonth[monthKey].appStorePlanYearly += snap.yearlyPlanChargedRevenue || 0;
+      } else if (snap.platform === "googleplay") {
+        ratioByMonth[monthKey].googleCharged += snap.monthlyChargedRevenue || 0;
+        ratioByMonth[monthKey].googleRevenue += snap.monthlyRevenue || 0;
+        ratioByMonth[monthKey].googleProceeds += snap.monthlyProceeds || 0;
+        if (!ratioByMonth[monthKey].googlePaidSubsDate || snap.date >= ratioByMonth[monthKey].googlePaidSubsDate) {
+          ratioByMonth[monthKey].googlePaidSubs = snap.paidSubscribers || 0;
+          ratioByMonth[monthKey].googlePaidSubsDate = snap.date;
+        }
+      }
       
       if (!monthlyData[monthKey]) monthlyData[monthKey] = {} as any;
       const value = (isChurnRate || isArpu) ? 0 : ((snap as any)[metric] || 0); // For calculated metrics, we calculate separately
@@ -779,7 +1038,39 @@ export const getMonthlyMetricsHistory = query({
           googleplay = null;
         }
         
-        const isCurrencyMetric = ["mrr", "weeklyRevenue", "monthlyChargedRevenue", "monthlyRevenue"].includes(metric);
+        // Apply App Store ratio to derive Google Play split for plan metrics and subs (historical)
+        if (useAppStoreRatioForGooglePlay && (googleplay === null || googleplay === 0)) {
+          const ratioInfo = ratioByMonth[month];
+          const totalPlan = (ratioInfo?.appStorePlanMonthly || 0) + (ratioInfo?.appStorePlanYearly || 0);
+          if (ratioInfo && totalPlan > 0) {
+            const monthlyRatio = ratioInfo.appStorePlanMonthly / totalPlan;
+            const yearlyRatio = ratioInfo.appStorePlanYearly / totalPlan;
+
+            const deriveFromTotals = () => {
+              if (metric === "monthlyPlanChargedRevenue" || metric === "weeklyPlanChargedRevenueMonthly") {
+                googleplay = Math.round(((ratioInfo.googleCharged || 0) * monthlyRatio + Number.EPSILON) * 100) / 100;
+              } else if (metric === "yearlyPlanChargedRevenue" || metric === "weeklyPlanChargedRevenueYearly") {
+                googleplay = Math.round(((ratioInfo.googleCharged || 0) * yearlyRatio + Number.EPSILON) * 100) / 100;
+              } else if (metric === "monthlyPlanRevenue" || metric === "weeklyPlanRevenueMonthly") {
+                googleplay = Math.round(((ratioInfo.googleRevenue || 0) * monthlyRatio + Number.EPSILON) * 100) / 100;
+              } else if (metric === "yearlyPlanRevenue" || metric === "weeklyPlanRevenueYearly") {
+                googleplay = Math.round(((ratioInfo.googleRevenue || 0) * yearlyRatio + Number.EPSILON) * 100) / 100;
+              } else if (metric === "monthlyPlanProceeds" || metric === "weeklyPlanProceedsMonthly") {
+                googleplay = Math.round(((ratioInfo.googleProceeds || 0) * monthlyRatio + Number.EPSILON) * 100) / 100;
+              } else if (metric === "yearlyPlanProceeds" || metric === "weeklyPlanProceedsYearly") {
+                googleplay = Math.round(((ratioInfo.googleProceeds || 0) * yearlyRatio + Number.EPSILON) * 100) / 100;
+              } else if (metric === "monthlySubscribers") {
+                googleplay = Math.round((ratioInfo.googlePaidSubs || 0) * monthlyRatio);
+              } else if (metric === "yearlySubscribers") {
+                googleplay = Math.round((ratioInfo.googlePaidSubs || 0) * yearlyRatio);
+              }
+            };
+
+            deriveFromTotals();
+          }
+        }
+
+        const isCurrencyMetric = ["mrr", "weeklyRevenue", "monthlyChargedRevenue", "monthlyRevenue", "monthlyPlanChargedRevenue", "yearlyPlanChargedRevenue", "monthlyPlanRevenue", "yearlyPlanRevenue", "monthlyPlanProceeds", "yearlyPlanProceeds", "weeklyPlanChargedRevenueMonthly", "weeklyPlanChargedRevenueYearly", "weeklyPlanRevenueMonthly", "weeklyPlanRevenueYearly", "weeklyPlanProceedsMonthly", "weeklyPlanProceedsYearly"].includes(metric);
         const sum = (appstore ?? 0) + (googleplay ?? 0) + (stripe ?? 0);
         const unified = isCurrencyMetric 
           ? Math.round((sum + Number.EPSILON) * 100) / 100

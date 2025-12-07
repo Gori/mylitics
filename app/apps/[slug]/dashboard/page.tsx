@@ -298,6 +298,58 @@ export default function DashboardPage() {
     );
   };
 
+  // Right block for plan-split revenue (shows currency per platform, only includes Google Play if ratio setting enabled)
+  const rightBlockPlanSplit = (key: string, isCurrency = false) => {
+    const useGooglePlayRatio = metrics?.useAppStoreRatioForGooglePlay ?? false;
+    
+    return (
+      <div className="text-xs text-right text-gray-500 leading-4">
+        {connectedPlatforms.map((platform) => {
+          // Skip Google Play if ratio setting is disabled
+          if (platform === "googleplay" && !useGooglePlayRatio) {
+            return null;
+          }
+          
+          const value = metrics?.platformMap?.[platform]?.[key] ?? 0;
+          const isDerived = platform === "googleplay" && useGooglePlayRatio;
+          
+          return (
+            <div key={platform} className="flex items-center justify-end gap-1">
+              <span>
+                {platformLabels[platform]}: {isCurrency ? formatCurrency(value) : value}
+              </span>
+              {isDerived && (
+                <span 
+                  className="text-blue-500 cursor-help" 
+                  title="Derived from App Store ratio"
+                >
+                  *
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  // Get platforms with data for plan split metrics (excludes Google Play if ratio setting disabled)
+  const getPlatformsWithDataForPlanSplit = (metricKey: string): string[] => {
+    const useGooglePlayRatio = metrics?.useAppStoreRatioForGooglePlay ?? false;
+    
+    return connectedPlatforms.filter(platform => {
+      // For Google Play, only include if ratio setting is enabled
+      if (platform === "googleplay") {
+        return useGooglePlayRatio;
+      }
+      // Check if platform exists in platformMap
+      if (!metrics?.platformMap?.[platform]) {
+        return false;
+      }
+      return true;
+    });
+  };
+
   const syncMenuItems = [
     {
       label: "Sync Now",
@@ -464,8 +516,8 @@ export default function DashboardPage() {
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
                   viewMode={viewMode}
-                  platformsWithData={getPlatformsWithData("monthlySubscribers")}
-                  right={rightBlock("monthlySubscribers")}
+                  platformsWithData={getPlatformsWithDataForPlanSplit("monthlySubscribers")}
+                  right={rightBlockPlanSplit("monthlySubscribers")}
                 />
                 <MetricCard currency={currency}
                   label="Yearly Subs"
@@ -474,8 +526,8 @@ export default function DashboardPage() {
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
                   viewMode={viewMode}
-                  platformsWithData={getPlatformsWithData("yearlySubscribers")}
-                  right={rightBlock("yearlySubscribers")}
+                  platformsWithData={getPlatformsWithDataForPlanSplit("yearlySubscribers")}
+                  right={rightBlockPlanSplit("yearlySubscribers")}
                 />
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -586,6 +638,75 @@ export default function DashboardPage() {
                   viewMode={viewMode}
                   platformsWithData={getPlatformsWithData("mrr")}
                   right={rightBlock("mrr", true)}
+                />
+              </div>
+
+              {/* Revenue by Plan Type */}
+              <h2 className="text-xl font-semibold mt-8 mb-4">Revenue by Plan Type</h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <MetricCard currency={currency}
+                  label={viewMode === "monthly" ? "Monthly Plans - Charged Revenue" : "Monthly Plans - Weekly Charged Rev."}
+                  value={formatCurrency(viewMode === "monthly" ? (metrics.unified.monthlyPlanChargedRevenue ?? 0) : (metrics.unified.weeklyPlanChargedRevenueMonthly ?? 0))}
+                  metricKey="monthlyPlanChargedRevenue"
+                  appId={appId}
+                  connectedPlatforms={connectedPlatforms}
+                  viewMode={viewMode}
+                  platformsWithData={getPlatformsWithDataForPlanSplit("monthlyPlanChargedRevenue")}
+                  right={rightBlockPlanSplit(viewMode === "monthly" ? "monthlyPlanChargedRevenue" : "weeklyPlanChargedRevenueMonthly", true)}
+                />
+                <MetricCard currency={currency}
+                  label={viewMode === "monthly" ? "Yearly Plans - Charged Revenue" : "Yearly Plans - Weekly Charged Rev."}
+                  value={formatCurrency(viewMode === "monthly" ? (metrics.unified.yearlyPlanChargedRevenue ?? 0) : (metrics.unified.weeklyPlanChargedRevenueYearly ?? 0))}
+                  metricKey="yearlyPlanChargedRevenue"
+                  appId={appId}
+                  connectedPlatforms={connectedPlatforms}
+                  viewMode={viewMode}
+                  platformsWithData={getPlatformsWithDataForPlanSplit("yearlyPlanChargedRevenue")}
+                  right={rightBlockPlanSplit(viewMode === "monthly" ? "yearlyPlanChargedRevenue" : "weeklyPlanChargedRevenueYearly", true)}
+                />
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <MetricCard currency={currency}
+                  label={viewMode === "monthly" ? "Monthly Plans - Revenue" : "Monthly Plans - Weekly Revenue"}
+                  value={formatCurrency(viewMode === "monthly" ? (metrics.unified.monthlyPlanRevenue ?? 0) : (metrics.unified.weeklyPlanRevenueMonthly ?? 0))}
+                  metricKey="monthlyPlanRevenue"
+                  appId={appId}
+                  connectedPlatforms={connectedPlatforms}
+                  viewMode={viewMode}
+                  platformsWithData={getPlatformsWithDataForPlanSplit("monthlyPlanRevenue")}
+                  right={rightBlockPlanSplit(viewMode === "monthly" ? "monthlyPlanRevenue" : "weeklyPlanRevenueMonthly", true)}
+                />
+                <MetricCard currency={currency}
+                  label={viewMode === "monthly" ? "Yearly Plans - Revenue" : "Yearly Plans - Weekly Revenue"}
+                  value={formatCurrency(viewMode === "monthly" ? (metrics.unified.yearlyPlanRevenue ?? 0) : (metrics.unified.weeklyPlanRevenueYearly ?? 0))}
+                  metricKey="yearlyPlanRevenue"
+                  appId={appId}
+                  connectedPlatforms={connectedPlatforms}
+                  viewMode={viewMode}
+                  platformsWithData={getPlatformsWithDataForPlanSplit("yearlyPlanRevenue")}
+                  right={rightBlockPlanSplit(viewMode === "monthly" ? "yearlyPlanRevenue" : "weeklyPlanRevenueYearly", true)}
+                />
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <MetricCard currency={currency}
+                  label={viewMode === "monthly" ? "Monthly Plans - Proceeds" : "Monthly Plans - Weekly Proceeds"}
+                  value={formatCurrency(viewMode === "monthly" ? (metrics.unified.monthlyPlanProceeds ?? 0) : (metrics.unified.weeklyPlanProceedsMonthly ?? 0))}
+                  metricKey="monthlyPlanProceeds"
+                  appId={appId}
+                  connectedPlatforms={connectedPlatforms}
+                  viewMode={viewMode}
+                  platformsWithData={getPlatformsWithDataForPlanSplit("monthlyPlanProceeds")}
+                  right={rightBlockPlanSplit(viewMode === "monthly" ? "monthlyPlanProceeds" : "weeklyPlanProceedsMonthly", true)}
+                />
+                <MetricCard currency={currency}
+                  label={viewMode === "monthly" ? "Yearly Plans - Proceeds" : "Yearly Plans - Weekly Proceeds"}
+                  value={formatCurrency(viewMode === "monthly" ? (metrics.unified.yearlyPlanProceeds ?? 0) : (metrics.unified.weeklyPlanProceedsYearly ?? 0))}
+                  metricKey="yearlyPlanProceeds"
+                  appId={appId}
+                  connectedPlatforms={connectedPlatforms}
+                  viewMode={viewMode}
+                  platformsWithData={getPlatformsWithDataForPlanSplit("yearlyPlanProceeds")}
+                  right={rightBlockPlanSplit(viewMode === "monthly" ? "yearlyPlanProceeds" : "weeklyPlanProceedsYearly", true)}
                 />
               </div>
             </div>

@@ -99,7 +99,7 @@ export default function Home() {
       </header>
 
       {/* Hero Section */}
-      {/* <section className="max-w-7xl mx-auto px-4 md:px-8 py-32 md:py-40 min-h-screen flex items-center justify-center">
+      <section className="max-w-7xl mx-auto px-4 md:px-8 py-32 md:py-40 min-h-screen flex items-center justify-center">
         <div className="text-center max-w-4xl mx-auto">
           <div className="flex justify-center mb-36 relative mx-auto items-center justify-center">
             <div className="absolute">
@@ -141,7 +141,7 @@ export default function Home() {
             </Link>
           </div>
         </div>
-      </section> */}
+      </section>
 
       {/* Platforms Section */}
       {/* <section className="max-w-7xl mx-auto px-4 md:px-8 py-12">

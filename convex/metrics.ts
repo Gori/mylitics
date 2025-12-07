@@ -332,6 +332,22 @@ export const processAndStoreMetrics = internalMutation({
     let monthlyRevenue = 0; // Revenue excluding VAT (still includes platform fees)
     let monthlyProceeds = 0; // Developer proceeds (what you actually receive after fees)
     
+    // Revenue split by plan type (monthly vs yearly) - for Stripe, use priceInterval from subscription
+    let monthlyPlanChargedRevenue = 0;
+    let yearlyPlanChargedRevenue = 0;
+    let monthlyPlanRevenue = 0;
+    let yearlyPlanRevenue = 0;
+    let monthlyPlanProceeds = 0;
+    let yearlyPlanProceeds = 0;
+    
+    // Create map from subscription externalId to priceInterval for plan type lookup
+    const subIntervalMap = new Map<string, string>();
+    for (const s of subscriptions) {
+      if (s.priceInterval) {
+        subIntervalMap.set(s.externalId, s.priceInterval);
+      }
+    }
+    
     console.log(`[Metrics ${platform}] Date calculation - today: ${today}, todayStart: ${todayStart} (${new Date(todayStart).toISOString()}), todayEnd: ${todayEnd} (${new Date(todayEnd).toISOString()})`);
     console.log(`[Metrics ${platform}] Processing ${todayRevenue.length} revenue events for ${today} (from ${revenueEvents.length} total events passed from API, range ${todayStart}-${todayEnd})`);
     
@@ -369,20 +385,53 @@ export const processAndStoreMetrics = internalMutation({
       const amountProceedsValue = e.amountProceeds ?? e.amount; // Fallback to amount if no proceeds
       const convertedProceeds = await convertAndRoundCurrency(ctx, amountProceedsValue, e.currency, userCurrency);
       
+      // Determine plan type from subscription
+      const planInterval = subIntervalMap.get(e.subscriptionExternalId);
+      const isYearlyPlan = planInterval === "year";
+      const isMonthlyPlan = planInterval === "month";
+      
       if (e.eventType === "refund") {
         monthlyChargedRevenue -= convertedCharged;
         monthlyRevenue -= convertedRevenue;
         monthlyProceeds -= convertedProceeds;
+        // Split by plan type
+        if (isYearlyPlan) {
+          yearlyPlanChargedRevenue -= convertedCharged;
+          yearlyPlanRevenue -= convertedRevenue;
+          yearlyPlanProceeds -= convertedProceeds;
+        } else if (isMonthlyPlan) {
+          monthlyPlanChargedRevenue -= convertedCharged;
+          monthlyPlanRevenue -= convertedRevenue;
+          monthlyPlanProceeds -= convertedProceeds;
+        }
       } else {
         monthlyChargedRevenue += convertedCharged;
         monthlyRevenue += convertedRevenue;
         monthlyProceeds += convertedProceeds;
+        // Split by plan type
+        if (isYearlyPlan) {
+          yearlyPlanChargedRevenue += convertedCharged;
+          yearlyPlanRevenue += convertedRevenue;
+          yearlyPlanProceeds += convertedProceeds;
+        } else if (isMonthlyPlan) {
+          monthlyPlanChargedRevenue += convertedCharged;
+          monthlyPlanRevenue += convertedRevenue;
+          monthlyPlanProceeds += convertedProceeds;
+        }
       }
     }
     
     monthlyChargedRevenue = Math.round((monthlyChargedRevenue + Number.EPSILON) * 100) / 100;
     monthlyRevenue = Math.round((monthlyRevenue + Number.EPSILON) * 100) / 100;
     monthlyProceeds = Math.round((monthlyProceeds + Number.EPSILON) * 100) / 100;
+    
+    // Round plan-split revenue
+    monthlyPlanChargedRevenue = Math.round((monthlyPlanChargedRevenue + Number.EPSILON) * 100) / 100;
+    yearlyPlanChargedRevenue = Math.round((yearlyPlanChargedRevenue + Number.EPSILON) * 100) / 100;
+    monthlyPlanRevenue = Math.round((monthlyPlanRevenue + Number.EPSILON) * 100) / 100;
+    yearlyPlanRevenue = Math.round((yearlyPlanRevenue + Number.EPSILON) * 100) / 100;
+    monthlyPlanProceeds = Math.round((monthlyPlanProceeds + Number.EPSILON) * 100) / 100;
+    yearlyPlanProceeds = Math.round((yearlyPlanProceeds + Number.EPSILON) * 100) / 100;
 
     // Weekly revenue metrics for this day (will be summed over weeks for display)
     const weeklyChargedRevenue = monthlyChargedRevenue;
@@ -423,6 +472,13 @@ export const processAndStoreMetrics = internalMutation({
       monthlyProceeds,
       monthlySubscribers,
       yearlySubscribers,
+      // Revenue split by plan type
+      monthlyPlanChargedRevenue,
+      yearlyPlanChargedRevenue,
+      monthlyPlanRevenue,
+      yearlyPlanRevenue,
+      monthlyPlanProceeds,
+      yearlyPlanProceeds,
     };
 
     if (existingSnapshots.length > 0) {
@@ -480,6 +536,13 @@ export const createUnifiedSnapshot = internalMutation({
       monthlyProceeds: Math.round((platformSnapshots.reduce((acc, s) => acc + (s.monthlyProceeds || 0), 0) + Number.EPSILON) * 100) / 100,
       monthlySubscribers: platformSnapshots.reduce((acc, s) => acc + (s.monthlySubscribers || 0), 0),
       yearlySubscribers: platformSnapshots.reduce((acc, s) => acc + (s.yearlySubscribers || 0), 0),
+      // Revenue split by plan type
+      monthlyPlanChargedRevenue: Math.round((platformSnapshots.reduce((acc, s) => acc + (s.monthlyPlanChargedRevenue || 0), 0) + Number.EPSILON) * 100) / 100,
+      yearlyPlanChargedRevenue: Math.round((platformSnapshots.reduce((acc, s) => acc + (s.yearlyPlanChargedRevenue || 0), 0) + Number.EPSILON) * 100) / 100,
+      monthlyPlanRevenue: Math.round((platformSnapshots.reduce((acc, s) => acc + (s.monthlyPlanRevenue || 0), 0) + Number.EPSILON) * 100) / 100,
+      yearlyPlanRevenue: Math.round((platformSnapshots.reduce((acc, s) => acc + (s.yearlyPlanRevenue || 0), 0) + Number.EPSILON) * 100) / 100,
+      monthlyPlanProceeds: Math.round((platformSnapshots.reduce((acc, s) => acc + (s.monthlyPlanProceeds || 0), 0) + Number.EPSILON) * 100) / 100,
+      yearlyPlanProceeds: Math.round((platformSnapshots.reduce((acc, s) => acc + (s.yearlyPlanProceeds || 0), 0) + Number.EPSILON) * 100) / 100,
     };
 
     const existingUnified = await ctx.db
@@ -599,10 +662,26 @@ export const generateHistoricalSnapshots = internalMutation({
       const firstPayments = dayRevenue.filter((e) => e.eventType === "first_payment").length;
       const renewals = dayRevenue.filter((e) => e.eventType === "renewal").length;
 
+      // Create map from subscription ID to priceInterval for plan type lookup
+      const subIntervalMapHistorical = new Map<string, string>();
+      for (const s of subs) {
+        if (s.priceInterval) {
+          subIntervalMapHistorical.set(s._id, s.priceInterval);
+        }
+      }
+
       // Revenue calculation
       let monthlyChargedRevenue = 0;
       let monthlyRevenue = 0;
       let monthlyProceeds = 0;
+      // Revenue split by plan type
+      let monthlyPlanChargedRevenue = 0;
+      let yearlyPlanChargedRevenue = 0;
+      let monthlyPlanRevenue = 0;
+      let yearlyPlanRevenue = 0;
+      let monthlyPlanProceeds = 0;
+      let yearlyPlanProceeds = 0;
+      
       for (const e of dayRevenue) {
         // Charged Revenue = amount (including VAT)
         const convertedCharged = await convertAndRoundCurrency(ctx, e.amount, e.currency, userCurrency, yearMonth);
@@ -622,19 +701,52 @@ export const generateHistoricalSnapshots = internalMutation({
         const amountProceedsValue = e.amountProceeds ?? e.amount;
         const convertedProceeds = await convertAndRoundCurrency(ctx, amountProceedsValue, e.currency, userCurrency, yearMonth);
         
+        // Determine plan type from subscription
+        const planInterval = subIntervalMapHistorical.get(e.subscriptionId);
+        const isYearlyPlan = planInterval === "year";
+        const isMonthlyPlan = planInterval === "month";
+        
         if (e.eventType === "refund") {
           monthlyChargedRevenue -= convertedCharged;
           monthlyRevenue -= convertedRevenue;
           monthlyProceeds -= convertedProceeds;
+          // Split by plan type
+          if (isYearlyPlan) {
+            yearlyPlanChargedRevenue -= convertedCharged;
+            yearlyPlanRevenue -= convertedRevenue;
+            yearlyPlanProceeds -= convertedProceeds;
+          } else if (isMonthlyPlan) {
+            monthlyPlanChargedRevenue -= convertedCharged;
+            monthlyPlanRevenue -= convertedRevenue;
+            monthlyPlanProceeds -= convertedProceeds;
+          }
         } else {
           monthlyChargedRevenue += convertedCharged;
           monthlyRevenue += convertedRevenue;
           monthlyProceeds += convertedProceeds;
+          // Split by plan type
+          if (isYearlyPlan) {
+            yearlyPlanChargedRevenue += convertedCharged;
+            yearlyPlanRevenue += convertedRevenue;
+            yearlyPlanProceeds += convertedProceeds;
+          } else if (isMonthlyPlan) {
+            monthlyPlanChargedRevenue += convertedCharged;
+            monthlyPlanRevenue += convertedRevenue;
+            monthlyPlanProceeds += convertedProceeds;
+          }
         }
       }
       monthlyChargedRevenue = Math.round((monthlyChargedRevenue + Number.EPSILON) * 100) / 100;
       monthlyRevenue = Math.round((monthlyRevenue + Number.EPSILON) * 100) / 100;
       monthlyProceeds = Math.round((monthlyProceeds + Number.EPSILON) * 100) / 100;
+      // Round plan-split revenue
+      monthlyPlanChargedRevenue = Math.round((monthlyPlanChargedRevenue + Number.EPSILON) * 100) / 100;
+      yearlyPlanChargedRevenue = Math.round((yearlyPlanChargedRevenue + Number.EPSILON) * 100) / 100;
+      monthlyPlanRevenue = Math.round((monthlyPlanRevenue + Number.EPSILON) * 100) / 100;
+      yearlyPlanRevenue = Math.round((yearlyPlanRevenue + Number.EPSILON) * 100) / 100;
+      monthlyPlanProceeds = Math.round((monthlyPlanProceeds + Number.EPSILON) * 100) / 100;
+      yearlyPlanProceeds = Math.round((yearlyPlanProceeds + Number.EPSILON) * 100) / 100;
+      
       const weeklyChargedRevenue = monthlyChargedRevenue;
       const weeklyRevenue = monthlyRevenue;
       const weeklyProceeds = monthlyProceeds;
@@ -668,6 +780,13 @@ export const generateHistoricalSnapshots = internalMutation({
         monthlyProceeds,
         monthlySubscribers,
         yearlySubscribers,
+        // Revenue split by plan type
+        monthlyPlanChargedRevenue,
+        yearlyPlanChargedRevenue,
+        monthlyPlanRevenue,
+        yearlyPlanRevenue,
+        monthlyPlanProceeds,
+        yearlyPlanProceeds,
       } as const;
 
       if (existingSnapshots.length > 0) {
@@ -706,6 +825,13 @@ export const processAppStoreReport = internalMutation({
       revenueGross: v.optional(v.number()),
       revenueNet: v.optional(v.number()),
       revenueProceeds: v.optional(v.number()), // Developer Proceeds - what Apple pays you
+      // Revenue split by plan type
+      revenueGrossMonthly: v.optional(v.number()),
+      revenueGrossYearly: v.optional(v.number()),
+      revenueNetMonthly: v.optional(v.number()),
+      revenueNetYearly: v.optional(v.number()),
+      revenueProceedsMonthly: v.optional(v.number()),
+      revenueProceedsYearly: v.optional(v.number()),
       // Additional data for chunk summary
       rowsTotal: v.optional(v.number()),
       rowsProcessed: v.optional(v.number()),
@@ -935,6 +1061,14 @@ export const processAppStoreReport = internalMutation({
     let finalFirstPayments = 0;
     let finalRenewals = 0;
     
+    // Revenue split by plan type (from SUBSCRIBER report)
+    let monthlyPlanChargedRevenue = 0;
+    let yearlyPlanChargedRevenue = 0;
+    let monthlyPlanRevenue = 0;
+    let yearlyPlanRevenue = 0;
+    let monthlyPlanProceeds = 0;
+    let yearlyPlanProceeds = 0;
+    
     // Use event data from SUBSCRIBER report for events AND revenue
     if (eventData) {
       if (eventData.renewals > 0) {
@@ -956,6 +1090,13 @@ export const processAppStoreReport = internalMutation({
         monthlyRevenue = eventData.revenueNet ?? eventData.revenueGross; // Fallback to gross if no VAT calc
         monthlyProceeds = eventData.revenueProceeds ?? 0; // Developer Proceeds from Apple
       }
+      // Extract plan-split revenue
+      monthlyPlanChargedRevenue = eventData.revenueGrossMonthly ?? 0;
+      yearlyPlanChargedRevenue = eventData.revenueGrossYearly ?? 0;
+      monthlyPlanRevenue = eventData.revenueNetMonthly ?? 0;
+      yearlyPlanRevenue = eventData.revenueNetYearly ?? 0;
+      monthlyPlanProceeds = eventData.revenueProceedsMonthly ?? 0;
+      yearlyPlanProceeds = eventData.revenueProceedsYearly ?? 0;
     }
     
     // Fallback: use event data from SUMMARY TSV columns (rare)
@@ -1017,6 +1158,13 @@ export const processAppStoreReport = internalMutation({
       monthlyProceeds: Math.round((monthlyProceeds + Number.EPSILON) * 100) / 100,
       monthlySubscribers: monthlySubsCount,
       yearlySubscribers: yearlySubsCount,
+      // Revenue split by plan type
+      monthlyPlanChargedRevenue: Math.round((monthlyPlanChargedRevenue + Number.EPSILON) * 100) / 100,
+      yearlyPlanChargedRevenue: Math.round((yearlyPlanChargedRevenue + Number.EPSILON) * 100) / 100,
+      monthlyPlanRevenue: Math.round((monthlyPlanRevenue + Number.EPSILON) * 100) / 100,
+      yearlyPlanRevenue: Math.round((yearlyPlanRevenue + Number.EPSILON) * 100) / 100,
+      monthlyPlanProceeds: Math.round((monthlyPlanProceeds + Number.EPSILON) * 100) / 100,
+      yearlyPlanProceeds: Math.round((yearlyPlanProceeds + Number.EPSILON) * 100) / 100,
     };
 
 
@@ -1093,6 +1241,10 @@ export const processAppStoreSubscriberReport = internalMutation({
     const countryIdx = idx(/country/i);
     const customerCountryIdx = storefrontIdx >= 0 ? storefrontIdx : countryIdx;
     
+    // Look for PRODUCT ID column to classify monthly vs yearly plans
+    const productIdIdx = idx(/product.*id|sku|subscription.*name|subscription.*apple.*id/i);
+    const subscriptionDurationIdx = idx(/subscription.*duration|duration/i);
+    
     // Fallback: If no "Event" column, try "proceeds reason" (older format)
     const proceedsReasonIdx = idx(/proceeds\s*reason/i);
     
@@ -1100,7 +1252,7 @@ export const processAppStoreSubscriberReport = internalMutation({
     
     if (eventColumnIdx < 0) {
       console.log(`[App Store Subscriber ${date}] No 'Event' or 'Proceeds Reason' column found - skipping`);
-      return { renewals: 0, firstPayments: 0, cancellations: 0, revenueGross: 0, revenueNet: 0, revenueProceeds: 0 };
+      return { renewals: 0, firstPayments: 0, cancellations: 0, revenueGross: 0, revenueNet: 0, revenueProceeds: 0, revenueGrossMonthly: 0, revenueGrossYearly: 0, revenueNetMonthly: 0, revenueNetYearly: 0, revenueProceedsMonthly: 0, revenueProceedsYearly: 0 };
     }
 
     // CRITICAL: If we can't filter by event date, we CANNOT extract revenue
@@ -1114,16 +1266,44 @@ export const processAppStoreSubscriberReport = internalMutation({
     let revenueGross = 0;
     let revenueNet = 0;
     let revenueProceeds = 0; // Developer Proceeds - what you actually receive from Apple
+    // Revenue split by plan type
+    let revenueGrossMonthly = 0;
+    let revenueGrossYearly = 0;
+    let revenueNetMonthly = 0;
+    let revenueNetYearly = 0;
+    let revenueProceedsMonthly = 0;
+    let revenueProceedsYearly = 0;
     const eventTypes: Record<string, number> = {};
     const sampleEvents: string[] = [];
     const currenciesSeen: Record<string, number> = {}; // Track currencies for debugging
     let rowsProcessed = 0;
     let rowsSkippedWrongDate = 0;
+    
+    // Helper to detect plan type from product ID
+    const detectPlanType = (productId: string, duration?: string): "monthly" | "yearly" | null => {
+      const pid = productId.toLowerCase();
+      const dur = (duration || "").toLowerCase();
+      
+      // Pattern matching for monthly plans
+      if (/month|monthly|1m|30day|_m_|_mo_/i.test(pid) || dur.includes("month") || dur === "1 month") {
+        return "monthly";
+      }
+      // Pattern matching for yearly plans
+      if (/year|yearly|annual|12m|365day|_y_|_yr_/i.test(pid) || dur.includes("year") || dur === "1 year") {
+        return "yearly";
+      }
+      return null;
+    };
 
     for (let i = 1; i < lines.length; i++) {
       const cols = lines[i].split("\t");
       const eventValue = (cols[eventColumnIdx] || "").trim();
       const quantity = quantityIdx >= 0 ? Number(cols[quantityIdx] || 1) : 1;
+      
+      // Extract product ID for plan type classification
+      const productId = productIdIdx >= 0 ? (cols[productIdIdx] || "").trim() : "";
+      const duration = subscriptionDurationIdx >= 0 ? (cols[subscriptionDurationIdx] || "").trim() : "";
+      const planType = detectPlanType(productId, duration);
       
       // Check if event date matches the target date (CRITICAL FIX!)
       if (eventDateIdx >= 0) {
@@ -1217,6 +1397,16 @@ export const processAppStoreSubscriberReport = internalMutation({
         revenueGross += Math.min(rowGross, 0); // Ensure negative
         revenueNet += Math.min(rowNet, 0);
         revenueProceeds += Math.min(rowProceeds, 0);
+        // Split by plan type
+        if (planType === "yearly") {
+          revenueGrossYearly += Math.min(rowGross, 0);
+          revenueNetYearly += Math.min(rowNet, 0);
+          revenueProceedsYearly += Math.min(rowProceeds, 0);
+        } else if (planType === "monthly") {
+          revenueGrossMonthly += Math.min(rowGross, 0);
+          revenueNetMonthly += Math.min(rowNet, 0);
+          revenueProceedsMonthly += Math.min(rowProceeds, 0);
+        }
       } else if (isCancellation) {
         // Cancellations don't generate revenue but we track them
         cancellations += quantity;
@@ -1244,6 +1434,16 @@ export const processAppStoreSubscriberReport = internalMutation({
         revenueGross += rowGross;
         revenueNet += rowNet;
         revenueProceeds += rowProceeds;
+        // Split by plan type
+        if (planType === "yearly") {
+          revenueGrossYearly += rowGross;
+          revenueNetYearly += rowNet;
+          revenueProceedsYearly += rowProceeds;
+        } else if (planType === "monthly") {
+          revenueGrossMonthly += rowGross;
+          revenueNetMonthly += rowNet;
+          revenueProceedsMonthly += rowProceeds;
+        }
       }
     }
 
@@ -1255,6 +1455,13 @@ export const processAppStoreSubscriberReport = internalMutation({
       revenueGross,
       revenueNet,
       revenueProceeds, // Developer Proceeds - what Apple actually pays you
+      // Revenue split by plan type
+      revenueGrossMonthly,
+      revenueGrossYearly,
+      revenueNetMonthly,
+      revenueNetYearly,
+      revenueProceedsMonthly,
+      revenueProceedsYearly,
       // Additional data for chunk summary
       rowsTotal: lines.length - 1,
       rowsProcessed,
@@ -1333,6 +1540,13 @@ export const generateUnifiedHistoricalSnapshots = internalMutation({
         monthlyProceeds: Math.round((platformSnapshots.reduce((acc, s) => acc + (s.monthlyProceeds || 0), 0) + Number.EPSILON) * 100) / 100,
         monthlySubscribers: platformSnapshots.reduce((acc, s) => acc + (s.monthlySubscribers || 0), 0),
         yearlySubscribers: platformSnapshots.reduce((acc, s) => acc + (s.yearlySubscribers || 0), 0),
+        // Revenue split by plan type
+        monthlyPlanChargedRevenue: Math.round((platformSnapshots.reduce((acc, s) => acc + (s.monthlyPlanChargedRevenue || 0), 0) + Number.EPSILON) * 100) / 100,
+        yearlyPlanChargedRevenue: Math.round((platformSnapshots.reduce((acc, s) => acc + (s.yearlyPlanChargedRevenue || 0), 0) + Number.EPSILON) * 100) / 100,
+        monthlyPlanRevenue: Math.round((platformSnapshots.reduce((acc, s) => acc + (s.monthlyPlanRevenue || 0), 0) + Number.EPSILON) * 100) / 100,
+        yearlyPlanRevenue: Math.round((platformSnapshots.reduce((acc, s) => acc + (s.yearlyPlanRevenue || 0), 0) + Number.EPSILON) * 100) / 100,
+        monthlyPlanProceeds: Math.round((platformSnapshots.reduce((acc, s) => acc + (s.monthlyPlanProceeds || 0), 0) + Number.EPSILON) * 100) / 100,
+        yearlyPlanProceeds: Math.round((platformSnapshots.reduce((acc, s) => acc + (s.yearlyPlanProceeds || 0), 0) + Number.EPSILON) * 100) / 100,
       };
 
       // Check if unified snapshot already exists for this date
@@ -1411,6 +1625,13 @@ export const generateUnifiedHistoricalSnapshotsChunk = internalMutation({
         monthlyProceeds: Math.round((platformSnapshots.reduce((acc, s) => acc + (s.monthlyProceeds || 0), 0) + Number.EPSILON) * 100) / 100,
         monthlySubscribers: platformSnapshots.reduce((acc, s) => acc + (s.monthlySubscribers || 0), 0),
         yearlySubscribers: platformSnapshots.reduce((acc, s) => acc + (s.yearlySubscribers || 0), 0),
+        // Revenue split by plan type
+        monthlyPlanChargedRevenue: Math.round((platformSnapshots.reduce((acc, s) => acc + (s.monthlyPlanChargedRevenue || 0), 0) + Number.EPSILON) * 100) / 100,
+        yearlyPlanChargedRevenue: Math.round((platformSnapshots.reduce((acc, s) => acc + (s.yearlyPlanChargedRevenue || 0), 0) + Number.EPSILON) * 100) / 100,
+        monthlyPlanRevenue: Math.round((platformSnapshots.reduce((acc, s) => acc + (s.monthlyPlanRevenue || 0), 0) + Number.EPSILON) * 100) / 100,
+        yearlyPlanRevenue: Math.round((platformSnapshots.reduce((acc, s) => acc + (s.yearlyPlanRevenue || 0), 0) + Number.EPSILON) * 100) / 100,
+        monthlyPlanProceeds: Math.round((platformSnapshots.reduce((acc, s) => acc + (s.monthlyPlanProceeds || 0), 0) + Number.EPSILON) * 100) / 100,
+        yearlyPlanProceeds: Math.round((platformSnapshots.reduce((acc, s) => acc + (s.yearlyPlanProceeds || 0), 0) + Number.EPSILON) * 100) / 100,
       };
 
       // Check if unified snapshot already exists for this date
@@ -1470,6 +1691,13 @@ export const createAppStoreSnapshotFromPrevious = internalMutation({
       monthlyProceeds: 0,
       monthlySubscribers: previousSnapshot.monthlySubscribers || 0,
       yearlySubscribers: previousSnapshot.yearlySubscribers || 0,
+      // Revenue split by plan type (0 because no sales today)
+      monthlyPlanChargedRevenue: 0,
+      yearlyPlanChargedRevenue: 0,
+      monthlyPlanRevenue: 0,
+      yearlyPlanRevenue: 0,
+      monthlyPlanProceeds: 0,
+      yearlyPlanProceeds: 0,
     };
 
     const existing = await ctx.db
@@ -1694,6 +1922,13 @@ export const processGooglePlayReports = internalMutation({
         monthlyProceeds: Math.round((convertedProceeds + Number.EPSILON) * 100) / 100,
         monthlySubscribers,
         yearlySubscribers,
+        // Revenue split by plan type - NOT available from Google Play (will be derived from App Store ratio if setting enabled)
+        monthlyPlanChargedRevenue: 0,
+        yearlyPlanChargedRevenue: 0,
+        monthlyPlanRevenue: 0,
+        yearlyPlanRevenue: 0,
+        monthlyPlanProceeds: 0,
+        yearlyPlanProceeds: 0,
       };
 
       // Check if snapshot already exists for this date (using pre-fetched map)

@@ -16,6 +16,7 @@ interface AppContextType {
   appName: string;
   currency: string;
   weekStartDay: "monday" | "sunday";
+  useAppStoreRatioForGooglePlay: boolean;
 }
 
 const AppContext = createContext<AppContextType | null>(null);
@@ -56,6 +57,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
     appName: app.name,
     currency: app.currency || "USD",
     weekStartDay: app.weekStartDay || "monday",
+    useAppStoreRatioForGooglePlay: app.useAppStoreRatioForGooglePlay ?? false,
   };
 
   const isActive = (path: string) => pathname === path;
