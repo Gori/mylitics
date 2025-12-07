@@ -355,12 +355,22 @@ export const getLatestMetrics = query({
         console.log(`[Google Play Ratio] Derived Google Play plan split: monthlyCharged=${platformMap.googleplay.monthlyPlanChargedRevenue}, yearlyCharged=${platformMap.googleplay.yearlyPlanChargedRevenue}`);
         
         // Apply ratio to subscribers
-        const totalSubs = googlePlay.monthlySubscribers + googlePlay.yearlySubscribers;
-        if (totalSubs === 0 && googlePlay.paidSubscribers > 0) {
-          // Derive subscriber counts from ratio if we have paid subs but no split
-          platformMap.googleplay.monthlySubscribers = Math.round(googlePlay.paidSubscribers * monthlyRatio);
-          platformMap.googleplay.yearlySubscribers = Math.round(googlePlay.paidSubscribers * yearlyRatio);
-          console.log(`[Google Play Ratio] Derived subscriber split: monthly=${platformMap.googleplay.monthlySubscribers}, yearly=${platformMap.googleplay.yearlySubscribers}`);
+        const monthlySubsExisting = googlePlay.monthlySubscribers ?? 0;
+        const yearlySubsExisting = googlePlay.yearlySubscribers ?? 0;
+        const totalSubs = monthlySubsExisting + yearlySubsExisting;
+        if (totalSubs === 0) {
+          // Derive subscriber counts from ratio - use paidSubscribers if available,
+          // otherwise derive from activeSubscribers - trialSubscribers
+          let baseSubs = googlePlay.paidSubscribers || 0;
+          if (baseSubs === 0 && googlePlay.activeSubscribers > 0) {
+            baseSubs = Math.max(0, googlePlay.activeSubscribers - (googlePlay.trialSubscribers || 0));
+          }
+          console.log(`[Google Play Ratio] Subscriber base: paidSubs=${googlePlay.paidSubscribers}, activeSubs=${googlePlay.activeSubscribers}, trialSubs=${googlePlay.trialSubscribers}, baseSubs=${baseSubs}`);
+          if (baseSubs > 0) {
+            platformMap.googleplay.monthlySubscribers = Math.round(baseSubs * monthlyRatio);
+            platformMap.googleplay.yearlySubscribers = Math.round(baseSubs * yearlyRatio);
+            console.log(`[Google Play Ratio] Derived subscriber split: monthly=${platformMap.googleplay.monthlySubscribers}, yearly=${platformMap.googleplay.yearlySubscribers}`);
+          }
         }
       } else {
         console.log(`[Google Play Ratio] SKIPPED: App Store total is 0, no ratio to calculate`);
@@ -594,7 +604,9 @@ export const getWeeklyMetricsHistory = query({
       googleRevenue: number;
       googleProceeds: number;
       googlePaidSubs: number;
-      googlePaidSubsDate: string;
+      googleActiveSubs: number;
+      googleTrialSubs: number;
+      googleSubsDate: string;
     }> = {};
 
     for (const snap of snapshots) {
@@ -614,7 +626,9 @@ export const getWeeklyMetricsHistory = query({
           googleRevenue: 0,
           googleProceeds: 0,
           googlePaidSubs: 0,
-          googlePaidSubsDate: "",
+          googleActiveSubs: 0,
+          googleTrialSubs: 0,
+          googleSubsDate: "",
         };
       }
       if (snap.platform === "appstore") {
@@ -624,10 +638,14 @@ export const getWeeklyMetricsHistory = query({
         ratioByWeek[weekKey].googleCharged += snap.monthlyChargedRevenue || 0;
         ratioByWeek[weekKey].googleRevenue += snap.monthlyRevenue || 0;
         ratioByWeek[weekKey].googleProceeds += snap.monthlyProceeds || 0;
-        // Track the most recent paidSubscribers value in this week for subscriber split
-        if (!ratioByWeek[weekKey].googlePaidSubsDate || snap.date >= ratioByWeek[weekKey].googlePaidSubsDate) {
+        // Track the most recent NON-ZERO subscriber values in this week for subscriber split
+        // (Google Play has reporting delays, so we keep last known good values)
+        const snapActiveSubs = snap.activeSubscribers || 0;
+        if (snapActiveSubs > 0 && (!ratioByWeek[weekKey].googleSubsDate || snap.date >= ratioByWeek[weekKey].googleSubsDate)) {
           ratioByWeek[weekKey].googlePaidSubs = snap.paidSubscribers || 0;
-          ratioByWeek[weekKey].googlePaidSubsDate = snap.date;
+          ratioByWeek[weekKey].googleActiveSubs = snapActiveSubs;
+          ratioByWeek[weekKey].googleTrialSubs = snap.trialSubscribers || 0;
+          ratioByWeek[weekKey].googleSubsDate = snap.date;
         }
       }
 
@@ -661,6 +679,22 @@ export const getWeeklyMetricsHistory = query({
       }
       
       weeklyData[weekKey][snap.platform] = entry;
+    }
+
+    // Fill in missing Google Play subscriber data from previous weeks
+    // (Google Play has reporting delays, so carry forward last known values)
+    const sortedWeeks = Object.keys(ratioByWeek).sort();
+    let lastKnownGoogleSubs = { paidSubs: 0, activeSubs: 0, trialSubs: 0 };
+    for (const week of sortedWeeks) {
+      const r = ratioByWeek[week];
+      if (r.googleActiveSubs > 0) {
+        lastKnownGoogleSubs = { paidSubs: r.googlePaidSubs, activeSubs: r.googleActiveSubs, trialSubs: r.googleTrialSubs };
+      } else if (lastKnownGoogleSubs.activeSubs > 0) {
+        // Carry forward from previous week
+        r.googlePaidSubs = lastKnownGoogleSubs.paidSubs;
+        r.googleActiveSubs = lastKnownGoogleSubs.activeSubs;
+        r.googleTrialSubs = lastKnownGoogleSubs.trialSubs;
+      }
     }
 
     // Stock metrics that should show null (line stops) when value is 0 for Google Play
@@ -770,10 +804,17 @@ export const getWeeklyMetricsHistory = query({
                 googleplay = Math.round(((ratioInfo.googleProceeds || 0) * monthlyRatio + Number.EPSILON) * 100) / 100;
               } else if (metric === "yearlyPlanProceeds" || metric === "weeklyPlanProceedsYearly") {
                 googleplay = Math.round(((ratioInfo.googleProceeds || 0) * yearlyRatio + Number.EPSILON) * 100) / 100;
-              } else if (metric === "monthlySubscribers") {
-                googleplay = Math.round((ratioInfo.googlePaidSubs || 0) * monthlyRatio);
-              } else if (metric === "yearlySubscribers") {
-                googleplay = Math.round((ratioInfo.googlePaidSubs || 0) * yearlyRatio);
+              } else if (metric === "monthlySubscribers" || metric === "yearlySubscribers") {
+                // Use paidSubs if available, otherwise derive from activeSubs - trialSubs
+                let baseSubs = ratioInfo.googlePaidSubs || 0;
+                if (baseSubs === 0 && ratioInfo.googleActiveSubs > 0) {
+                  baseSubs = Math.max(0, ratioInfo.googleActiveSubs - (ratioInfo.googleTrialSubs || 0));
+                }
+                if (metric === "monthlySubscribers") {
+                  googleplay = Math.round(baseSubs * monthlyRatio);
+                } else {
+                  googleplay = Math.round(baseSubs * yearlyRatio);
+                }
               }
             };
 
@@ -890,7 +931,9 @@ export const getMonthlyMetricsHistory = query({
       googleRevenue: number;
       googleProceeds: number;
       googlePaidSubs: number;
-      googlePaidSubsDate: string;
+      googleActiveSubs: number;
+      googleTrialSubs: number;
+      googleSubsDate: string;
     }> = {};
 
     // Group by month (YYYY-MM) and platform
@@ -912,7 +955,9 @@ export const getMonthlyMetricsHistory = query({
           googleRevenue: 0,
           googleProceeds: 0,
           googlePaidSubs: 0,
-          googlePaidSubsDate: "",
+          googleActiveSubs: 0,
+          googleTrialSubs: 0,
+          googleSubsDate: "",
         };
       }
       if (snap.platform === "appstore") {
@@ -922,9 +967,14 @@ export const getMonthlyMetricsHistory = query({
         ratioByMonth[monthKey].googleCharged += snap.monthlyChargedRevenue || 0;
         ratioByMonth[monthKey].googleRevenue += snap.monthlyRevenue || 0;
         ratioByMonth[monthKey].googleProceeds += snap.monthlyProceeds || 0;
-        if (!ratioByMonth[monthKey].googlePaidSubsDate || snap.date >= ratioByMonth[monthKey].googlePaidSubsDate) {
+        // Track the most recent NON-ZERO subscriber values in this month for subscriber split
+        // (Google Play has reporting delays, so we keep last known good values)
+        const snapActiveSubs = snap.activeSubscribers || 0;
+        if (snapActiveSubs > 0 && (!ratioByMonth[monthKey].googleSubsDate || snap.date >= ratioByMonth[monthKey].googleSubsDate)) {
           ratioByMonth[monthKey].googlePaidSubs = snap.paidSubscribers || 0;
-          ratioByMonth[monthKey].googlePaidSubsDate = snap.date;
+          ratioByMonth[monthKey].googleActiveSubs = snapActiveSubs;
+          ratioByMonth[monthKey].googleTrialSubs = snap.trialSubscribers || 0;
+          ratioByMonth[monthKey].googleSubsDate = snap.date;
         }
       }
       
@@ -957,6 +1007,22 @@ export const getMonthlyMetricsHistory = query({
       }
       
       monthlyData[monthKey][snap.platform] = entry;
+    }
+
+    // Fill in missing Google Play subscriber data from previous months
+    // (Google Play has reporting delays, so carry forward last known values)
+    const sortedMonths = Object.keys(ratioByMonth).sort();
+    let lastKnownGoogleSubsMonthly = { paidSubs: 0, activeSubs: 0, trialSubs: 0 };
+    for (const month of sortedMonths) {
+      const r = ratioByMonth[month];
+      if (r.googleActiveSubs > 0) {
+        lastKnownGoogleSubsMonthly = { paidSubs: r.googlePaidSubs, activeSubs: r.googleActiveSubs, trialSubs: r.googleTrialSubs };
+      } else if (lastKnownGoogleSubsMonthly.activeSubs > 0) {
+        // Carry forward from previous month
+        r.googlePaidSubs = lastKnownGoogleSubsMonthly.paidSubs;
+        r.googleActiveSubs = lastKnownGoogleSubsMonthly.activeSubs;
+        r.googleTrialSubs = lastKnownGoogleSubsMonthly.trialSubs;
+      }
     }
 
     const stockMetrics = [
@@ -1059,10 +1125,17 @@ export const getMonthlyMetricsHistory = query({
                 googleplay = Math.round(((ratioInfo.googleProceeds || 0) * monthlyRatio + Number.EPSILON) * 100) / 100;
               } else if (metric === "yearlyPlanProceeds" || metric === "weeklyPlanProceedsYearly") {
                 googleplay = Math.round(((ratioInfo.googleProceeds || 0) * yearlyRatio + Number.EPSILON) * 100) / 100;
-              } else if (metric === "monthlySubscribers") {
-                googleplay = Math.round((ratioInfo.googlePaidSubs || 0) * monthlyRatio);
-              } else if (metric === "yearlySubscribers") {
-                googleplay = Math.round((ratioInfo.googlePaidSubs || 0) * yearlyRatio);
+              } else if (metric === "monthlySubscribers" || metric === "yearlySubscribers") {
+                // Use paidSubs if available, otherwise derive from activeSubs - trialSubs
+                let baseSubs = ratioInfo.googlePaidSubs || 0;
+                if (baseSubs === 0 && ratioInfo.googleActiveSubs > 0) {
+                  baseSubs = Math.max(0, ratioInfo.googleActiveSubs - (ratioInfo.googleTrialSubs || 0));
+                }
+                if (metric === "monthlySubscribers") {
+                  googleplay = Math.round(baseSubs * monthlyRatio);
+                } else {
+                  googleplay = Math.round(baseSubs * yearlyRatio);
+                }
               }
             };
 
