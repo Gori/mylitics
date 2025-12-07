@@ -4,7 +4,7 @@ import { useQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useApp } from "@/app/apps/[slug]/layout";
 import { useMemo, useState, useEffect } from "react";
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, ResponsiveContainer } from "recharts";
+import { LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid, ResponsiveContainer } from "recharts";
 import { Card, CardContent } from "@/components/ui/card";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { ChartContainer, ChartTooltip, ChartTooltipContent, ChartFooter, type ChartConfig } from "@/components/ui/chart";
@@ -18,6 +18,7 @@ import { SidebarProvider, SidebarInset, SidebarTrigger } from "@/components/ui/s
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { CalendarDays, ChevronDown, Loader2 } from "lucide-react";
+import { formatRevenue, type RevenueFormat } from "@/app/dashboard/formatters";
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -44,6 +45,9 @@ export default function DashboardPage() {
   const [cleanupResult, setCleanupResult] = useState<any>(null);
   const [appStoreFixResult, setAppStoreFixResult] = useState<any>(null);
   const [viewMode, setViewMode] = useState<"monthly" | "weekly">("monthly");
+  const revenueFormat = (userPreferences?.revenueFormat as RevenueFormat) ?? "whole";
+  const chartType = (userPreferences?.chartType as "line" | "area") ?? "line";
+  const prettyRevenue = (value: number) => formatRevenue(value, currency, revenueFormat);
 
   // Monitor logs for sync completion or cancellation
   useEffect(() => {
@@ -128,15 +132,6 @@ export default function DashboardPage() {
       dateStyle: "medium",
       timeStyle: "short",
     }).format(new Date(timestamp));
-  };
-
-  const formatCurrency = (amount: number) => {
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: currency,
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    }).format(amount);
   };
 
   // Use connected platforms from backend (actual platform connections)
@@ -244,7 +239,7 @@ export default function DashboardPage() {
           return (
             <div key={platform} className="flex items-center justify-end gap-1">
               <span>
-                {platformLabels[platform]}: {isCurrency ? formatCurrency(value) : value}
+                {platformLabels[platform]}: {isCurrency ? prettyRevenue(value) : value}
               </span>
               {showWarning && (
                 <span 
@@ -290,7 +285,7 @@ export default function DashboardPage() {
           const value = metrics?.platformMap?.[platform]?.[key] ?? 0;
           return (
             <div key={platform}>
-              {platformLabels[platform]}: {formatCurrency(value)}
+              {platformLabels[platform]}: {prettyRevenue(value)}
             </div>
           );
         })}
@@ -316,7 +311,7 @@ export default function DashboardPage() {
           return (
             <div key={platform} className="flex items-center justify-end gap-1">
               <span>
-                {platformLabels[platform]}: {isCurrency ? formatCurrency(value) : value}
+                {platformLabels[platform]}: {isCurrency ? prettyRevenue(value) : value}
               </span>
               {isDerived && (
                 <span 
@@ -453,6 +448,8 @@ export default function DashboardPage() {
             <div className="space-y-4 mb-8">
               <div className="grid grid-cols-1 md:grid-cols-1 gap-4">
                 <MetricCard currency={currency}
+                  revenueFormat={revenueFormat}
+                  chartType={chartType}
                   label="Active Subscribers"
                   value={metrics.unified.activeSubscribers}
                   metricKey="activeSubscribers"
@@ -488,6 +485,8 @@ export default function DashboardPage() {
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <MetricCard currency={currency}
+                  revenueFormat={revenueFormat}
+                  chartType={chartType}
                   label="Trial Subscribers"
                   value={metrics.unified.trialSubscribers}
                   metricKey="trialSubscribers"
@@ -498,6 +497,8 @@ export default function DashboardPage() {
                   right={rightBlock("trialSubscribers")}
                 />
                 <MetricCard currency={currency}
+                  revenueFormat={revenueFormat}
+                  chartType={chartType}
                   label="Paid Subscribers"
                   value={metrics.unified.paidSubscribers}
                   metricKey="paidSubscribers"
@@ -510,6 +511,8 @@ export default function DashboardPage() {
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <MetricCard currency={currency}
+                  revenueFormat={revenueFormat}
+                  chartType={chartType}
                   label="Monthly Subs"
                   value={metrics.unified.monthlySubscribers}
                   metricKey="monthlySubscribers"
@@ -520,6 +523,8 @@ export default function DashboardPage() {
                   right={rightBlockPlanSplit("monthlySubscribers")}
                 />
                 <MetricCard currency={currency}
+                  revenueFormat={revenueFormat}
+                  chartType={chartType}
                   label="Yearly Subs"
                   value={metrics.unified.yearlySubscribers}
                   metricKey="yearlySubscribers"
@@ -532,6 +537,8 @@ export default function DashboardPage() {
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <MetricCard currency={currency}
+                  revenueFormat={revenueFormat}
+                  chartType={chartType}
                   label="Cancellations"
                   value={metrics.unified.cancellations}
                   metricKey="cancellations"
@@ -542,6 +549,8 @@ export default function DashboardPage() {
                   right={rightBlock("cancellations")}
                 />
                 <MetricCard currency={currency}
+                  revenueFormat={revenueFormat}
+                  chartType={chartType}
                   label="Grace Events"
                   value={metrics.unified.graceEvents}
                   metricKey="graceEvents"
@@ -554,6 +563,8 @@ export default function DashboardPage() {
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <MetricCard currency={currency}
+                  revenueFormat={revenueFormat}
+                  chartType={chartType}
                   label="Churn Rate"
                   value={formatPercent(viewMode === "monthly" ? metrics.unified.churnRate : metrics.unified.weeklyChurnRate)}
                   metricKey="churnRate"
@@ -564,8 +575,10 @@ export default function DashboardPage() {
                   right={rightBlockChurnRate(viewMode)}
                 />
                 <MetricCard currency={currency}
+                  revenueFormat={revenueFormat}
+                  chartType={chartType}
                   label="ARPU"
-                  value={formatCurrency(viewMode === "monthly" ? metrics.unified.arpu : metrics.unified.weeklyArpu)}
+                  value={prettyRevenue(viewMode === "monthly" ? metrics.unified.arpu : metrics.unified.weeklyArpu)}
                   metricKey="arpu"
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
@@ -576,6 +589,8 @@ export default function DashboardPage() {
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <MetricCard currency={currency}
+                  revenueFormat={revenueFormat}
+                  chartType={chartType}
                   label="First Payments"
                   value={metrics.unified.firstPayments}
                   metricKey="firstPayments"
@@ -586,6 +601,8 @@ export default function DashboardPage() {
                   right={rightBlock("firstPayments")}
                 />
                 <MetricCard currency={currency}
+                  revenueFormat={revenueFormat}
+                  chartType={chartType}
                   label="Renewals"
                   value={metrics.unified.renewals}
                   metricKey="renewals"
@@ -598,8 +615,10 @@ export default function DashboardPage() {
               </div>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <MetricCard currency={currency}
+                  revenueFormat={revenueFormat}
+                  chartType={chartType}
                   label={viewMode === "monthly" ? "Charged Revenue (incl. VAT & Fees)" : "Weekly Charged Rev. (incl. VAT & Fees)"}
-                  value={formatCurrency(viewMode === "monthly" ? metrics.unified.monthlyChargedRevenue : metrics.unified.weeklyChargedRevenue)}
+                  value={prettyRevenue(viewMode === "monthly" ? metrics.unified.monthlyChargedRevenue : metrics.unified.weeklyChargedRevenue)}
                   metricKey="monthlyChargedRevenue"
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
@@ -608,8 +627,10 @@ export default function DashboardPage() {
                   right={rightBlock(viewMode === "monthly" ? "monthlyChargedRevenue" : "weeklyChargedRevenue", true)}
                 />
                 <MetricCard currency={currency}
+                  revenueFormat={revenueFormat}
+                  chartType={chartType}
                   label={viewMode === "monthly" ? "Revenue (excl. VAT, incl. Fees)" : "Weekly Revenue (excl. VAT, incl. Fees)"}
-                  value={formatCurrency(viewMode === "monthly" ? metrics.unified.monthlyRevenue : metrics.unified.weeklyRevenue)}
+                  value={prettyRevenue(viewMode === "monthly" ? metrics.unified.monthlyRevenue : metrics.unified.weeklyRevenue)}
                   metricKey="monthlyRevenue"
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
@@ -618,8 +639,10 @@ export default function DashboardPage() {
                   right={rightBlock(viewMode === "monthly" ? "monthlyRevenue" : "weeklyRevenue", true)}
                 />
                 <MetricCard currency={currency}
+                  revenueFormat={revenueFormat}
+                  chartType={chartType}
                   label={viewMode === "monthly" ? "Proceeds (excl. VAT & Fees)" : "Weekly Proceeds (excl. VAT & Fees)"}
-                  value={formatCurrency(viewMode === "monthly" ? (metrics.unified.monthlyProceeds ?? 0) : (metrics.unified.weeklyProceeds ?? 0))}
+                  value={prettyRevenue(viewMode === "monthly" ? (metrics.unified.monthlyProceeds ?? 0) : (metrics.unified.weeklyProceeds ?? 0))}
                   metricKey="monthlyProceeds"
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
@@ -630,8 +653,10 @@ export default function DashboardPage() {
               </div>
               <div className="grid grid-cols-1 md:grid-cols-1 gap-4">
                 <MetricCard currency={currency}
+                  revenueFormat={revenueFormat}
+                  chartType={chartType}
                   label="MRR"
-                  value={formatCurrency(metrics.unified.mrr)}
+                  value={prettyRevenue(metrics.unified.mrr)}
                   metricKey="mrr"
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
@@ -645,8 +670,10 @@ export default function DashboardPage() {
               <h2 className="text-xl font-semibold mt-8 mb-4">Revenue by Plan Type</h2>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <MetricCard currency={currency}
+                  revenueFormat={revenueFormat}
+                  chartType={chartType}
                   label={viewMode === "monthly" ? "Monthly Plans - Charged Revenue" : "Monthly Plans - Weekly Charged Rev."}
-                  value={formatCurrency(viewMode === "monthly" ? (metrics.unified.monthlyPlanChargedRevenue ?? 0) : (metrics.unified.weeklyPlanChargedRevenueMonthly ?? 0))}
+                  value={prettyRevenue(viewMode === "monthly" ? (metrics.unified.monthlyPlanChargedRevenue ?? 0) : (metrics.unified.weeklyPlanChargedRevenueMonthly ?? 0))}
                   metricKey="monthlyPlanChargedRevenue"
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
@@ -655,8 +682,10 @@ export default function DashboardPage() {
                   right={rightBlockPlanSplit(viewMode === "monthly" ? "monthlyPlanChargedRevenue" : "weeklyPlanChargedRevenueMonthly", true)}
                 />
                 <MetricCard currency={currency}
+                  revenueFormat={revenueFormat}
+                  chartType={chartType}
                   label={viewMode === "monthly" ? "Yearly Plans - Charged Revenue" : "Yearly Plans - Weekly Charged Rev."}
-                  value={formatCurrency(viewMode === "monthly" ? (metrics.unified.yearlyPlanChargedRevenue ?? 0) : (metrics.unified.weeklyPlanChargedRevenueYearly ?? 0))}
+                  value={prettyRevenue(viewMode === "monthly" ? (metrics.unified.yearlyPlanChargedRevenue ?? 0) : (metrics.unified.weeklyPlanChargedRevenueYearly ?? 0))}
                   metricKey="yearlyPlanChargedRevenue"
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
@@ -667,8 +696,10 @@ export default function DashboardPage() {
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <MetricCard currency={currency}
+                  revenueFormat={revenueFormat}
+                  chartType={chartType}
                   label={viewMode === "monthly" ? "Monthly Plans - Revenue" : "Monthly Plans - Weekly Revenue"}
-                  value={formatCurrency(viewMode === "monthly" ? (metrics.unified.monthlyPlanRevenue ?? 0) : (metrics.unified.weeklyPlanRevenueMonthly ?? 0))}
+                  value={prettyRevenue(viewMode === "monthly" ? (metrics.unified.monthlyPlanRevenue ?? 0) : (metrics.unified.weeklyPlanRevenueMonthly ?? 0))}
                   metricKey="monthlyPlanRevenue"
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
@@ -677,8 +708,10 @@ export default function DashboardPage() {
                   right={rightBlockPlanSplit(viewMode === "monthly" ? "monthlyPlanRevenue" : "weeklyPlanRevenueMonthly", true)}
                 />
                 <MetricCard currency={currency}
+                  revenueFormat={revenueFormat}
+                  chartType={chartType}
                   label={viewMode === "monthly" ? "Yearly Plans - Revenue" : "Yearly Plans - Weekly Revenue"}
-                  value={formatCurrency(viewMode === "monthly" ? (metrics.unified.yearlyPlanRevenue ?? 0) : (metrics.unified.weeklyPlanRevenueYearly ?? 0))}
+                  value={prettyRevenue(viewMode === "monthly" ? (metrics.unified.yearlyPlanRevenue ?? 0) : (metrics.unified.weeklyPlanRevenueYearly ?? 0))}
                   metricKey="yearlyPlanRevenue"
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
@@ -689,8 +722,10 @@ export default function DashboardPage() {
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <MetricCard currency={currency}
+                  revenueFormat={revenueFormat}
+                  chartType={chartType}
                   label={viewMode === "monthly" ? "Monthly Plans - Proceeds" : "Monthly Plans - Weekly Proceeds"}
-                  value={formatCurrency(viewMode === "monthly" ? (metrics.unified.monthlyPlanProceeds ?? 0) : (metrics.unified.weeklyPlanProceedsMonthly ?? 0))}
+                  value={prettyRevenue(viewMode === "monthly" ? (metrics.unified.monthlyPlanProceeds ?? 0) : (metrics.unified.weeklyPlanProceedsMonthly ?? 0))}
                   metricKey="monthlyPlanProceeds"
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
@@ -699,8 +734,10 @@ export default function DashboardPage() {
                   right={rightBlockPlanSplit(viewMode === "monthly" ? "monthlyPlanProceeds" : "weeklyPlanProceedsMonthly", true)}
                 />
                 <MetricCard currency={currency}
+                  revenueFormat={revenueFormat}
+                  chartType={chartType}
                   label={viewMode === "monthly" ? "Yearly Plans - Proceeds" : "Yearly Plans - Weekly Proceeds"}
-                  value={formatCurrency(viewMode === "monthly" ? (metrics.unified.yearlyPlanProceeds ?? 0) : (metrics.unified.weeklyPlanProceedsYearly ?? 0))}
+                  value={prettyRevenue(viewMode === "monthly" ? (metrics.unified.yearlyPlanProceeds ?? 0) : (metrics.unified.weeklyPlanProceedsYearly ?? 0))}
                   metricKey="yearlyPlanProceeds"
                   appId={appId}
                   connectedPlatforms={connectedPlatforms}
@@ -757,10 +794,10 @@ export default function DashboardPage() {
                       <div key={platform} className="bg-white p-3 rounded border">
                         <div className="font-semibold text-lg capitalize">{platform}</div>
                         <div className="text-sm font-mono">
-                          <div>Gross: {formatCurrency(totals.gross)}</div>
-                          <div>Net: {formatCurrency(totals.net)}</div>
+                          <div>Gross: {prettyRevenue(totals.gross)}</div>
+                          <div>Net: {prettyRevenue(totals.net)}</div>
                           <div>Days: {totals.days}</div>
-                          <div>Avg Daily: {formatCurrency(totals.avgDaily)}</div>
+                          <div>Avg Daily: {prettyRevenue(totals.avgDaily)}</div>
                         </div>
                         <div className="text-lg font-bold text-blue-700 mt-2">
                           {validateRevenue.revenueSplitPercentage[platform]} of total
@@ -771,8 +808,8 @@ export default function DashboardPage() {
                   <div className="bg-white p-3 rounded border">
                     <div className="font-semibold">Total All Platforms (Oct 2025)</div>
                     <div className="text-xl font-mono">
-                      Gross: {formatCurrency(validateRevenue.totalAllPlatforms.gross)} | 
-                      Net: {formatCurrency(validateRevenue.totalAllPlatforms.net)}
+                      Gross: {prettyRevenue(validateRevenue.totalAllPlatforms.gross)} | 
+                      Net: {prettyRevenue(validateRevenue.totalAllPlatforms.net)}
                     </div>
                   </div>
                   <div className="bg-white p-3 rounded border">
@@ -783,7 +820,7 @@ export default function DashboardPage() {
                           <div className="font-bold">{date}:</div>
                           {Object.entries(platforms).map(([p, v]: [string, any]) => (
                             <div key={p} className="ml-4">
-                              {p}: Gross {formatCurrency(v.gross)}, Net {formatCurrency(v.net)}
+                              {p}: Gross {prettyRevenue(v.gross)}, Net {prettyRevenue(v.net)}
                             </div>
                           ))}
                         </div>
@@ -834,7 +871,7 @@ export default function DashboardPage() {
                   <div className="mb-4 p-4 bg-yellow-50 border border-yellow-200 rounded">
                     <h3 className="font-semibold text-yellow-800 mb-2">⚠️ Incorrect App Store Revenue Detected!</h3>
                     <p className="text-sm text-yellow-700 mb-2">
-                      App Store shows NOK {formatCurrency(debugRevenue.snapshotTotals.appstore.net)} revenue, but App Store SUMMARY reports don't contain actual transaction data. 
+                      App Store shows NOK {prettyRevenue(debugRevenue.snapshotTotals.appstore.net)} revenue, but App Store SUMMARY reports don't contain actual transaction data. 
                       This is incorrectly calculated cumulative subscription values, not daily revenue.
                     </p>
                     <Button
@@ -850,7 +887,7 @@ export default function DashboardPage() {
                         {appStoreFixResult.error ? (
                           `Error: ${appStoreFixResult.error}`
                         ) : (
-                          `✓ Fixed ${appStoreFixResult.snapshotsFixed} App Store snapshots. Removed ${formatCurrency(appStoreFixResult.totalRevenueRemoved)} in incorrect revenue. Refresh to see updated metrics.`
+                          `✓ Fixed ${appStoreFixResult.snapshotsFixed} App Store snapshots. Removed ${prettyRevenue(appStoreFixResult.totalRevenueRemoved)} in incorrect revenue. Refresh to see updated metrics.`
                         )}
                       </div>
                     )}
@@ -862,12 +899,12 @@ export default function DashboardPage() {
                       <h3 className="font-semibold mb-2">Snapshot Totals (Sum of 30 days)</h3>
                       <div className="text-sm space-y-1 font-mono">
                         <div>Stripe: {debugRevenue.snapshotTotals.stripe.count} snapshots</div>
-                        <div>Stripe Gross: {formatCurrency(debugRevenue.snapshotTotals.stripe.gross)}</div>
-                        <div>Stripe Net: {formatCurrency(debugRevenue.snapshotTotals.stripe.net)}</div>
+                        <div>Stripe Gross: {prettyRevenue(debugRevenue.snapshotTotals.stripe.gross)}</div>
+                        <div>Stripe Net: {prettyRevenue(debugRevenue.snapshotTotals.stripe.net)}</div>
                         <div className="mt-2">App Store: {debugRevenue.snapshotTotals.appstore.count} snapshots</div>
-                        <div>App Store Gross: {formatCurrency(debugRevenue.snapshotTotals.appstore.gross)}</div>
-                        <div>App Store Net: {formatCurrency(debugRevenue.snapshotTotals.appstore.net)}</div>
-                        <div className="font-bold mt-2">Total Net: {formatCurrency(debugRevenue.snapshotTotals.stripe.net + debugRevenue.snapshotTotals.appstore.net)}</div>
+                        <div>App Store Gross: {prettyRevenue(debugRevenue.snapshotTotals.appstore.gross)}</div>
+                        <div>App Store Net: {prettyRevenue(debugRevenue.snapshotTotals.appstore.net)}</div>
+                        <div className="font-bold mt-2">Total Net: {prettyRevenue(debugRevenue.snapshotTotals.stripe.net + debugRevenue.snapshotTotals.appstore.net)}</div>
                         <div className="text-xs text-gray-600 mt-2">Expected: ~30 snapshots per platform for 30 days</div>
                       </div>
                     </div>
@@ -875,17 +912,17 @@ export default function DashboardPage() {
                       <h3 className="font-semibold mb-2">Raw Event Totals (30 Days)</h3>
                       <div className="text-sm space-y-1 font-mono">
                         <div className="font-semibold">Stripe ({debugRevenue.eventTotals.stripe.count} events):</div>
-                        <div className="ml-2">Total: {formatCurrency(debugRevenue.eventTotals.stripe.total)}</div>
-                        <div className="ml-2">First: {formatCurrency(debugRevenue.eventTotals.stripe.byType.first_payment)} | Renewals: {formatCurrency(debugRevenue.eventTotals.stripe.byType.renewal)}</div>
+                        <div className="ml-2">Total: {prettyRevenue(debugRevenue.eventTotals.stripe.total)}</div>
+                        <div className="ml-2">First: {prettyRevenue(debugRevenue.eventTotals.stripe.byType.first_payment)} | Renewals: {prettyRevenue(debugRevenue.eventTotals.stripe.byType.renewal)}</div>
                         
                         <div className="font-semibold mt-2">App Store ({debugRevenue.eventTotals.appstore.count} events):</div>
-                        <div className="ml-2">Total: {formatCurrency(debugRevenue.eventTotals.appstore.total)}</div>
-                        <div className="ml-2">First: {formatCurrency(debugRevenue.eventTotals.appstore.byType.first_payment)} | Renewals: {formatCurrency(debugRevenue.eventTotals.appstore.byType.renewal)}</div>
+                        <div className="ml-2">Total: {prettyRevenue(debugRevenue.eventTotals.appstore.total)}</div>
+                        <div className="ml-2">First: {prettyRevenue(debugRevenue.eventTotals.appstore.byType.first_payment)} | Renewals: {prettyRevenue(debugRevenue.eventTotals.appstore.byType.renewal)}</div>
                         
                         {debugRevenue.eventTotals.googleplay.count > 0 && (
                           <>
                             <div className="font-semibold mt-2">Google Play ({debugRevenue.eventTotals.googleplay.count} events):</div>
-                            <div className="ml-2">Total: {formatCurrency(debugRevenue.eventTotals.googleplay.total)}</div>
+                            <div className="ml-2">Total: {prettyRevenue(debugRevenue.eventTotals.googleplay.total)}</div>
                           </>
                         )}
                       </div>
@@ -908,8 +945,8 @@ export default function DashboardPage() {
                             {debugRevenue.sampleSnapshotsStripe.map((snap: any) => (
                               <tr key={snap.date} className="border-t">
                                 <td className="px-2 py-1">{snap.date}</td>
-                                <td className="px-2 py-1 text-right">{formatCurrency(snap.monthlyChargedRevenue)}</td>
-                                <td className="px-2 py-1 text-right">{formatCurrency(snap.monthlyRevenue)}</td>
+                                <td className="px-2 py-1 text-right">{prettyRevenue(snap.monthlyChargedRevenue)}</td>
+                                <td className="px-2 py-1 text-right">{prettyRevenue(snap.monthlyRevenue)}</td>
                               </tr>
                             ))}
                           </tbody>
@@ -932,8 +969,8 @@ export default function DashboardPage() {
                             {debugRevenue.sampleSnapshotsAppStore.map((snap: any) => (
                               <tr key={snap.date} className="border-t">
                                 <td className="px-2 py-1">{snap.date}</td>
-                                <td className="px-2 py-1 text-right">{formatCurrency(snap.monthlyChargedRevenue)}</td>
-                                <td className="px-2 py-1 text-right">{formatCurrency(snap.monthlyRevenue)}</td>
+                                <td className="px-2 py-1 text-right">{prettyRevenue(snap.monthlyChargedRevenue)}</td>
+                                <td className="px-2 py-1 text-right">{prettyRevenue(snap.monthlyRevenue)}</td>
                               </tr>
                             ))}
                           </tbody>
@@ -960,7 +997,7 @@ export default function DashboardPage() {
                               <td className="px-2 py-1">{event.date}</td>
                               <td className="px-2 py-1">{event.platform}</td>
                               <td className="px-2 py-1">{event.eventType}</td>
-                              <td className="px-2 py-1 text-right">{formatCurrency(event.amount)}</td>
+                              <td className="px-2 py-1 text-right">{prettyRevenue(event.amount)}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -1040,12 +1077,12 @@ export default function DashboardPage() {
 
             <div className="mt-12">
               <h2 className="text-xl font-semibold mb-4">Debug: Monthly Metrics Data</h2>
-              <DebugDataTable debugData={debugData} userCurrency={currency} periodType="monthly" />
+              <DebugDataTable debugData={debugData} userCurrency={currency} periodType="monthly" revenueFormat={revenueFormat} />
             </div>
 
             <div className="mt-12">
               <h2 className="text-xl font-semibold mb-4">Debug: Weekly Metrics Data</h2>
-              <DebugDataTable debugData={debugData} userCurrency={currency} periodType="weekly" />
+              <DebugDataTable debugData={debugData} userCurrency={currency} periodType="weekly" revenueFormat={revenueFormat} />
             </div>
           </>
         )}
@@ -1055,13 +1092,15 @@ export default function DashboardPage() {
       <ChatSidebar
         chatContext={chatContext}
         debugData={debugData}
+        revenueFormat={revenueFormat}
+        chartType={chartType}
       />
     </SidebarProvider>
   );
 }
 
 
-const CustomChartTooltip = ({ active, payload, label, currency, config, metricKey, connectedPlatforms, viewMode }: any) => {
+const CustomChartTooltip = ({ active, payload, label, currency, config, metricKey, connectedPlatforms, viewMode, revenueFormat }: any) => {
   if (!active || !payload || !payload.length) return null;
 
   const isCurrency = metricKey.toLowerCase().includes("revenue") || metricKey.toLowerCase().includes("proceeds") || metricKey === "mrr" || metricKey === "arpu";
@@ -1071,12 +1110,7 @@ const CustomChartTooltip = ({ active, payload, label, currency, config, metricKe
       return `${val.toFixed(2)}%`;
     }
     if (isCurrency) {
-      return new Intl.NumberFormat("en-US", {
-        style: "currency",
-        currency: currency,
-        minimumFractionDigits: 0,
-        maximumFractionDigits: 0,
-      }).format(val);
+      return formatRevenue(val, currency, revenueFormat);
     }
     return new Intl.NumberFormat("en-US").format(val);
   };
@@ -1111,15 +1145,31 @@ const CustomChartTooltip = ({ active, payload, label, currency, config, metricKe
     }
   };
 
+  // Combine real and derived values for each platform from the payload
+  // The payload now has entries like appstore_real, appstore_derived, etc.
+  const dataPoint = payload[0]?.payload;
+  const platformValues: { platform: string; value: number | null; isDerived: boolean }[] = [];
+  
+  for (const platform of connectedPlatforms) {
+    const realValue = dataPoint?.[`${platform}_real`];
+    const derivedValue = dataPoint?.[`${platform}_derived`];
+    const value = realValue ?? derivedValue ?? null;
+    const isDerived = realValue === null && derivedValue !== null;
+    
+    if (value !== null) {
+      platformValues.push({ platform, value, isDerived });
+    }
+  }
+
   // For churn rate, get the unified value from the data point (not sum of percentages)
   // For other metrics, sum the platform values
   const getTotal = () => {
-    if (isPercent && payload.length > 0 && payload[0].payload?.unified !== undefined) {
+    if (isPercent && dataPoint?.unified !== undefined) {
       // Use the pre-calculated unified churn rate from the data
-      return payload[0].payload.unified;
+      return dataPoint.unified;
     }
-    // Sum for other metrics
-    return payload.reduce((acc: number, item: any) => acc + (item.value || 0), 0);
+    // Sum platform values
+    return platformValues.reduce((acc, { value }) => acc + (value || 0), 0);
   };
   const total = getTotal();
 
@@ -1127,26 +1177,28 @@ const CustomChartTooltip = ({ active, payload, label, currency, config, metricKe
     <div className="border-border/50 bg-background grid min-w-[13rem] items-start gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs shadow-xl">
       <div className="font-medium mb-1">{formatLabel(label)}</div>
       <div className="grid gap-1.5">
-        {payload.map((item: any) => {
-          const key = item.dataKey || item.name;
-          const itemConfig = config[key];
-          const itemLabel = itemConfig?.label || item.name;
-          const color = itemConfig?.color || item.stroke || item.fill;
+        {platformValues.map(({ platform, value, isDerived }) => {
+          const itemConfig = config[platform];
+          const itemLabel = itemConfig?.label || platform;
+          const color = itemConfig?.color;
 
           return (
-            <div key={key} className="flex w-full items-center gap-2">
+            <div key={platform} className="flex w-full items-center gap-2">
               <div
                 className="h-2.5 w-2.5 shrink-0 rounded-[2px]"
-                style={{ backgroundColor: color }}
+                style={{ backgroundColor: color, opacity: isDerived ? 0.6 : 1 }}
               />
-              <div className="text-muted-foreground">{itemLabel}</div>
+              <div className="text-muted-foreground">
+                {itemLabel}
+                {isDerived && <span className="ml-1 text-amber-600">*</span>}
+              </div>
               <div className="ml-auto font-mono font-medium tabular-nums text-foreground">
-                {formatValue(item.value)}
+                {formatValue(value!)}
               </div>
             </div>
           );
         })}
-        {connectedPlatforms.length > 1 && (
+        {connectedPlatforms.length > 1 && platformValues.length > 0 && (
           <div className="mt-2 flex w-full items-center gap-2 border-t pt-2 font-medium">
             <div className="text-foreground">{isPercent ? "Unified" : "Total"}</div>
             <div className="ml-auto font-mono font-medium tabular-nums text-foreground">
@@ -1154,21 +1206,13 @@ const CustomChartTooltip = ({ active, payload, label, currency, config, metricKe
             </div>
           </div>
         )}
+        {platformValues.some(p => p.isDerived) && (
+          <div className="text-[10px] text-amber-600 mt-1">* Derived/estimated data</div>
+        )}
       </div>
     </div>
   );
 };
-
-// Revenue-based metrics that are marked as LOW TRUST
-const LOW_TRUST_METRICS = new Set([
-  "monthlyChargedRevenue",
-  "monthlyRevenue",
-  "monthlyProceeds",
-  "weeklyChargedRevenue", 
-  "weeklyRevenue",
-  "weeklyProceeds",
-  "mrr",
-]);
 
 function MetricCard({
   label,
@@ -1180,6 +1224,8 @@ function MetricCard({
   viewMode,
   currency,
   platformsWithData,
+  revenueFormat,
+  chartType = "line",
 }: {
   label: string;
   value: string | number;
@@ -1190,8 +1236,9 @@ function MetricCard({
   viewMode: "monthly" | "weekly";
   currency: string;
   platformsWithData?: string[];
+  revenueFormat: RevenueFormat;
+  chartType?: "line" | "area";
 }) {
-  const isLowTrust = LOW_TRUST_METRICS.has(metricKey);
   const isIncomplete = platformsWithData 
     ? connectedPlatforms.some(p => !platformsWithData.includes(p))
     : false;
@@ -1200,6 +1247,117 @@ function MetricCard({
   
   const chartData = viewMode === "monthly" ? monthlyData : weeklyData;
   const dateKey = viewMode === "monthly" ? "month" : "week";
+
+  const REVENUE_METRICS = new Set([
+    "monthlyChargedRevenue",
+    "monthlyRevenue",
+    "monthlyProceeds",
+    "weeklyChargedRevenue",
+    "weeklyRevenue",
+    "weeklyProceeds",
+    "monthlyPlanChargedRevenue",
+    "yearlyPlanChargedRevenue",
+    "monthlyPlanRevenue",
+    "yearlyPlanRevenue",
+    "monthlyPlanProceeds",
+    "yearlyPlanProceeds",
+    "weeklyPlanChargedRevenueMonthly",
+    "weeklyPlanChargedRevenueYearly",
+    "weeklyPlanRevenueMonthly",
+    "weeklyPlanRevenueYearly",
+    "weeklyPlanProceedsMonthly",
+    "weeklyPlanProceedsYearly",
+    "mrr",
+  ]);
+
+  // Transform chart data to split real vs derived values for dashed line rendering
+  // - Real data with status='real' -> solid line
+  // - Derived data (status='derived') -> dashed line  
+  // - Null values after last real data -> carry forward as dashed
+  // - To ensure seamless connection, dashed line includes the last real point
+  const transformedChartData = useMemo(() => {
+    if (!chartData || chartData.length === 0) return [];
+    
+    const platforms = ['appstore', 'googleplay', 'stripe'] as const;
+    
+    // First pass: identify which values are real vs derived
+    // For revenue metrics, incomplete periods should be dashed (derived)
+    const isRevenueMetric = REVENUE_METRICS.has(metricKey);
+
+    const processedData = chartData.map((point: any) => {
+      return {
+        ...point,
+        // Real = status is 'real' (not derived, not unavailable) AND not an incomplete revenue period
+        appstore_isReal: point.appstoreStatus === 'real' && !(isRevenueMetric && point.isIncomplete),
+        googleplay_isReal: point.googleplayStatus === 'real' && !(isRevenueMetric && point.isIncomplete),
+        stripe_isReal: point.stripeStatus === 'real' && !(isRevenueMetric && point.isIncomplete),
+      };
+    });
+    
+    // Second pass: for each platform, carry forward the last known value into null gaps
+    // (don't interpolate - just use the last known value)
+    for (const platform of platforms) {
+      let lastKnownValue: number | null = null;
+      let lastKnownWasReal = false;
+      
+      for (let i = 0; i < processedData.length; i++) {
+        const value = processedData[i][platform];
+        const isReal = processedData[i][`${platform}_isReal`];
+        
+        if (value !== null && value !== undefined) {
+          // We have a value - update last known
+          lastKnownValue = value;
+          lastKnownWasReal = isReal;
+        } else if (lastKnownValue !== null) {
+          // Value is null but we have a previous value - carry forward as derived
+          processedData[i][platform] = lastKnownValue;
+          processedData[i][`${platform}_carriedForward`] = true;
+          processedData[i][`${platform}_isReal`] = false;
+        }
+      }
+    }
+    
+    // Third pass: create the final split data
+    // Key insight: to connect solid and dashed lines seamlessly,
+    // the dashed line should ALSO include the last real point before it transitions
+    return processedData.map((point: any, idx: number) => {
+      const result: any = { ...point };
+      
+      for (const platform of platforms) {
+        const value = point[platform];
+        const isReal = point[`${platform}_isReal`];
+        const isCarriedForward = point[`${platform}_carriedForward`];
+        
+        // Check if next point starts a derived section (for seamless connection)
+        const nextPoint = processedData[idx + 1];
+        const nextIsNotReal = nextPoint && (
+          !nextPoint[`${platform}_isReal`] || 
+          nextPoint[`${platform}_carriedForward`]
+        ) && nextPoint[platform] !== null;
+        
+        // Check if this is right after a real section ends (for seamless connection)
+        const prevPoint = processedData[idx - 1];
+        const prevWasReal = prevPoint && prevPoint[`${platform}_isReal`] && !prevPoint[`${platform}_carriedForward`];
+        const thisIsFirstDerived = !isReal && prevWasReal;
+        
+        if (value === null || value === undefined) {
+          result[`${platform}_real`] = null;
+          result[`${platform}_derived`] = null;
+        } else if (isReal && !isCarriedForward) {
+          // Real data point
+          result[`${platform}_real`] = value;
+          // Also include in derived if next point is derived (for seamless connection)
+          result[`${platform}_derived`] = nextIsNotReal ? value : null;
+        } else {
+          // Derived or carried forward
+          result[`${platform}_real`] = null;
+          result[`${platform}_derived`] = value;
+        }
+      }
+      
+      return result;
+    });
+  }, [chartData]);
 
   const change = useMemo(() => {
     if (!chartData || chartData.length < 2) return null;
@@ -1247,16 +1405,6 @@ function MetricCard({
           <div className="truncate font-medium text-base text-muted-foreground">
             <div className="flex items-center gap-2">
               {label}
-              {isIncomplete && (
-                <span className="px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-amber-100 text-amber-700 rounded">
-                  Incomplete
-                </span>
-              )}
-              {isLowTrust && (
-                <span className="px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-rose-100 text-rose-700 rounded">
-                  Low Trust
-                </span>
-              )}
             </div>
 
             <HoverCard>
@@ -1291,60 +1439,110 @@ function MetricCard({
           config={chartConfig}
         >
           {chartData && chartData.length > 0 ? (
-            <LineChart data={chartData} margin={{ left: 0, right: 0, top: 5, bottom: 5 }}>
-              <CartesianGrid vertical={false} />
-              <XAxis 
-                dataKey={dateKey}
-                hide={false}
-                tickMargin={8}
-                minTickGap={16}
-                tickFormatter={(value) => {
-                  try {
-                    if (viewMode === "monthly") {
-                      // Format YYYY-MM as "Jan 2024"
-                      const [year, month] = value.split("-");
-                      const date = new Date(parseInt(year), parseInt(month) - 1, 1);
-                      return date.toLocaleDateString("en-US", {
-                        month: "short",
-                        year: "numeric",
-                      });
-                    }
-                    const date = new Date(value);
-                    if (!isNaN(date.getTime())) {
-                      return date.toLocaleDateString("en-US", {
-                        month: "short",
-                        day: "numeric",
-                      });
-                    }
-                  } catch {
-                    // fallback
+            chartType === "area" ? (
+              <AreaChart data={transformedChartData} margin={{ left: 0, right: 0, top: 5, bottom: 5 }}>
+                <CartesianGrid vertical={false} />
+                <XAxis 
+                  dataKey={dateKey}
+                  hide={false}
+                  tickMargin={8}
+                  minTickGap={16}
+                  tickFormatter={(value) => {
+                    try {
+                      if (viewMode === "monthly") {
+                        const [year, month] = value.split("-");
+                        const date = new Date(parseInt(year), parseInt(month) - 1, 1);
+                        return date.toLocaleDateString("en-US", { month: "short", year: "numeric" });
+                      }
+                      const date = new Date(value);
+                      if (!isNaN(date.getTime())) {
+                        return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+                      }
+                    } catch { /* fallback */ }
+                    return value;
+                  }}
+                />
+                <YAxis hide />
+                <ChartTooltip
+                  cursor={false}
+                  content={
+                    <CustomChartTooltip
+                      currency={currency}
+                      config={chartConfig}
+                      metricKey={metricKey}
+                      connectedPlatforms={connectedPlatforms}
+                      viewMode={viewMode}
+                      revenueFormat={revenueFormat}
+                    />
                   }
-                  return value;
-                }}
-              />
-              <YAxis hide />
-              <ChartTooltip
-                cursor={false}
-                content={
-                  <CustomChartTooltip
-                    currency={currency}
-                    config={chartConfig}
-                    metricKey={metricKey}
-                    connectedPlatforms={connectedPlatforms}
-                    viewMode={viewMode}
-                  />
-                }
-              />
-              {connectedPlatforms.includes("appstore") && (
-                <Line type="linear" dataKey="appstore" stroke="var(--color-appstore)" strokeWidth={1} dot={false} isAnimationActive={false} />
-              )}
-              {connectedPlatforms.includes("googleplay") && (
-                <Line type="linear" dataKey="googleplay" stroke="var(--color-googleplay)" strokeWidth={1} dot={false} isAnimationActive={false} />
-              )}
-              {connectedPlatforms.includes("stripe") && (
-                <Line type="linear" dataKey="stripe" stroke="var(--color-stripe)" strokeWidth={1} dot={false} isAnimationActive={false} />
-              )}
-            </LineChart>
+                />
+                {connectedPlatforms.includes("appstore") && (
+                  <Area type="linear" dataKey="appstore" stroke="var(--color-appstore)" fill="var(--color-appstore)" fillOpacity={0.6} strokeWidth={1} dot={false} isAnimationActive={false} name="appstore" legendType="none" stackId="1" />
+                )}
+                {connectedPlatforms.includes("googleplay") && (
+                  <Area type="linear" dataKey="googleplay" stroke="var(--color-googleplay)" fill="var(--color-googleplay)" fillOpacity={0.6} strokeWidth={1} dot={false} isAnimationActive={false} name="googleplay" legendType="none" stackId="1" />
+                )}
+                {connectedPlatforms.includes("stripe") && (
+                  <Area type="linear" dataKey="stripe" stroke="var(--color-stripe)" fill="var(--color-stripe)" fillOpacity={0.6} strokeWidth={1} dot={false} isAnimationActive={false} name="stripe" legendType="none" stackId="1" />
+                )}
+              </AreaChart>
+            ) : (
+              <LineChart data={transformedChartData} margin={{ left: 0, right: 0, top: 5, bottom: 5 }}>
+                <CartesianGrid vertical={false} />
+                <XAxis 
+                  dataKey={dateKey}
+                  hide={false}
+                  tickMargin={8}
+                  minTickGap={16}
+                  tickFormatter={(value) => {
+                    try {
+                      if (viewMode === "monthly") {
+                        const [year, month] = value.split("-");
+                        const date = new Date(parseInt(year), parseInt(month) - 1, 1);
+                        return date.toLocaleDateString("en-US", { month: "short", year: "numeric" });
+                      }
+                      const date = new Date(value);
+                      if (!isNaN(date.getTime())) {
+                        return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+                      }
+                    } catch { /* fallback */ }
+                    return value;
+                  }}
+                />
+                <YAxis hide />
+                <ChartTooltip
+                  cursor={false}
+                  content={
+                    <CustomChartTooltip
+                      currency={currency}
+                      config={chartConfig}
+                      metricKey={metricKey}
+                      connectedPlatforms={connectedPlatforms}
+                      viewMode={viewMode}
+                      revenueFormat={revenueFormat}
+                    />
+                  }
+                />
+                {connectedPlatforms.includes("appstore") && (
+                  <Line type="linear" dataKey="appstore_real" stroke="var(--color-appstore)" strokeWidth={1} dot={false} isAnimationActive={false} connectNulls={false} name="appstore" legendType="none" />
+                )}
+                {connectedPlatforms.includes("googleplay") && (
+                  <Line type="linear" dataKey="googleplay_real" stroke="var(--color-googleplay)" strokeWidth={1} dot={false} isAnimationActive={false} connectNulls={false} name="googleplay" legendType="none" />
+                )}
+                {connectedPlatforms.includes("stripe") && (
+                  <Line type="linear" dataKey="stripe_real" stroke="var(--color-stripe)" strokeWidth={1} dot={false} isAnimationActive={false} connectNulls={false} name="stripe" legendType="none" />
+                )}
+                {connectedPlatforms.includes("appstore") && (
+                  <Line type="linear" dataKey="appstore_derived" stroke="var(--color-appstore)" strokeWidth={1} strokeDasharray="4 4" dot={false} isAnimationActive={false} connectNulls={false} name="appstore" legendType="none" />
+                )}
+                {connectedPlatforms.includes("googleplay") && (
+                  <Line type="linear" dataKey="googleplay_derived" stroke="var(--color-googleplay)" strokeWidth={1} strokeDasharray="4 4" dot={false} isAnimationActive={false} connectNulls={false} name="googleplay" legendType="none" />
+                )}
+                {connectedPlatforms.includes("stripe") && (
+                  <Line type="linear" dataKey="stripe_derived" stroke="var(--color-stripe)" strokeWidth={1} strokeDasharray="4 4" dot={false} isAnimationActive={false} connectNulls={false} name="stripe" legendType="none" />
+                )}
+              </LineChart>
+            )
           ) : (
             <div />
           )}

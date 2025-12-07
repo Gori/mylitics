@@ -16,6 +16,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
+import { formatRevenue, type RevenueFormat } from "@/app/dashboard/formatters";
 
 type DebugRow = {
   metricName: string;
@@ -28,9 +29,10 @@ type DebugDataTableProps = {
   debugData: any;
   userCurrency?: string;
   periodType: "weekly" | "monthly";
+  revenueFormat?: RevenueFormat;
 };
 
-export function DebugDataTable({ debugData, userCurrency = "USD", periodType }: DebugDataTableProps) {
+export function DebugDataTable({ debugData, userCurrency = "USD", periodType, revenueFormat = "whole" }: DebugDataTableProps) {
   const { rows, periodHeaders } = useMemo(() => {
     if (!debugData || !debugData.latestByPlatform) return { rows: [], periodHeaders: [] };
 
@@ -182,12 +184,7 @@ export function DebugDataTable({ debugData, userCurrency = "USD", periodType }: 
       return `${value.toFixed(2)}%`;
     }
     if (currencyMetrics.includes(metricName)) {
-      return new Intl.NumberFormat("en-US", {
-        style: "currency",
-        currency: userCurrency,
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
-      }).format(value);
+      return formatRevenue(value, userCurrency, revenueFormat);
     }
     return value.toLocaleString();
   };

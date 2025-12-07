@@ -41,10 +41,13 @@ import {
 } from '@/components/ai-elements/prompt-input';
 import { Response } from '@/components/ai-elements/response';
 import { LineChartDisplay, BarChartDisplay, PieChartDisplay } from './charts';
+import { type RevenueFormat } from "@/app/dashboard/formatters";
 
 interface ChatSidebarProps {
   chatContext: any;
   debugData: any;
+  revenueFormat: RevenueFormat;
+  chartType: "line" | "area";
 }
 
 const models = [
@@ -289,7 +292,7 @@ function ChatInput({
   );
 }
 
-export function ChatSidebar({ chatContext, debugData }: ChatSidebarProps) {
+export function ChatSidebar({ chatContext, debugData, revenueFormat, chartType }: ChatSidebarProps) {
   const [error, setError] = useState<string | null>(null);
   const sidebarRef = useRef<HTMLDivElement>(null);
 
@@ -363,7 +366,7 @@ export function ChatSidebar({ chatContext, debugData }: ChatSidebarProps) {
                             case 'output-available':
                               return (
                                 <div key={index} className="-mx-4 -my-3 first:-mt-0 last:-mb-0">
-                                  <LineChartDisplay {...(part.output as any)} currency={chatContext?.currency} />
+                                  <LineChartDisplay {...(part.output as any)} currency={chatContext?.currency} revenueFormat={revenueFormat} chartType={chartType} />
                                 </div>
                               );
                             case 'output-error':
@@ -389,7 +392,7 @@ export function ChatSidebar({ chatContext, debugData }: ChatSidebarProps) {
                             case 'output-available':
                               return (
                                 <div key={index} className="-mx-4 -my-3 first:-mt-0 last:-mb-0">
-                                  <BarChartDisplay {...(part.output as any)} currency={chatContext?.currency} />
+                                  <BarChartDisplay {...(part.output as any)} currency={chatContext?.currency} revenueFormat={revenueFormat} />
                                 </div>
                               );
                             case 'output-error':

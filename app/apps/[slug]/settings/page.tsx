@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { CheckCircle2, XCircle, FolderSearch } from "lucide-react";
+import { type RevenueFormat } from "@/app/dashboard/formatters";
 
 const CURRENCIES = [
   { code: "USD", name: "US Dollar", symbol: "$" },
@@ -36,10 +37,12 @@ const CURRENCIES = [
 export default function SettingsPage() {
   const { appId, appName, currency, weekStartDay, useAppStoreRatioForGooglePlay } = useApp();
   const connections = useQuery(api.queries.getPlatformConnections, { appId });
+  const userPreferences = useQuery(api.queries.getUserPreferences, { appId });
   const addConnection = useMutation(api.mutations.addPlatformConnection);
   const removeConnection = useMutation(api.mutations.removePlatformConnection);
   const updateCurrency = useMutation(api.mutations.updateAppCurrency);
   const updateApp = useMutation(api.apps.updateApp);
+  const updateUserPreferences = useMutation(api.mutations.updateUserPreferences);
   
   const [showForm, setShowForm] = useState<string | null>(null);
   const [selectedCurrency, setSelectedCurrency] = useState(currency);
@@ -50,12 +53,21 @@ export default function SettingsPage() {
   const [gcsDebugResult, setGcsDebugResult] = useState<any>(null);
   const [isDebuggingGCS, setIsDebuggingGCS] = useState(false);
   const debugGCSBucket = useAction(api.sync.debugGCSBucket);
+  const [revenueFormat, setRevenueFormat] = useState<RevenueFormat>("whole");
+  const [chartType, setChartType] = useState<"line" | "area">("line");
 
   useEffect(() => {
     if (currency) {
       setSelectedCurrency(currency);
     }
   }, [currency]);
+
+  useEffect(() => {
+    if (userPreferences) {
+      setRevenueFormat((userPreferences.revenueFormat as RevenueFormat) ?? "whole");
+      setChartType((userPreferences.chartType as "line" | "area") ?? "line");
+    }
+  }, [userPreferences]);
 
   useEffect(() => {
     setSelectedWeekStartDay(weekStartDay);
@@ -97,6 +109,18 @@ export default function SettingsPage() {
   const handleGooglePlayRatioChange = async (newValue: boolean) => {
     setUseGooglePlayRatio(newValue);
     await updateApp({ appId, useAppStoreRatioForGooglePlay: newValue });
+  };
+
+  const handleRevenueFormatChange = async (checked: boolean) => {
+    const newFormat: RevenueFormat = checked ? "twoDecimals" : "whole";
+    setRevenueFormat(newFormat);
+    await updateUserPreferences({ revenueFormat: newFormat });
+  };
+
+  const handleChartTypeChange = async (checked: boolean) => {
+    const newType: "line" | "area" = checked ? "area" : "line";
+    setChartType(newType);
+    await updateUserPreferences({ chartType: newType });
   };
 
   return (
@@ -151,6 +175,50 @@ export default function SettingsPage() {
                 ))}
               </select>
             </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Revenue Display</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-base text-gray-600 mb-4">
+              Choose how revenue numbers are formatted across the dashboard.
+            </p>
+            <label className="flex items-center gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={revenueFormat === "twoDecimals"}
+                onChange={(e) => handleRevenueFormatChange(e.target.checked)}
+                className="w-5 h-5 rounded border-gray-300"
+              />
+              <span className="text-base">
+                Show revenue with commas and two decimals (otherwise whole numbers)
+              </span>
+            </label>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Chart Style</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-base text-gray-600 mb-4">
+              Choose the visual style for time series charts in the chat.
+            </p>
+            <label className="flex items-center gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={chartType === "area"}
+                onChange={(e) => handleChartTypeChange(e.target.checked)}
+                className="w-5 h-5 rounded border-gray-300"
+              />
+              <span className="text-base">
+                Use area charts instead of line charts
+              </span>
+            </label>
           </CardContent>
         </Card>
 

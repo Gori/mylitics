@@ -108,6 +108,32 @@ export const updateAppCurrency = mutation({
   },
 });
 
+export const updateUserPreferences = mutation({
+  args: {
+    revenueFormat: v.optional(v.union(v.literal("whole"), v.literal("twoDecimals"))),
+    chartType: v.optional(v.union(v.literal("line"), v.literal("area"))),
+  },
+  handler: async (ctx, { revenueFormat, chartType }) => {
+    const userId = await getUserId(ctx);
+    const updates: Record<string, any> = {};
+
+    if (revenueFormat !== undefined) {
+      updates.revenueFormat = revenueFormat;
+    }
+
+    if (chartType !== undefined) {
+      updates.chartType = chartType;
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return { success: true };
+    }
+
+    await ctx.db.patch(userId, updates);
+    return { success: true };
+  },
+});
+
 export const storeExchangeRates = internalMutation({
   args: {
     rates: v.array(v.object({

@@ -1874,29 +1874,20 @@ export const processGooglePlayReports = internalMutation({
         ? totalTransactions - newSubscriptions 
         : (subMetrics?.renewals || 0);
 
-      // MRR: Calculate using unified formula
-      // Formula: MRR = monthly revenue + (yearly revenue / 12)
-      // Since Google Play doesn't provide per-subscription pricing,
-      // estimate monthly/yearly revenue from daily revenue split by subscriber type
-      const totalSubs = monthlySubscribers + yearlySubscribers;
-      let monthlyMRRTotal = 0;
-      let yearlyMRRTotal = 0;
-
-      if (totalSubs > 0 && convertedRevenue > 0) {
-        // Daily revenue per subscriber (proxy for daily earning rate)
-        const dailyRevenuePerSub = convertedRevenue / totalSubs;
-        
-        // Monthly subscribers: their monthly revenue = daily × 30
-        monthlyMRRTotal = monthlySubscribers * dailyRevenuePerSub * 30;
-        
-        // Yearly subscribers: their yearly revenue = daily × 365
-        yearlyMRRTotal = yearlySubscribers * dailyRevenuePerSub * 365;
-      } else if (convertedRevenue > 0) {
-        // No subscriber breakdown - treat all as monthly
-        monthlyMRRTotal = convertedRevenue * 30;
-      }
-
-      const mrr = calculateMRR(monthlyMRRTotal, yearlyMRRTotal);
+      // MRR: For Google Play, we don't have per-subscription pricing.
+      // We store MRR = 0 here, and let getLatestMetrics calculate it dynamically
+      // using App Store's average subscription prices applied to Google Play subscriber counts.
+      // 
+      // This is the correct approach because:
+      // - MRR is subscriber-based (subscriber count × monthly price contribution)
+      // - Google Play doesn't provide per-subscription pricing
+      // - App Store's average prices can be derived from plan revenue / subscriber counts
+      //
+      // The query-time calculation will:
+      // 1. Calculate App Store's avg monthly price = monthlyPlanChargedRevenue / monthlySubscribers
+      // 2. Calculate App Store's avg yearly price from yearlyPlanChargedRevenue
+      // 3. Apply these prices to Google Play subscriber counts for accurate MRR
+      const mrr = 0;
 
       const snapshot = {
         appId,

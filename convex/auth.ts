@@ -6,6 +6,8 @@ import { components } from "./_generated/api";
 import { DataModel } from "./_generated/dataModel";
 import { query, mutation } from "./_generated/server";
 
+const DEFAULT_REVENUE_FORMAT = "whole" as const;
+
 // Context type that has db access (query/mutation contexts)
 type DbContext = GenericCtx<DataModel> & { db: any };
 
@@ -23,6 +25,7 @@ export const authComponent = createClient<DataModel>((components as any).betterA
             email: user.email,
             name: user.name ?? undefined,
             image: user.image ?? undefined,
+            revenueFormat: DEFAULT_REVENUE_FORMAT,
           });
         }
       },
@@ -150,6 +153,9 @@ export const ensureUserProfile = mutation({
       if (existing.image !== authUser.image) {
         updates.image = authUser.image ?? undefined;
       }
+      if (!existing.revenueFormat) {
+        updates.revenueFormat = DEFAULT_REVENUE_FORMAT;
+      }
       if (Object.keys(updates).length > 0) {
         await ctx.db.patch(existing._id, updates);
       }
@@ -161,6 +167,7 @@ export const ensureUserProfile = mutation({
       email: authUser.email,
       name: authUser.name ?? undefined,
       image: authUser.image ?? undefined,
+      revenueFormat: DEFAULT_REVENUE_FORMAT,
     });
   },
 });

@@ -150,7 +150,7 @@ export function MetricsDefinitions() {
       sources: {
         stripe: SRC.stripe.mrr,
         appstore: SRC.appstore.mrr,
-        googleplay: "GCS Reports: MRR = monthly revenue + (yearly revenue / 12), estimated from subscriber counts",
+        googleplay: "Derived from subscriber counts × App Store average prices. When 'Derive Google Play plan split from App Store' is enabled: MRR = (GP monthly subs × AS avg monthly price) + (GP yearly subs × AS avg yearly MRR)",
       },
     },
     {
@@ -198,7 +198,7 @@ export function MetricsDefinitions() {
           <li><strong>Flow Metrics:</strong> Accumulated over time (e.g., total cancellations). Shows sum over 30 days.</li>
         </ul>
         <p className="mt-2 text-xs text-gray-600">
-          Note: Incomplete weeks (including the current week or weeks with missing platform data) are shown with dashed lines. Complete weeks use solid lines.
+          Dashed lines indicate derived or carried-forward values; solid lines indicate actual platform data.
         </p>
       </div>
       <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded text-sm">

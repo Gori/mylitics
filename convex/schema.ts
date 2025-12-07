@@ -6,6 +6,8 @@ export default defineSchema({
     email: v.string(),
     name: v.optional(v.string()),
     image: v.optional(v.string()),
+    revenueFormat: v.optional(v.union(v.literal("whole"), v.literal("twoDecimals"))),
+    chartType: v.optional(v.union(v.literal("line"), v.literal("area"))),
   }).index("by_email", ["email"]),
 
   apps: defineTable({
