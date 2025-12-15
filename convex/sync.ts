@@ -6,7 +6,7 @@ import { api, internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { fetchStripe } from "./integrations/stripe";
 import { fetchGooglePlayFromGCS } from "./integrations/googlePlay";
-import { fetchAppStore, downloadASCSubscriptionSummary, downloadASCSubscriberReport } from "./integrations/appStore";
+import { fetchAppStore, downloadASCSubscriptionSummary, downloadASCSubscriberReport, downloadASCSubscriptionEventReport } from "./integrations/appStore";
 
 // Constants for chunked sync
 const CHUNK_SIZE = 30; // Process 30 days per action (well under 10-min timeout)
@@ -509,6 +509,39 @@ export const syncAllPlatforms = action({
                     console.log(`[Sync] SUBSCRIBER report for ${dateStr}: FAILED - HTTP ${subscriberRes.status}`);
                   }
                   
+                  // Fetch SUBSCRIPTION_EVENT report (actual subscription events: Subscribe, Cancel, etc.)
+                  const eventRes = await downloadASCSubscriptionEventReport(
+                    issuerId,
+                    keyId,
+                    privateKey,
+                    vendorNumber,
+                    dateStr,
+                    "DAILY",
+                    "1_3"
+                  );
+                  
+                  let subscriptionEventData = undefined;
+                  if (eventRes.ok) {
+                    await ctx.runMutation(internal.syncHelpers.saveAppStoreReport, {
+                      appId,
+                      reportType: "SUBSCRIPTION_EVENT",
+                      reportSubType: "SUMMARY",
+                      frequency: "DAILY",
+                      vendorNumber,
+                      reportDate: dateStr,
+                      bundleId,
+                      content: eventRes.tsv,
+                    });
+                    subscriptionEventData = await ctx.runMutation(internal.metrics.processAppStoreSubscriptionEventReport, {
+                      appId,
+                      date: dateStr,
+                      tsv: eventRes.tsv,
+                    });
+                    console.log(`[Sync] SUBSCRIPTION_EVENT report for ${dateStr}: newSubscriptions=${subscriptionEventData?.newSubscriptions || 0}, cancellations=${subscriptionEventData?.cancellations || 0}, conversions=${subscriptionEventData?.conversions || 0}`);
+                  } else {
+                    console.log(`[Sync] SUBSCRIPTION_EVENT report for ${dateStr}: not available (HTTP ${eventRes.status})`);
+                  }
+                  
                   await ctx.runMutation(internal.syncHelpers.saveAppStoreReport, {
                     appId,
                     reportType: "SUBSCRIPTION",
@@ -524,6 +557,7 @@ export const syncAllPlatforms = action({
                     date: dateStr,
                     tsv: res.tsv,
                     eventData,
+                    subscriptionEventData,
                   });
                   await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
                     appId,
@@ -860,7 +894,6 @@ export const syncAppStoreChunk = internalAction({
       renewals: number;
       firstPayments: number;
       cancellations: number;
-      grace: number;
       chargedRevenue: number;
       revenue: number;
       mrr: number;
@@ -923,6 +956,36 @@ export const syncAppStoreChunk = internalAction({
             });
           }
           
+          // Fetch SUBSCRIPTION_EVENT report (actual subscription events: Subscribe, Cancel, etc.)
+          const eventRes = await downloadASCSubscriptionEventReport(
+            issuerId,
+            keyId,
+            privateKey,
+            vendorNumber,
+            dateStr,
+            "DAILY",
+            "1_3"
+          );
+          
+          let subscriptionEventData = undefined;
+          if (eventRes.ok) {
+            await ctx.runMutation(internal.syncHelpers.saveAppStoreReport, {
+              appId,
+              reportType: "SUBSCRIPTION_EVENT",
+              reportSubType: "SUMMARY",
+              frequency: "DAILY",
+              vendorNumber,
+              reportDate: dateStr,
+              bundleId,
+              content: eventRes.tsv,
+            });
+            subscriptionEventData = await ctx.runMutation(internal.metrics.processAppStoreSubscriptionEventReport, {
+              appId,
+              date: dateStr,
+              tsv: eventRes.tsv,
+            });
+          }
+          
           await ctx.runMutation(internal.syncHelpers.saveAppStoreReport, {
             appId,
             reportType: "SUBSCRIPTION",
@@ -938,6 +1001,7 @@ export const syncAppStoreChunk = internalAction({
             date: dateStr,
             tsv: res.tsv,
             eventData,
+            subscriptionEventData,
           });
           successCount++;
           lastProcessedDate = dateStr;
@@ -957,7 +1021,6 @@ export const syncAppStoreChunk = internalAction({
               renewals: snapshot.renewals,
               firstPayments: snapshot.firstPayments,
               cancellations: snapshot.cancellations,
-              grace: snapshot.graceEvents,
               chargedRevenue: snapshot.monthlyChargedRevenue,
               revenue: snapshot.monthlyRevenue,
               mrr: snapshot.mrr,
@@ -1050,10 +1113,9 @@ export const syncAppStoreChunk = internalAction({
           renewals: acc.renewals + day.renewals,
           firstPayments: acc.firstPayments + day.firstPayments,
           cancellations: acc.cancellations + day.cancellations,
-          grace: acc.grace + day.grace,
           chargedRevenue: acc.chargedRevenue + day.chargedRevenue,
           revenue: acc.revenue + day.revenue,
-        }), { renewals: 0, firstPayments: 0, cancellations: 0, grace: 0, chargedRevenue: 0, revenue: 0 });
+        }), { renewals: 0, firstPayments: 0, cancellations: 0, chargedRevenue: 0, revenue: 0 });
         
         // Latest snapshot values (end of chunk)
         const latest = chunkData[chunkData.length - 1];
@@ -1062,7 +1124,7 @@ export const syncAppStoreChunk = internalAction({
         console.log(`SUBSCRIBERS (end of chunk): Active=${latest.active} | Paid=${latest.paid} | Trial=${latest.trial} | Monthly=${latest.monthly} | Yearly=${latest.yearly}`);
         
         // Flow metrics (aggregated across chunk)
-        console.log(`EVENTS (chunk total): Renewals=${totals.renewals} | FirstPayments=${totals.firstPayments} | Cancellations=${totals.cancellations} | Grace=${totals.grace}`);
+        console.log(`EVENTS (chunk total): Renewals=${totals.renewals} | FirstPayments=${totals.firstPayments} | Cancellations=${totals.cancellations}`);
         
         // Revenue (aggregated)
         console.log(`REVENUE (chunk total): Charged=${totals.chargedRevenue.toFixed(2)} | Revenue=${totals.revenue.toFixed(2)} | MRR(latest)=${latest.mrr.toFixed(2)}`);
@@ -1096,7 +1158,7 @@ export const syncAppStoreChunk = internalAction({
         
         // Show each day's data in compact format
         for (const day of chunkData) {
-          console.log(`  ${day.date}: Active=${day.active} Paid=${day.paid} Trial=${day.trial} | Mo=${day.monthly} Yr=${day.yearly} | Ren=${day.renewals} 1st=${day.firstPayments} Can=${day.cancellations} Grace=${day.grace} | Charged=${day.chargedRevenue.toFixed(2)} Rev=${day.revenue.toFixed(2)} MRR=${day.mrr.toFixed(2)}`);
+          console.log(`  ${day.date}: Active=${day.active} Paid=${day.paid} Trial=${day.trial} | Mo=${day.monthly} Yr=${day.yearly} | Ren=${day.renewals} 1st=${day.firstPayments} Can=${day.cancellations} | Charged=${day.chargedRevenue.toFixed(2)} Rev=${day.revenue.toFixed(2)} MRR=${day.mrr.toFixed(2)}`);
         }
       }
       

@@ -77,7 +77,6 @@ Created 365 unified historical snapshots
 - ✅ Paid Subscribers: 459
 - ✅ Cancellations: 32
 - ✅ Churn: 6
-- ✅ Grace Events: (some number)
 - ⏳ First Payments: > 0 (depends on invoice fix)
 - ⏳ Renewals: > 0 (depends on invoice fix)
 - ✅ MRR: $32,631.42 (rounded to 2 decimals)
@@ -90,7 +89,6 @@ Created 365 unified historical snapshots
 - ✅ Paid Subscribers: ~5514
 - ✅ Cancellations: > 0 (calculated)
 - ✅ Churn: > 0 (calculated)
-- ✅ Grace Events: (from TSV)
 - ✅ First Payments: > 0 (calculated)
 - ✅ Renewals: > 0 (estimated)
 - ✅ MRR: ~$7646
@@ -141,16 +139,15 @@ Created 365 unified historical snapshots
 
 ## Success Criteria ✅
 
-All 11 metrics working for both platforms:
+All 10 metrics working for both platforms:
 1. ✅ Active Subscribers
 2. ✅ Trial Subscribers
 3. ✅ Paid Subscribers
 4. ✅ Cancellations
 5. ✅ Churn
-6. ✅ Grace Events
-7. ⏳ First Payments (Stripe pending, App Store fixed)
-8. ⏳ Renewals (Stripe pending, App Store fixed)
-9. ✅ MRR
+6. ⏳ First Payments (Stripe pending, App Store fixed)
+7. ⏳ Renewals (Stripe pending, App Store fixed)
+8. ✅ MRR
 10. ⏳ Monthly Revenue (Gross) (Stripe pending, App Store fixed)
 11. ⏳ Monthly Revenue (Net) (Stripe pending, App Store fixed)
 

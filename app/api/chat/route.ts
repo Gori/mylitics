@@ -129,7 +129,7 @@ ${data.monthlyCSV || 'No monthly data available'}
 
 === METRICS EXPLANATION ===
 - Stock metrics (Active/Trial/Paid/Monthly/Yearly Subscribers, MRR): Show point-in-time values
-- Flow metrics (Cancellations, Grace Events, First Payments, Renewals, Revenue): Show cumulative amounts per period
+- Flow metrics (Cancellations, First Payments, Renewals, Revenue): Show cumulative amounts per period
 - Platforms: Unified (all combined), App Store, Google Play, Stripe
 
 === INSTRUCTIONS ===

@@ -41,7 +41,6 @@ export async function fetchAppStore(
     endDate?: number;
     isTrial: boolean;
     willCancel: boolean;
-    isInGrace: boolean;
     rawData: string;
   }> = [];
 
@@ -100,6 +99,22 @@ export const downloadSubscriptionSummary = action({
   },
   handler: async (ctx, { issuerId, keyId, privateKey, vendorNumber, reportDate, frequency = "DAILY", version = "1_4" }) => {
     return await downloadASCSubscriptionSummary(issuerId, keyId, privateKey, vendorNumber, reportDate, frequency, version);
+  },
+});
+
+// SUBSCRIPTION_EVENT report - actual events (Subscribe, Cancel, Conversion)
+export const downloadSubscriptionEventReport = action({
+  args: {
+    issuerId: v.string(),
+    keyId: v.string(),
+    privateKey: v.string(),
+    vendorNumber: v.string(),
+    reportDate: v.string(), // YYYY-MM-DD
+    frequency: v.optional(v.string()), // DAILY default
+    version: v.optional(v.string()), // e.g. 1_3
+  },
+  handler: async (ctx, { issuerId, keyId, privateKey, vendorNumber, reportDate, frequency = "DAILY", version = "1_3" }) => {
+    return await downloadASCSubscriptionEventReport(issuerId, keyId, privateKey, vendorNumber, reportDate, frequency, version);
   },
 });
 
@@ -246,5 +261,18 @@ export async function downloadASCSubscriberReport(
   version: string = "1_3",
 ) {
   return downloadASCReport(issuerId, keyId, privateKey, vendorNumber, reportDate, "SUBSCRIBER", "DETAILED", frequency, version);
+}
+
+// SUBSCRIPTION_EVENT report - contains actual subscription events (Subscribe, Cancel, etc.)
+export async function downloadASCSubscriptionEventReport(
+  issuerId: string,
+  keyId: string,
+  privateKey: string,
+  vendorNumber: string,
+  reportDate: string,
+  frequency: string = "DAILY",
+  version: string = "1_3",
+) {
+  return downloadASCReport(issuerId, keyId, privateKey, vendorNumber, reportDate, "SUBSCRIPTION_EVENT", "SUMMARY", frequency, version);
 }
 

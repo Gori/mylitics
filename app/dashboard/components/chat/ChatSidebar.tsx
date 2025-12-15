@@ -66,7 +66,6 @@ const METRIC_LABELS: Record<string, string> = {
   yearlySubscribers: "Yearly Subs",
   cancellations: "Cancellations",
   churn: "Churn",
-  graceEvents: "Grace Events",
   firstPayments: "First Payments",
   renewals: "Renewals",
   weeklyChargedRevenue: "Weekly Charged Revenue (with Fees and VAT)",

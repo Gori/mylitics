@@ -11,7 +11,7 @@ import { google } from "googleapis";
  * Unlike GCS reports which provide aggregated statistics, this API gives user-level subscription details:
  * - Trial vs Paid status
  * - Base plan & offer details
- * - Payment state (success, failure, grace period, account hold)
+ * - Payment state (success, failure, account hold)
  * - Auto-renewal status
  * - Price & currency
  * - Exact expiry times

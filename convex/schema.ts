@@ -49,10 +49,11 @@ export default defineSchema({
     paidSubscribers: v.number(),
     cancellations: v.number(),
     churn: v.number(),
-    graceEvents: v.number(),
     paybacks: v.number(),
     firstPayments: v.number(),
     renewals: v.number(),
+    refunds: v.optional(v.number()), // Count of refund events
+    graceEvents: v.optional(v.number()), // Legacy field for backward compatibility
     mrr: v.number(),
     // Revenue fields
     monthlyChargedRevenue: v.number(), // Gross revenue (what customer paid, including VAT)
@@ -90,7 +91,6 @@ export default defineSchema({
     endDate: v.optional(v.number()),
     isTrial: v.boolean(),
     willCancel: v.boolean(),
-    isInGrace: v.boolean(),
     rawData: v.optional(v.string()), // JSON string of raw platform data
     // Stripe-specific fields for efficient MRR calculation
     trialEnd: v.optional(v.number()),

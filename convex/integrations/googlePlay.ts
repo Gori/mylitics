@@ -541,12 +541,16 @@ async function parseSubscriptionReportCSV(
     const activeIdx = findColumnIndex(['active subscriptions', 'active subs', 'current subscribers']);
     const newIdx = findColumnIndex(['new subscriptions', 'new subs', 'subscriptions started']);
     const canceledIdx = findColumnIndex(['canceled subscriptions', 'cancelled', 'churned']);
-    const trialIdx = findColumnIndex(['trial', 'free trial', 'trial subscriptions']);
+    const trialIdx = findColumnIndex(['trial', 'free trial', 'trial subscriptions', 'free trials']);
     const monthlyIdx = findColumnIndex(['monthly subscriptions', 'monthly subs', 'monthly plan']);
     const yearlyIdx = findColumnIndex(['yearly subscriptions', 'annual subscriptions', 'yearly plan']);
     const renewalsIdx = findColumnIndex(['renewals', 'renewed', 'subscription renewals']);
+    const trialConversionsIdx = findColumnIndex(['trial conversions', 'free trial conversions', 'converted from trial']);
 
-    // Column indices detected (removed verbose logging)
+    // DEBUG: Log all headers to see what's available
+    console.log(`[Google Play Subscription CSV] File: ${fileName}`);
+    console.log(`[Google Play Subscription CSV] ALL HEADERS: ${headers.join(' | ')}`);
+    console.log(`[Google Play Subscription CSV] Column indices: date=${dateIdx}, active=${activeIdx}, new=${newIdx}, canceled=${canceledIdx}, trial=${trialIdx}, trialConversions=${trialConversionsIdx}, monthly=${monthlyIdx}, yearly=${yearlyIdx}, renewals=${renewalsIdx}`);
 
     if (dateIdx < 0) {
       console.warn(`[Google Play Subscription CSV] No date column found in ${fileName}`);
@@ -607,13 +611,11 @@ async function parseSubscriptionReportCSV(
         subscriptionMetricsByDate[date].renewals += parseNumber(cols[renewalsIdx]);
       }
 
-      // Calculate paid = active - trial (if we have both)
-      if (subscriptionMetricsByDate[date].active > 0 && subscriptionMetricsByDate[date].trial > 0) {
-        subscriptionMetricsByDate[date].paid = Math.max(
-          0,
-          subscriptionMetricsByDate[date].active - subscriptionMetricsByDate[date].trial
-        );
-      }
+      // FIX: Calculate paid = active - trial (don't require trial > 0)
+      subscriptionMetricsByDate[date].paid = Math.max(
+        0,
+        subscriptionMetricsByDate[date].active - subscriptionMetricsByDate[date].trial
+      );
     }
 
 

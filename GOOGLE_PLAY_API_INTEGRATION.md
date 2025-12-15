@@ -8,7 +8,7 @@ We've implemented **two complementary methods** for collecting Google Play subsc
 - **Source**: Auto-managed GCS bucket (`gs://pubsite_prod_rev_XXX`)
 - **Data**: Aggregated subscription metrics from CSV reports
 - **What you get**: Active subscribers, new subscriptions, cancellations (per date)
-- **What you DON'T get**: Trial/paid breakdown, monthly/yearly split, renewals, MRR, revenue, grace periods, payment failures
+- **What you DON'T get**: Trial/paid breakdown, monthly/yearly split, renewals, MRR, revenue, payment failures
 - **Sync frequency**: Daily (processes historical reports)
 - **No app changes required** ✅
 
@@ -18,7 +18,7 @@ We've implemented **two complementary methods** for collecting Google Play subsc
 - **What you get**: 
   - ✅ Trial vs Paid status
   - ✅ Base plan & offer details
-  - ✅ Payment state (success, failure, grace period, account hold, pause)
+  - ✅ Payment state (success, failure, account hold, pause)
   - ✅ Auto-renewal status (on/off)
   - ✅ Price & currency per subscription
   - ✅ Exact expiry times
@@ -129,7 +129,7 @@ Given your constraints (no app modification, no RTDN), here's what I recommend:
 ### **Short-term (Current State)**
 - ✅ Continue using GCS reports for: Active Subscribers, New Subscriptions, Cancellations
 - ✅ Display these metrics on your dashboard
-- ❌ Accept that Trial/Paid, Monthly/Yearly, Renewals, Grace Periods, MRR are **not available** from GCS alone
+- ❌ Accept that Trial/Paid, Monthly/Yearly, Renewals, MRR are **not available** from GCS alone
 
 ### **Long-term (If You Want Full Metrics)**
 You **must** choose one of these paths:
@@ -159,7 +159,6 @@ You **must** choose one of these paths:
 | Trial vs Paid | ❌ | ✅ |
 | Monthly vs Yearly | ❌ | ✅ |
 | Renewals | ❌ | ✅ |
-| Grace Periods | ❌ | ✅ |
 | Payment Failures | ❌ | ✅ |
 | MRR | ❌ | ✅ |
 | Auto-Renewal Status | ❌ | ✅ |

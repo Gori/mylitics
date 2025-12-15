@@ -88,7 +88,6 @@ export const processAndStoreMetrics = internalMutation({
         endDate: v.optional(v.number()),
         isTrial: v.boolean(),
         willCancel: v.boolean(),
-        isInGrace: v.boolean(),
         // Extracted fields (new format)
         trialEnd: v.optional(v.number()),
         priceAmount: v.optional(v.number()),
@@ -154,7 +153,6 @@ export const processAndStoreMetrics = internalMutation({
           status: sub.status,
           endDate: sub.endDate,
           willCancel: sub.willCancel,
-          isInGrace: sub.isInGrace,
           trialEnd,
           priceAmount,
           priceInterval,
@@ -172,7 +170,6 @@ export const processAndStoreMetrics = internalMutation({
           endDate: sub.endDate,
           isTrial: sub.isTrial,
           willCancel: sub.willCancel,
-          isInGrace: sub.isInGrace,
           rawData: JSON.stringify(sub),
           trialEnd,
           priceAmount,
@@ -300,9 +297,9 @@ export const processAndStoreMetrics = internalMutation({
     // Cancellations = subscriptions that actually ended/canceled today (not just scheduled to cancel)
     const churn = subscriptions.filter((s) => s.status === "canceled" && s.endDate && s.endDate >= todayStart && s.endDate <= todayEnd).length;
     const cancellations = churn; // Use actual cancellations, not pending (willCancel is cumulative snapshot, not daily flow)
-    const graceEvents = subscriptions.filter((s) => s.isInGrace).length;
     const firstPayments = revenueEvents.filter((e) => e.eventType === "first_payment" && e.timestamp >= todayStart && e.timestamp <= todayEnd).length;
     const renewals = revenueEvents.filter((e) => e.eventType === "renewal" && e.timestamp >= todayStart && e.timestamp <= todayEnd).length;
+    const refunds = revenueEvents.filter((e) => e.eventType === "refund" && e.timestamp >= todayStart && e.timestamp <= todayEnd).length;
 
     // MRR from current active PAID subscription prices using extracted fields
     // Formula: MRR = monthly revenue + (yearly revenue / 12)
@@ -438,7 +435,7 @@ export const processAndStoreMetrics = internalMutation({
     const weeklyRevenue = monthlyRevenue;
     const weeklyProceeds = monthlyProceeds;
 
-    console.log(`[Metrics ${platform}] Calculated - Active: ${activeSubscribers}, Trial: ${trialSubscribers}, Paid: ${paidSubscribers}, Cancellations: ${cancellations}, Churn: ${churn}, Grace: ${graceEvents}, First: ${firstPayments}, Renewals: ${renewals}, MRR: ${mrr}, Revenue: ${weeklyRevenue}`);
+    console.log(`[Metrics ${platform}] Calculated - Active: ${activeSubscribers}, Trial: ${trialSubscribers}, Paid: ${paidSubscribers}, Cancellations: ${cancellations}, Churn: ${churn}, First: ${firstPayments}, Renewals: ${renewals}, MRR: ${mrr}, Revenue: ${weeklyRevenue}`);
     console.log(`[Metrics ${platform}] Revenue breakdown - ChargedRevenue: ${monthlyChargedRevenue}, Revenue: ${monthlyRevenue}, Proceeds: ${monthlyProceeds}, Weekly: ${weeklyRevenue}`);
 
     // Store snapshot - find ALL existing snapshots for this date/platform
@@ -459,10 +456,10 @@ export const processAndStoreMetrics = internalMutation({
       paidSubscribers,
       cancellations,
       churn,
-      graceEvents,
       paybacks: 0,
       firstPayments,
       renewals,
+      refunds,
       mrr,
       weeklyChargedRevenue,
       weeklyRevenue,
@@ -523,10 +520,10 @@ export const createUnifiedSnapshot = internalMutation({
       paidSubscribers: platformSnapshots.reduce((acc, s) => acc + s.paidSubscribers, 0),
       cancellations: platformSnapshots.reduce((acc, s) => acc + s.cancellations, 0),
       churn: platformSnapshots.reduce((acc, s) => acc + s.churn, 0),
-      graceEvents: platformSnapshots.reduce((acc, s) => acc + s.graceEvents, 0),
       paybacks: platformSnapshots.reduce((acc, s) => acc + s.paybacks, 0),
       firstPayments: platformSnapshots.reduce((acc, s) => acc + s.firstPayments, 0),
       renewals: platformSnapshots.reduce((acc, s) => acc + s.renewals, 0),
+      refunds: platformSnapshots.reduce((acc, s) => acc + (s.refunds || 0), 0),
       mrr: Math.round((platformSnapshots.reduce((acc, s) => acc + s.mrr, 0) + Number.EPSILON) * 100) / 100,
       weeklyChargedRevenue: Math.round((platformSnapshots.reduce((acc, s) => acc + (s.weeklyChargedRevenue || s.monthlyChargedRevenue || 0), 0) + Number.EPSILON) * 100) / 100,
       weeklyRevenue: Math.round((platformSnapshots.reduce((acc, s) => acc + (s.weeklyRevenue || s.monthlyRevenue || 0), 0) + Number.EPSILON) * 100) / 100,
@@ -655,12 +652,12 @@ export const generateHistoricalSnapshots = internalMutation({
       // Flow metrics for this day
       const churn = subs.filter((s) => s.status === "canceled" && s.endDate && s.endDate >= dayStart && s.endDate <= dayEnd).length;
       const cancellations = churn; // Use actual cancellations (not willCancel which is cumulative)
-      const graceEvents = activeSubs.filter((s) => s.isInGrace).length;
 
       // Revenue events on this day
       const dayRevenue = revenue.filter((e) => e.timestamp >= dayStart && e.timestamp <= dayEnd);
       const firstPayments = dayRevenue.filter((e) => e.eventType === "first_payment").length;
       const renewals = dayRevenue.filter((e) => e.eventType === "renewal").length;
+      const refunds = dayRevenue.filter((e) => e.eventType === "refund").length;
 
       // Create map from subscription ID to priceInterval for plan type lookup
       const subIntervalMapHistorical = new Map<string, string>();
@@ -767,10 +764,10 @@ export const generateHistoricalSnapshots = internalMutation({
         paidSubscribers,
         cancellations,
         churn,
-        graceEvents,
         paybacks: 0,
         firstPayments,
         renewals,
+        refunds,
         mrr,
         weeklyChargedRevenue,
         weeklyRevenue,
@@ -839,9 +836,18 @@ export const processAppStoreReport = internalMutation({
       currenciesSeen: v.optional(v.any()),
       eventTypes: v.optional(v.any()),
       sampleEvents: v.optional(v.array(v.string())),
+      eventClassification: v.optional(v.any()),
+    })),
+    // SUBSCRIPTION_EVENT report data (Subscribe, Cancel events)
+    subscriptionEventData: v.optional(v.object({
+      newSubscriptions: v.number(),
+      cancellations: v.number(),
+      conversions: v.number(),
+      trialStarts: v.number(),
+      eventCounts: v.optional(v.any()),
     })),
   },
-  handler: async (ctx, { appId, date, tsv, eventData }) => {
+  handler: async (ctx, { appId, date, tsv, eventData, subscriptionEventData }) => {
     const lines = tsv.trim().split(/\r?\n/);
     if (lines.length < 2) {
       console.log(`[App Store ${date}] Empty TSV - no data`);
@@ -868,8 +874,6 @@ export const processAppStoreReport = internalMutation({
     const activeSubsIdx = idx(/active.*subscri|subscri.*active/i);
     const activeTrialIdx = idx(/active.*free.*trial|active.*trial|trial.*intro/i);
     const activePaidIdx = idx(/active.*standard.*price|active.*paid/i);
-    const gracePeriodIdx = idx(/grace\s*period/i);
-    const billingRetryIdx = idx(/billing\s*retry/i);
     const subscribersIdx = idx(/^subscribers$/i);
     
     // Look for EVENT columns (might not exist in snapshot reports)
@@ -896,7 +900,6 @@ export const processAppStoreReport = internalMutation({
     let renewals = 0;
     let refunds = 0;
     let cancellations = 0;
-    let graceEvents = 0;
     let monthlyChargedRevenue = 0; // Customer price (including VAT)
     let monthlyRevenue = 0; // Revenue excluding VAT
     let monthlyProceeds = 0; // Developer Proceeds - what Apple pays you (after VAT and fees)
@@ -982,16 +985,6 @@ export const processAppStoreReport = internalMutation({
         paidSubscribers += value;
       }
       
-      if (gracePeriodIdx >= 0) {
-        const value = Number(cols[gracePeriodIdx] || 0);
-        graceEvents += value;
-      }
-      
-      if (billingRetryIdx >= 0) {
-        const value = Number(cols[billingRetryIdx] || 0);
-        graceEvents += value;
-      }
-      
       // Extract event data if columns exist
       if (eventIdx >= 0 && unitsIdx >= 0) {
         const event = (cols[eventIdx] || "").toLowerCase().trim();
@@ -1023,10 +1016,6 @@ export const processAppStoreReport = internalMutation({
           // Match Cancellation events
           else if (event.includes("cancel")) {
             cancellations += units;
-          }
-          // Match Grace/Billing Retry events
-          else if (event.includes("grace") || event.includes("billing retry")) {
-            graceEvents += units;
           }
         }
       }
@@ -1099,23 +1088,40 @@ export const processAppStoreReport = internalMutation({
       yearlyPlanProceeds = eventData.revenueProceedsYearly ?? 0;
     }
     
-    // Fallback: use event data from SUMMARY TSV columns (rare)
-    if (firstPayments > 0 || renewals > 0 || cancellations > 0) {
-      if (firstPayments > 0) finalFirstPayments = firstPayments;
-      if (renewals > 0) finalRenewals = renewals;
-      if (cancellations > 0) finalCancellations = cancellations;
+    // PRIORITY 1: Use SUBSCRIPTION_EVENT report data (most accurate for cancellations/new subs)
+    if (subscriptionEventData) {
+      // Cancellations from actual Cancel events
+      if (subscriptionEventData.cancellations > 0) {
+        finalCancellations = subscriptionEventData.cancellations;
+        console.log(`[App Store ${date}] Using SUBSCRIPTION_EVENT cancellations: ${finalCancellations}`);
+      }
+      // New subscriptions (Subscribe events) - this is the TRUE first payment count
+      if (subscriptionEventData.newSubscriptions > 0) {
+        finalFirstPayments = subscriptionEventData.newSubscriptions;
+        console.log(`[App Store ${date}] Using SUBSCRIPTION_EVENT newSubscriptions: ${finalFirstPayments}`);
+      }
     }
     
-    // Use day-over-day comparison for any metrics still at 0
+    // PRIORITY 2: Use event data from SUMMARY TSV columns (rare)
+    if (firstPayments > 0 || renewals > 0 || cancellations > 0) {
+      if (finalFirstPayments === 0 && firstPayments > 0) finalFirstPayments = firstPayments;
+      if (renewals > 0) finalRenewals = renewals;
+      if (finalCancellations === 0 && cancellations > 0) finalCancellations = cancellations;
+    }
+    
+    // PRIORITY 3 (FALLBACK): Use day-over-day comparison for any metrics still at 0
+    // NOTE: This is less accurate as it conflates multiple effects
     if (prevSnapshot) {
       const paidDrop = prevSnapshot.paidSubscribers - finalPaidSubscribers;
       const paidGain = finalPaidSubscribers - prevSnapshot.paidSubscribers;
       
       if (finalCancellations === 0 && paidDrop > 0) {
         finalCancellations = paidDrop;
+        console.log(`[App Store ${date}] Using day-over-day FALLBACK for cancellations: ${finalCancellations}`);
       }
       if (finalFirstPayments === 0 && paidGain > 0) {
         finalFirstPayments = paidGain;
+        console.log(`[App Store ${date}] Using day-over-day FALLBACK for firstPayments: ${finalFirstPayments}`);
       }
     }
     
@@ -1145,10 +1151,10 @@ export const processAppStoreReport = internalMutation({
       paidSubscribers: finalPaidSubscribers,
       cancellations: finalCancellations,
       churn: finalChurn,
-      graceEvents,
       paybacks: 0,
       firstPayments: finalFirstPayments,
       renewals: finalRenewals,
+      refunds, // From TSV parsing
       mrr,
       weeklyChargedRevenue,
       weeklyRevenue,
@@ -1295,6 +1301,9 @@ export const processAppStoreSubscriberReport = internalMutation({
       return null;
     };
 
+    // DEBUG: Track all unique event values for logging
+    const eventValueCounts: Record<string, { count: number; revenue: number; classification: string }> = {};
+    
     for (let i = 1; i < lines.length; i++) {
       const cols = lines[i].split("\t");
       const eventValue = (cols[eventColumnIdx] || "").trim();
@@ -1391,12 +1400,16 @@ export const processAppStoreSubscriberReport = internalMutation({
       const isCancellation = eventLower.includes("cancel") || eventLower.includes("canceled");
       const isRefund = eventLower.includes("refund") || rowGross < 0;
       
+      // DEBUG: Determine classification for logging
+      let classification = "skipped";
+      
       if (isRefund) {
         // Refunds are negative revenue (rowGross might already be negative)
         cancellations += quantity;
         revenueGross += Math.min(rowGross, 0); // Ensure negative
         revenueNet += Math.min(rowNet, 0);
         revenueProceeds += Math.min(rowProceeds, 0);
+        classification = "refund";
         // Split by plan type
         if (planType === "yearly") {
           revenueGrossYearly += Math.min(rowGross, 0);
@@ -1410,6 +1423,7 @@ export const processAppStoreSubscriberReport = internalMutation({
       } else if (isCancellation) {
         // Cancellations don't generate revenue but we track them
         cancellations += quantity;
+        classification = "cancellation";
       } else if (rowGross > 0) {
         // ALL rows with positive customer price are revenue events
         // Categorize for analytics based on event/proceeds reason
@@ -1417,6 +1431,7 @@ export const processAppStoreSubscriberReport = internalMutation({
             eventLower === "renew" || 
             eventLower.includes("renewal")) {
           renewals += quantity;
+          classification = "renewal";
         } else if (eventLower.includes("start introductory price") ||
                    eventLower.includes("paid subscription from introductory price") ||
                    eventLower.includes("start promotional offer") ||
@@ -1424,10 +1439,12 @@ export const processAppStoreSubscriberReport = internalMutation({
                    eventLower.includes("new") || 
                    eventLower.includes("subscribe")) {
           firstPayments += quantity;
+          classification = "first_payment";
         } else {
           // Empty event or unknown = regular renewal payment
           // This is the CRITICAL fix - these were being skipped before!
           renewals += quantity;
+          classification = "renewal_default";
         }
         
         // Add revenue for all non-refund, non-cancellation rows with positive price
@@ -1445,7 +1462,35 @@ export const processAppStoreSubscriberReport = internalMutation({
           revenueProceedsMonthly += rowProceeds;
         }
       }
+      
+      // DEBUG: Track event value counts
+      const eventKey = eventValue || "(empty)";
+      if (!eventValueCounts[eventKey]) {
+        eventValueCounts[eventKey] = { count: 0, revenue: 0, classification: classification };
+      }
+      eventValueCounts[eventKey].count += quantity;
+      eventValueCounts[eventKey].revenue += rowGross;
+      // Update classification to most common (first seen)
     }
+
+    // DEBUG: Log comprehensive event classification breakdown
+    console.log(`[App Store Subscriber ${date}] ========== EVENT CLASSIFICATION BREAKDOWN ==========`);
+    console.log(`[App Store Subscriber ${date}] Total rows: ${lines.length - 1}, Processed: ${rowsProcessed}, Skipped (wrong date): ${rowsSkippedWrongDate}`);
+    console.log(`[App Store Subscriber ${date}] Results: firstPayments=${firstPayments}, renewals=${renewals}, cancellations=${cancellations}`);
+    console.log(`[App Store Subscriber ${date}] Revenue: gross=${revenueGross.toFixed(2)}, net=${revenueNet.toFixed(2)}, proceeds=${revenueProceeds.toFixed(2)}`);
+    
+    // Log each unique event value and how it was classified
+    const sortedEvents = Object.entries(eventValueCounts)
+      .sort((a, b) => b[1].count - a[1].count);
+    
+    console.log(`[App Store Subscriber ${date}] Event value breakdown (${sortedEvents.length} unique values):`);
+    for (const [eventVal, stats] of sortedEvents.slice(0, 15)) { // Top 15
+      console.log(`[App Store Subscriber ${date}]   "${eventVal}": count=${stats.count}, revenue=${stats.revenue.toFixed(2)}, classified=${stats.classification}`);
+    }
+    if (sortedEvents.length > 15) {
+      console.log(`[App Store Subscriber ${date}]   ... and ${sortedEvents.length - 15} more event types`);
+    }
+    console.log(`[App Store Subscriber ${date}] =================================================`);
 
     // Return comprehensive data for chunk aggregation
     return { 
@@ -1469,6 +1514,98 @@ export const processAppStoreSubscriberReport = internalMutation({
       currenciesSeen,
       eventTypes,
       sampleEvents,
+      // DEBUG: Include event classification for inspection
+      eventClassification: Object.fromEntries(
+        sortedEvents.map(([k, v]) => [k, { count: v.count, classification: v.classification }])
+      ),
+    };
+  },
+});
+
+// Process SUBSCRIPTION_EVENT report - actual subscription events (Subscribe, Cancel, Conversion)
+export const processAppStoreSubscriptionEventReport = internalMutation({
+  args: {
+    appId: v.id("apps"),
+    date: v.string(), // YYYY-MM-DD
+    tsv: v.string(),
+  },
+  handler: async (ctx, { appId, date, tsv }) => {
+    const lines = tsv.trim().split(/\r?\n/);
+    if (lines.length < 2) {
+      console.log(`[App Store Event ${date}] Empty TSV - no event data`);
+      return { newSubscriptions: 0, cancellations: 0, conversions: 0, trialStarts: 0 };
+    }
+
+    const headers = lines[0].split("\t").map((h) => h.trim().toLowerCase());
+    const idx = (name: RegExp) => headers.findIndex((h) => name.test(h));
+
+    // SUBSCRIPTION_EVENT report columns
+    const eventDateIdx = idx(/event.*date/i);
+    const eventIdx = idx(/^event$/i);
+    const quantityIdx = idx(/^quantity$|^units$/i);
+    
+    console.log(`[App Store Event ${date}] Headers: ${headers.join(", ")}`);
+    console.log(`[App Store Event ${date}] Column indices: eventDate=${eventDateIdx}, event=${eventIdx}, quantity=${quantityIdx}`);
+
+    let newSubscriptions = 0;
+    let cancellations = 0;
+    let conversions = 0;
+    let trialStarts = 0;
+    const eventCounts: Record<string, number> = {};
+
+    for (let i = 1; i < lines.length; i++) {
+      const cols = lines[i].split("\t");
+      
+      // Filter by event date matching target date
+      if (eventDateIdx >= 0 && eventDateIdx < cols.length) {
+        const eventDate = cols[eventDateIdx].trim();
+        if (eventDate !== date) continue;
+      }
+      
+      const eventType = (eventIdx >= 0 && eventIdx < cols.length ? cols[eventIdx] : "").trim().toLowerCase();
+      const quantity = quantityIdx >= 0 && quantityIdx < cols.length ? parseInt(cols[quantityIdx]) || 1 : 1;
+      
+      // Track all event types
+      eventCounts[eventType] = (eventCounts[eventType] || 0) + quantity;
+      
+      // Classify events based on Apple's SUBSCRIPTION_EVENT types
+      // See: https://developer.apple.com/help/app-store-connect/reference/reporting/subscription-events
+      
+      // NEW SUBSCRIPTIONS (activations)
+      if (eventType === "subscribe" || 
+          eventType.includes("start introductory") ||
+          eventType.includes("start offer code") ||
+          eventType === "opt-in") {
+        newSubscriptions += quantity;
+        if (eventType.includes("introductory") || eventType.includes("free trial")) {
+          trialStarts += quantity;
+        }
+      }
+      
+      // CANCELLATIONS
+      else if (eventType === "cancel" ||
+               eventType.includes("canceled from billing") ||
+               eventType.includes("canceled after renewal")) {
+        cancellations += quantity;
+      }
+      
+      // CONVERSIONS (trial to paid)
+      else if (eventType.includes("paid subscription from introductory") ||
+               eventType.includes("paid subscription from opt-in") ||
+               eventType.includes("paid subscription from promotional")) {
+        conversions += quantity;
+      }
+    }
+    
+    console.log(`[App Store Event ${date}] Results: newSubscriptions=${newSubscriptions}, cancellations=${cancellations}, conversions=${conversions}, trialStarts=${trialStarts}`);
+    console.log(`[App Store Event ${date}] Event breakdown: ${JSON.stringify(eventCounts)}`);
+    
+    return {
+      newSubscriptions,
+      cancellations,
+      conversions,
+      trialStarts,
+      eventCounts,
     };
   },
 });
@@ -1527,7 +1664,6 @@ export const generateUnifiedHistoricalSnapshots = internalMutation({
         paidSubscribers: platformSnapshots.reduce((acc, s) => acc + s.paidSubscribers, 0),
         cancellations: platformSnapshots.reduce((acc, s) => acc + s.cancellations, 0),
         churn: platformSnapshots.reduce((acc, s) => acc + s.churn, 0),
-        graceEvents: platformSnapshots.reduce((acc, s) => acc + s.graceEvents, 0),
         paybacks: platformSnapshots.reduce((acc, s) => acc + s.paybacks, 0),
         firstPayments: platformSnapshots.reduce((acc, s) => acc + s.firstPayments, 0),
         renewals: platformSnapshots.reduce((acc, s) => acc + s.renewals, 0),
@@ -1612,7 +1748,6 @@ export const generateUnifiedHistoricalSnapshotsChunk = internalMutation({
         paidSubscribers: platformSnapshots.reduce((acc, s) => acc + s.paidSubscribers, 0),
         cancellations: platformSnapshots.reduce((acc, s) => acc + s.cancellations, 0),
         churn: platformSnapshots.reduce((acc, s) => acc + s.churn, 0),
-        graceEvents: platformSnapshots.reduce((acc, s) => acc + s.graceEvents, 0),
         paybacks: platformSnapshots.reduce((acc, s) => acc + s.paybacks, 0),
         firstPayments: platformSnapshots.reduce((acc, s) => acc + s.firstPayments, 0),
         renewals: platformSnapshots.reduce((acc, s) => acc + s.renewals, 0),
@@ -1678,10 +1813,10 @@ export const createAppStoreSnapshotFromPrevious = internalMutation({
       paidSubscribers: previousSnapshot.paidSubscribers,
       cancellations: 0, // No sales = no changes = no cancellations
       churn: 0,
-      graceEvents: previousSnapshot.graceEvents,
       paybacks: 0,
       firstPayments: 0, // No sales = no new subscribers
       renewals: 0,
+      refunds: 0,
       mrr: previousSnapshot.mrr,
       weeklyChargedRevenue: 0,
       weeklyRevenue: 0,
@@ -1861,7 +1996,8 @@ export const processGooglePlayReports = internalMutation({
       // Extract subscription metrics if available
       const activeSubscribers = subMetrics?.active || 0;
       const trialSubscribers = subMetrics?.trial || 0;
-      const paidSubscribers = subMetrics?.paid || (activeSubscribers > 0 && trialSubscribers > 0 ? activeSubscribers - trialSubscribers : 0);
+      // FIX: Calculate paid = active - trial (don't require trial > 0)
+      const paidSubscribers = subMetrics?.paid || Math.max(0, activeSubscribers - trialSubscribers);
       const monthlySubscribers = subMetrics?.monthly || 0;
       const yearlySubscribers = subMetrics?.yearly || 0;
       const newSubscriptions = subMetrics?.newSubscriptions || 0;
@@ -1899,10 +2035,10 @@ export const processGooglePlayReports = internalMutation({
         paidSubscribers,
         cancellations: canceledSubscriptions,
         churn: activeSubscribers > 0 ? Math.round((canceledSubscriptions / activeSubscribers) * 10000) / 100 : 0,
-        graceEvents: 0, // Not available in standard reports
-        paybacks: 0, // Not available
+        paybacks: 0,
         firstPayments: newSubscriptions,
         renewals,
+        refunds: 0, // Google Play refunds are reflected in revenue adjustments, not as separate events
         mrr,
         // Revenue metrics - from financial reports
         weeklyChargedRevenue,
@@ -1978,10 +2114,10 @@ export const processGooglePlayFinancialReport = internalMutation({
         paidSubscribers: 0,
         cancellations: 0,
         churn: 0,
-        graceEvents: 0,
         paybacks: 0,
         firstPayments: 0,
         renewals: 0,
+        refunds: 0,
         mrr: 0,
         weeklyChargedRevenue: Math.round((convertedChargedRevenue + Number.EPSILON) * 100) / 100,
         weeklyRevenue: Math.round((convertedRevenue + Number.EPSILON) * 100) / 100,

@@ -27,7 +27,6 @@ export async function fetchStripe(apiKey: string, startDate?: number, endDate?: 
     endDate?: number;
     isTrial: boolean;
     willCancel: boolean;
-    isInGrace: boolean;
     // Extracted fields for efficient storage
     trialEnd?: number;
     priceAmount?: number;
@@ -81,7 +80,6 @@ export async function fetchStripe(apiKey: string, startDate?: number, endDate?: 
       endDate: endTimestamp,
       isTrial: subscription.status === "trialing",
       willCancel: subAny.cancel_at_period_end || false,
-      isInGrace: subscription.status === "past_due",
       trialEnd,
       priceAmount,
       priceInterval,

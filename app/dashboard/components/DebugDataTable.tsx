@@ -45,7 +45,6 @@ export function DebugDataTable({ debugData, userCurrency = "USD", periodType, re
       cancellations: "Cancellations",
       churn: "Churn (count)",
       churnRate: "Churn Rate (%)",
-      graceEvents: "Grace Events",
       firstPayments: "First Payments",
       renewals: "Renewals",
       weeklyChargedRevenue: "Weekly Charged Revenue",

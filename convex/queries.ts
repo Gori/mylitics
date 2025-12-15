@@ -47,6 +47,914 @@ function calculateArpu(revenue: number, activeSubscribers: number): number {
   return Math.round((revenue / activeSubscribers + Number.EPSILON) * 100) / 100; // Round to 2 decimals
 }
 
+const HISTORY_METRICS = [
+  "activeSubscribers",
+  "trialSubscribers",
+  "paidSubscribers",
+  "monthlySubscribers",
+  "yearlySubscribers",
+  "cancellations",
+  "churn",
+  "churnRate",
+  "firstPayments",
+  "renewals",
+  "refunds",
+  "weeklyChargedRevenue",
+  "weeklyRevenue",
+  "weeklyProceeds",
+  "monthlyChargedRevenue",
+  "monthlyRevenue",
+  "monthlyProceeds",
+  "mrr",
+  "arpu",
+  "monthlyPlanChargedRevenue",
+  "yearlyPlanChargedRevenue",
+  "monthlyPlanRevenue",
+  "yearlyPlanRevenue",
+  "monthlyPlanProceeds",
+  "yearlyPlanProceeds",
+  "weeklyPlanChargedRevenueMonthly",
+  "weeklyPlanChargedRevenueYearly",
+  "weeklyPlanRevenueMonthly",
+  "weeklyPlanRevenueYearly",
+  "weeklyPlanProceedsMonthly",
+  "weeklyPlanProceedsYearly",
+] as const;
+
+const FLOW_METRICS = [
+  "cancellations",
+  "churn",
+  "firstPayments",
+  "renewals",
+  "refunds",
+  "weeklyChargedRevenue",
+  "weeklyRevenue",
+  "weeklyProceeds",
+  "monthlyChargedRevenue",
+  "monthlyRevenue",
+  "monthlyProceeds",
+  "monthlyPlanChargedRevenue",
+  "yearlyPlanChargedRevenue",
+  "monthlyPlanRevenue",
+  "yearlyPlanRevenue",
+  "monthlyPlanProceeds",
+  "yearlyPlanProceeds",
+  "weeklyPlanChargedRevenueMonthly",
+  "weeklyPlanChargedRevenueYearly",
+  "weeklyPlanRevenueMonthly",
+  "weeklyPlanRevenueYearly",
+  "weeklyPlanProceedsMonthly",
+  "weeklyPlanProceedsYearly",
+] as const;
+
+const FLOW_METRICS_SET = new Set<string>(FLOW_METRICS);
+
+type MetricSnapshot = {
+  platform: string;
+  date: string;
+  [key: string]: any;
+};
+
+function deriveActivePlatforms(snapshots: MetricSnapshot[]) {
+  return new Set(
+    snapshots
+      .filter((s) => s.platform !== "unified")
+      .map((s) => s.platform)
+  );
+}
+
+async function buildWeeklyHistoryFromSnapshots({
+  app,
+  metric,
+  snapshots,
+}: {
+  app: any;
+  metric: string;
+  snapshots: MetricSnapshot[];
+}) {
+  const useAppStoreRatioForGooglePlay = app.useAppStoreRatioForGooglePlay ?? false;
+  const activePlatforms = deriveActivePlatforms(snapshots);
+
+  const isChurnRate = metric === "churnRate";
+  const isArpu = metric === "arpu";
+  const isFlowMetric = FLOW_METRICS_SET.has(metric) || isChurnRate || isArpu;
+
+  const weeklyData: Record<
+    string,
+    Record<
+      string,
+      {
+        sum: number;
+        last: number;
+        lastDate: string;
+        churnSum?: number;
+        startingPaidSubs?: number;
+        firstDate?: string;
+        revenueSum?: number;
+        lastActiveSubscribers?: number;
+      }
+    >
+  > = {};
+
+  const ratioByWeek: Record<
+    string,
+    {
+      appStorePlanMonthly: number;
+      appStorePlanYearly: number;
+      appStoreMonthlySubs: number;
+      appStoreYearlySubs: number;
+      appStoreActiveSubs: number;
+      appStoreTrialSubs: number;
+      appStorePaidSubs: number;
+      appStoreMRR: number;
+      appStoreSubsDate: string;
+      googleCharged: number;
+      googleRevenue: number;
+      googleProceeds: number;
+      googlePaidSubs: number;
+      googleActiveSubs: number;
+      googleTrialSubs: number;
+      googleMonthlySubs: number;
+      googleYearlySubs: number;
+      googleSubsDate: string;
+    }
+  > = {};
+
+  for (const snap of snapshots) {
+    if (snap.platform === "unified") continue;
+
+    const date = new Date(snap.date);
+    const weekStart = getWeekStart(date, app.weekStartDay || "monday");
+    const weekKey = weekStart.toISOString().split("T")[0];
+
+    if (!ratioByWeek[weekKey]) {
+      ratioByWeek[weekKey] = {
+        appStorePlanMonthly: 0,
+        appStorePlanYearly: 0,
+        appStoreMonthlySubs: 0,
+        appStoreYearlySubs: 0,
+        appStoreActiveSubs: 0,
+        appStoreTrialSubs: 0,
+        appStorePaidSubs: 0,
+        appStoreMRR: 0,
+        appStoreSubsDate: "",
+        googleCharged: 0,
+        googleRevenue: 0,
+        googleProceeds: 0,
+        googlePaidSubs: 0,
+        googleActiveSubs: 0,
+        googleTrialSubs: 0,
+        googleMonthlySubs: 0,
+        googleYearlySubs: 0,
+        googleSubsDate: "",
+      };
+    }
+    if (snap.platform === "appstore") {
+      ratioByWeek[weekKey].appStorePlanMonthly += snap.monthlyPlanChargedRevenue || 0;
+      ratioByWeek[weekKey].appStorePlanYearly += snap.yearlyPlanChargedRevenue || 0;
+      const asMonthlySubs = snap.monthlySubscribers || 0;
+      const asYearlySubs = snap.yearlySubscribers || 0;
+      const asActiveSubs = snap.activeSubscribers || 0;
+      const asTrialSubs = snap.trialSubscribers || 0;
+      const asPaidSubs = snap.paidSubscribers || Math.max(0, asActiveSubs - asTrialSubs);
+      const asMRR = snap.mrr || 0;
+      if ((asMonthlySubs > 0 || asYearlySubs > 0 || asActiveSubs > 0) && (!ratioByWeek[weekKey].appStoreSubsDate || snap.date >= ratioByWeek[weekKey].appStoreSubsDate)) {
+        ratioByWeek[weekKey].appStoreMonthlySubs = asMonthlySubs;
+        ratioByWeek[weekKey].appStoreYearlySubs = asYearlySubs;
+        ratioByWeek[weekKey].appStoreActiveSubs = asActiveSubs;
+        ratioByWeek[weekKey].appStoreTrialSubs = asTrialSubs;
+        ratioByWeek[weekKey].appStorePaidSubs = asPaidSubs;
+        ratioByWeek[weekKey].appStoreMRR = asMRR;
+        ratioByWeek[weekKey].appStoreSubsDate = snap.date;
+      }
+    } else if (snap.platform === "googleplay") {
+      ratioByWeek[weekKey].googleCharged += snap.monthlyChargedRevenue || 0;
+      ratioByWeek[weekKey].googleRevenue += snap.monthlyRevenue || 0;
+      ratioByWeek[weekKey].googleProceeds += snap.monthlyProceeds || 0;
+      ratioByWeek[weekKey].googleMonthlySubs = snap.monthlySubscribers || 0;
+      ratioByWeek[weekKey].googleYearlySubs = snap.yearlySubscribers || 0;
+      const snapActiveSubs = snap.activeSubscribers || 0;
+      if (snapActiveSubs > 0 && (!ratioByWeek[weekKey].googleSubsDate || snap.date >= ratioByWeek[weekKey].googleSubsDate)) {
+        ratioByWeek[weekKey].googlePaidSubs = snap.paidSubscribers || 0;
+        ratioByWeek[weekKey].googleActiveSubs = snapActiveSubs || 0;
+        ratioByWeek[weekKey].googleTrialSubs = snap.trialSubscribers || 0;
+        ratioByWeek[weekKey].googleSubsDate = snap.date;
+      }
+    }
+
+    if (!weeklyData[weekKey]) weeklyData[weekKey] = {} as any;
+    const value = isChurnRate || isArpu ? 0 : (snap as any)[metric] || 0;
+    const entry =
+      weeklyData[weekKey][snap.platform] || {
+        sum: 0,
+        last: 0,
+        lastDate: "",
+        churnSum: 0,
+        startingPaidSubs: 0,
+        firstDate: "9999-99-99",
+        revenueSum: 0,
+        lastActiveSubscribers: 0,
+      };
+    entry.sum += value;
+    if (snap.date >= entry.lastDate) {
+      entry.last = value;
+      entry.lastDate = snap.date;
+    }
+
+    if (isChurnRate) {
+      entry.churnSum = (entry.churnSum || 0) + (snap.churn || 0);
+      if (snap.date < (entry.firstDate || "9999-99-99")) {
+        entry.startingPaidSubs = snap.paidSubscribers || 0;
+        entry.firstDate = snap.date;
+      }
+    }
+
+    if (isArpu) {
+      entry.revenueSum = (entry.revenueSum || 0) + (snap.monthlyRevenue || 0);
+      if (snap.date >= entry.lastDate) {
+        entry.lastActiveSubscribers = snap.activeSubscribers || 0;
+      }
+    }
+
+    weeklyData[weekKey][snap.platform] = entry;
+  }
+
+  const sortedWeeks = Object.keys(ratioByWeek).sort();
+  let lastKnownGoogleSubs = { paidSubs: 0, activeSubs: 0, trialSubs: 0, monthlySubs: 0, yearlySubs: 0 };
+  for (const week of sortedWeeks) {
+    const r = ratioByWeek[week];
+    if (r.googleActiveSubs > 0) {
+      lastKnownGoogleSubs = {
+        paidSubs: r.googlePaidSubs,
+        activeSubs: r.googleActiveSubs,
+        trialSubs: r.googleTrialSubs,
+        monthlySubs: r.googleMonthlySubs,
+        yearlySubs: r.googleYearlySubs,
+      };
+    } else if (lastKnownGoogleSubs.activeSubs > 0) {
+      r.googlePaidSubs = lastKnownGoogleSubs.paidSubs;
+      r.googleActiveSubs = lastKnownGoogleSubs.activeSubs;
+      r.googleTrialSubs = lastKnownGoogleSubs.trialSubs;
+      r.googleMonthlySubs = lastKnownGoogleSubs.monthlySubs;
+      r.googleYearlySubs = lastKnownGoogleSubs.yearlySubs;
+    }
+  }
+
+  const weeklyResult = Object.entries(weeklyData)
+    .map(([week, platforms]) => {
+      const platformsInWeek = new Set(Object.keys(platforms));
+      const hasAllPlatforms = Array.from(activePlatforms).every((p) => platformsInWeek.has(p));
+
+      if (isChurnRate) {
+        const getChurnRate = (p?: { churnSum?: number; startingPaidSubs?: number }) => {
+          if (!p) return null;
+          return calculateChurnRate(p.churnSum || 0, p.startingPaidSubs || 0);
+        };
+        const appstore = getChurnRate((platforms as any).appstore);
+        const googleplay = getChurnRate((platforms as any).googleplay);
+        const stripe = getChurnRate((platforms as any).stripe);
+
+        const totalChurn =
+          ((platforms as any).appstore?.churnSum || 0) +
+          ((platforms as any).googleplay?.churnSum || 0) +
+          ((platforms as any).stripe?.churnSum || 0);
+        const totalStartingSubs =
+          ((platforms as any).appstore?.startingPaidSubs || 0) +
+          ((platforms as any).googleplay?.startingPaidSubs || 0) +
+          ((platforms as any).stripe?.startingPaidSubs || 0);
+        const unified = calculateChurnRate(totalChurn, totalStartingSubs);
+
+        return { week, appstore, googleplay, stripe, unified, hasAllPlatforms, hasValidStockData: true };
+      }
+
+      if (isArpu) {
+        const getArpuValue = (p?: { revenueSum?: number; lastActiveSubscribers?: number }) => {
+          if (!p) return null;
+          return calculateArpu(p.revenueSum || 0, p.lastActiveSubscribers || 0);
+        };
+        const appstore = getArpuValue((platforms as any).appstore);
+        const googleplay = getArpuValue((platforms as any).googleplay);
+        const stripe = getArpuValue((platforms as any).stripe);
+
+        const totalRevenue =
+          ((platforms as any).appstore?.revenueSum || 0) +
+          ((platforms as any).googleplay?.revenueSum || 0) +
+          ((platforms as any).stripe?.revenueSum || 0);
+        const totalActiveSubs =
+          ((platforms as any).appstore?.lastActiveSubscribers || 0) +
+          ((platforms as any).googleplay?.lastActiveSubscribers || 0) +
+          ((platforms as any).stripe?.lastActiveSubscribers || 0);
+        const unified = calculateArpu(totalRevenue, totalActiveSubs);
+
+        return { week, appstore, googleplay, stripe, unified, hasAllPlatforms, hasValidStockData: true };
+      }
+
+      const val = (p?: { sum: number; last: number; lastDate: string }) => (p ? (isFlowMetric ? p.sum : p.last) : null);
+      const appstore = val((platforms as any).appstore);
+      let googleplay = val((platforms as any).googleplay);
+      const stripe = val((platforms as any).stripe);
+
+      let googleplayDerived = false;
+
+      const googlePlayDelayedMetrics = ["activeSubscribers", "trialSubscribers", "paidSubscribers", "monthlySubscribers", "yearlySubscribers", "mrr"];
+      if (googlePlayDelayedMetrics.includes(metric) && googleplay === 0) {
+        googleplay = null;
+      }
+
+      if (useAppStoreRatioForGooglePlay && (googleplay === null || googleplay === 0)) {
+        const ratioInfo = ratioByWeek[week];
+        const totalPlan = (ratioInfo?.appStorePlanMonthly || 0) + (ratioInfo?.appStorePlanYearly || 0);
+        if (ratioInfo && totalPlan > 0) {
+          const monthlyRatio = ratioInfo.appStorePlanMonthly / totalPlan;
+          const yearlyRatio = ratioInfo.appStorePlanYearly / totalPlan;
+
+          const deriveFromTotals = () => {
+            if (metric === "monthlyPlanChargedRevenue" || metric === "weeklyPlanChargedRevenueMonthly") {
+              googleplay = Math.round(((ratioInfo.googleCharged || 0) * monthlyRatio + Number.EPSILON) * 100) / 100;
+              googleplayDerived = true;
+            } else if (metric === "yearlyPlanChargedRevenue" || metric === "weeklyPlanChargedRevenueYearly") {
+              googleplay = Math.round(((ratioInfo.googleCharged || 0) * yearlyRatio + Number.EPSILON) * 100) / 100;
+              googleplayDerived = true;
+            } else if (metric === "monthlyPlanRevenue" || metric === "weeklyPlanRevenueMonthly") {
+              googleplay = Math.round(((ratioInfo.googleRevenue || 0) * monthlyRatio + Number.EPSILON) * 100) / 100;
+              googleplayDerived = true;
+            } else if (metric === "yearlyPlanRevenue" || metric === "weeklyPlanRevenueYearly") {
+              googleplay = Math.round(((ratioInfo.googleRevenue || 0) * yearlyRatio + Number.EPSILON) * 100) / 100;
+              googleplayDerived = true;
+            } else if (metric === "monthlyPlanProceeds" || metric === "weeklyPlanProceedsMonthly") {
+              googleplay = Math.round(((ratioInfo.googleProceeds || 0) * monthlyRatio + Number.EPSILON) * 100) / 100;
+              googleplayDerived = true;
+            } else if (metric === "yearlyPlanProceeds" || metric === "weeklyPlanProceedsYearly") {
+              googleplay = Math.round(((ratioInfo.googleProceeds || 0) * yearlyRatio + Number.EPSILON) * 100) / 100;
+              googleplayDerived = true;
+            } else if (metric === "trialSubscribers" || metric === "paidSubscribers") {
+              // Derive Google Play trial/paid from App Store ratio
+              // This runs when Google Play has no trial data (trial = 0)
+              const gpActive = ratioInfo.googleActiveSubs || 0;
+              const asActive = ratioInfo.appStoreActiveSubs || 0;
+              const asTrial = ratioInfo.appStoreTrialSubs || 0;
+              if (gpActive > 0 && asActive > 0 && asTrial > 0) {
+                const trialRatio = asTrial / asActive;
+                const derivedTrials = Math.round(gpActive * trialRatio);
+                const derivedPaid = Math.max(0, gpActive - derivedTrials);
+                if (metric === "trialSubscribers") {
+                  googleplay = derivedTrials;
+                  googleplayDerived = true;
+                } else {
+                  googleplay = derivedPaid;
+                  googleplayDerived = true;
+                }
+              }
+            } else if (metric === "monthlySubscribers" || metric === "yearlySubscribers") {
+              let baseSubs = ratioInfo.googlePaidSubs || 0;
+              if (baseSubs === 0 && ratioInfo.googleActiveSubs > 0) {
+                baseSubs = Math.max(0, ratioInfo.googleActiveSubs - (ratioInfo.googleTrialSubs || 0));
+              }
+              if (metric === "monthlySubscribers") {
+                googleplay = Math.round(baseSubs * monthlyRatio);
+                googleplayDerived = true;
+              } else {
+                googleplay = Math.round(baseSubs * yearlyRatio);
+                googleplayDerived = true;
+              }
+            } else if (metric === "mrr") {
+              // Derive Google Play MRR using App Store's MRR per subscriber ratio
+              const gpPaidSubs = ratioInfo.googlePaidSubs || Math.max(0, (ratioInfo.googleActiveSubs || 0) - (ratioInfo.googleTrialSubs || 0));
+              const asPaidSubs = ratioInfo.appStorePaidSubs || 0;
+              const asMRR = ratioInfo.appStoreMRR || 0;
+              
+              if (gpPaidSubs > 0 && asPaidSubs > 0 && asMRR > 0) {
+                const mrrPerSub = asMRR / asPaidSubs;
+                googleplay = Math.round((gpPaidSubs * mrrPerSub + Number.EPSILON) * 100) / 100;
+                googleplayDerived = true;
+              }
+            }
+          };
+
+          deriveFromTotals();
+        }
+      }
+      
+      // FALLBACK: Always derive Google Play trial/paid from App Store ratio when GP has no trial data
+      // This runs regardless of useAppStoreRatioForGooglePlay setting
+      if ((metric === "trialSubscribers" || metric === "paidSubscribers") && !googleplayDerived) {
+        const ratioInfo = ratioByWeek[week];
+        if (ratioInfo) {
+          const gpActive = ratioInfo.googleActiveSubs || 0;
+          const gpTrial = ratioInfo.googleTrialSubs || 0;
+          const asActive = ratioInfo.appStoreActiveSubs || 0;
+          const asTrial = ratioInfo.appStoreTrialSubs || 0;
+          
+          // Only derive if Google Play has no trial data but App Store does
+          if (gpActive > 0 && gpTrial === 0 && asActive > 0 && asTrial > 0) {
+            const trialRatio = asTrial / asActive;
+            const derivedTrials = Math.round(gpActive * trialRatio);
+            const derivedPaid = Math.max(0, gpActive - derivedTrials);
+            
+            if (metric === "trialSubscribers") {
+              googleplay = derivedTrials;
+              googleplayDerived = true;
+            } else if (metric === "paidSubscribers") {
+              googleplay = derivedPaid;
+              googleplayDerived = true;
+            }
+          }
+        }
+      }
+
+      const isCurrencyMetric = [
+        "mrr",
+        "weeklyRevenue",
+        "weeklyProceeds",
+        "monthlyChargedRevenue",
+        "monthlyRevenue",
+        "monthlyProceeds",
+        "monthlyPlanChargedRevenue",
+        "yearlyPlanChargedRevenue",
+        "monthlyPlanRevenue",
+        "yearlyPlanRevenue",
+        "monthlyPlanProceeds",
+        "yearlyPlanProceeds",
+        "weeklyPlanChargedRevenueMonthly",
+        "weeklyPlanChargedRevenueYearly",
+        "weeklyPlanRevenueMonthly",
+        "weeklyPlanRevenueYearly",
+        "weeklyPlanProceedsMonthly",
+        "weeklyPlanProceedsYearly",
+      ].includes(metric);
+      const sum = (appstore ?? 0) + (googleplay ?? 0) + (stripe ?? 0);
+      const unified = isCurrencyMetric ? Math.round((sum + Number.EPSILON) * 100) / 100 : sum;
+
+      const hasValidStockData =
+        !["activeSubscribers", "trialSubscribers", "paidSubscribers", "monthlySubscribers", "yearlySubscribers", "mrr", "arpu"].includes(metric) ||
+        Array.from(activePlatforms).every((p) => {
+          if (p === "appstore") return appstore !== null;
+          if (p === "googleplay") return googleplay !== null;
+          if (p === "stripe") return stripe !== null;
+          return true;
+        });
+
+      const appstoreStatus: "real" | "unavailable" = appstore !== null ? "real" : "unavailable";
+      const googleplayStatus: "real" | "derived" | "unavailable" = googleplay !== null ? (googleplayDerived ? "derived" : "real") : "unavailable";
+      const stripeStatus: "real" | "unavailable" = stripe !== null ? "real" : "unavailable";
+
+      return {
+        week,
+        appstore,
+        googleplay,
+        stripe,
+        unified,
+        hasAllPlatforms,
+        hasValidStockData,
+        appstoreStatus,
+        googleplayStatus,
+        stripeStatus,
+      };
+    })
+    .map((w) => {
+      const weekEnd = new Date(w.week);
+      weekEnd.setDate(weekEnd.getDate() + 6);
+      const isCurrentOrFutureWeek = weekEnd >= new Date();
+      const isIncomplete = !w.hasAllPlatforms || isCurrentOrFutureWeek || !w.hasValidStockData;
+
+      return { ...w, isIncomplete };
+    })
+    .sort((a, b) => a.week.localeCompare(b.week))
+    .slice(-52);
+
+  return weeklyResult;
+}
+
+async function buildMonthlyHistoryFromSnapshots({
+  app,
+  metric,
+  snapshots,
+}: {
+  app: any;
+  metric: string;
+  snapshots: MetricSnapshot[];
+}) {
+  const useAppStoreRatioForGooglePlay = app.useAppStoreRatioForGooglePlay ?? false;
+  const activePlatforms = deriveActivePlatforms(snapshots);
+
+  const isChurnRate = metric === "churnRate";
+  const isArpu = metric === "arpu";
+  const isFlowMetric = FLOW_METRICS_SET.has(metric) || isChurnRate || isArpu;
+
+  const ratioByMonth: Record<
+    string,
+    {
+      appStorePlanMonthly: number;
+      appStorePlanYearly: number;
+      appStoreMonthlySubs: number;
+      appStoreYearlySubs: number;
+      appStoreActiveSubs: number;
+      appStoreTrialSubs: number;
+      appStorePaidSubs: number;
+      appStoreMRR: number;
+      appStoreSubsDate: string;
+      googleCharged: number;
+      googleRevenue: number;
+      googleProceeds: number;
+      googlePaidSubs: number;
+      googleActiveSubs: number;
+      googleTrialSubs: number;
+      googleMonthlySubs: number;
+      googleYearlySubs: number;
+      googleSubsDate: string;
+    }
+  > = {};
+
+  const monthlyData: Record<
+    string,
+    Record<
+      string,
+      {
+        sum: number;
+        last: number;
+        lastDate: string;
+        churnSum?: number;
+        startingPaidSubs?: number;
+        firstDate?: string;
+        revenueSum?: number;
+        lastActiveSubscribers?: number;
+      }
+    >
+  > = {};
+
+  for (const snap of snapshots) {
+    if (snap.platform === "unified") continue;
+
+    const monthKey = snap.date.substring(0, 7);
+
+    if (!ratioByMonth[monthKey]) {
+      ratioByMonth[monthKey] = {
+        appStorePlanMonthly: 0,
+        appStorePlanYearly: 0,
+        appStoreMonthlySubs: 0,
+        appStoreYearlySubs: 0,
+        appStoreActiveSubs: 0,
+        appStoreTrialSubs: 0,
+        appStorePaidSubs: 0,
+        appStoreMRR: 0,
+        appStoreSubsDate: "",
+        googleCharged: 0,
+        googleRevenue: 0,
+        googleProceeds: 0,
+        googlePaidSubs: 0,
+        googleActiveSubs: 0,
+        googleTrialSubs: 0,
+        googleMonthlySubs: 0,
+        googleYearlySubs: 0,
+        googleSubsDate: "",
+      };
+    }
+    if (snap.platform === "appstore") {
+      ratioByMonth[monthKey].appStorePlanMonthly += snap.monthlyPlanChargedRevenue || 0;
+      ratioByMonth[monthKey].appStorePlanYearly += snap.yearlyPlanChargedRevenue || 0;
+      const asMonthlySubs = snap.monthlySubscribers || 0;
+      const asYearlySubs = snap.yearlySubscribers || 0;
+      const asActiveSubs = snap.activeSubscribers || 0;
+      const asTrialSubs = snap.trialSubscribers || 0;
+      const asPaidSubs = snap.paidSubscribers || Math.max(0, asActiveSubs - asTrialSubs);
+      const asMRR = snap.mrr || 0;
+      if ((asMonthlySubs > 0 || asYearlySubs > 0 || asActiveSubs > 0) && (!ratioByMonth[monthKey].appStoreSubsDate || snap.date >= ratioByMonth[monthKey].appStoreSubsDate)) {
+        ratioByMonth[monthKey].appStoreMonthlySubs = asMonthlySubs;
+        ratioByMonth[monthKey].appStoreYearlySubs = asYearlySubs;
+        ratioByMonth[monthKey].appStoreActiveSubs = asActiveSubs;
+        ratioByMonth[monthKey].appStoreTrialSubs = asTrialSubs;
+        ratioByMonth[monthKey].appStorePaidSubs = asPaidSubs;
+        ratioByMonth[monthKey].appStoreMRR = asMRR;
+        ratioByMonth[monthKey].appStoreSubsDate = snap.date;
+      }
+    } else if (snap.platform === "googleplay") {
+      ratioByMonth[monthKey].googleCharged += snap.monthlyChargedRevenue || 0;
+      ratioByMonth[monthKey].googleRevenue += snap.monthlyRevenue || 0;
+      ratioByMonth[monthKey].googleProceeds += snap.monthlyProceeds || 0;
+      const snapActiveSubs = snap.activeSubscribers || 0;
+      if (snapActiveSubs > 0 && (!ratioByMonth[monthKey].googleSubsDate || snap.date >= ratioByMonth[monthKey].googleSubsDate)) {
+        ratioByMonth[monthKey].googlePaidSubs = snap.paidSubscribers || 0;
+        ratioByMonth[monthKey].googleActiveSubs = snapActiveSubs || 0;
+        ratioByMonth[monthKey].googleTrialSubs = snap.trialSubscribers || 0;
+        ratioByMonth[monthKey].googleMonthlySubs = snap.monthlySubscribers || 0;
+        ratioByMonth[monthKey].googleYearlySubs = snap.yearlySubscribers || 0;
+        ratioByMonth[monthKey].googleSubsDate = snap.date;
+      }
+    }
+    
+    if (!monthlyData[monthKey]) monthlyData[monthKey] = {} as any;
+    const value = isChurnRate || isArpu ? 0 : (snap as any)[metric] || 0;
+    const entry =
+      monthlyData[monthKey][snap.platform] || {
+        sum: 0,
+        last: 0,
+        lastDate: "",
+        churnSum: 0,
+        startingPaidSubs: 0,
+        firstDate: "9999-99-99",
+        revenueSum: 0,
+        lastActiveSubscribers: 0,
+      };
+    entry.sum += value;
+    if (snap.date >= entry.lastDate) {
+      entry.last = value;
+      entry.lastDate = snap.date;
+    }
+
+    if (isChurnRate) {
+      entry.churnSum = (entry.churnSum || 0) + (snap.churn || 0);
+      if (snap.date < (entry.firstDate || "9999-99-99")) {
+        entry.startingPaidSubs = snap.paidSubscribers || 0;
+        entry.firstDate = snap.date;
+      }
+    }
+
+    if (isArpu) {
+      entry.revenueSum = (entry.revenueSum || 0) + (snap.monthlyRevenue || 0);
+      if (snap.date >= entry.lastDate) {
+        entry.lastActiveSubscribers = snap.activeSubscribers || 0;
+      }
+    }
+
+    monthlyData[monthKey][snap.platform] = entry;
+  }
+
+  const sortedMonths = Object.keys(ratioByMonth).sort();
+  let lastKnownGoogleSubs = { paidSubs: 0, activeSubs: 0, trialSubs: 0, monthlySubs: 0, yearlySubs: 0 };
+  for (const month of sortedMonths) {
+    const r = ratioByMonth[month];
+    if (r.googleActiveSubs > 0) {
+      lastKnownGoogleSubs = {
+        paidSubs: r.googlePaidSubs,
+        activeSubs: r.googleActiveSubs,
+        trialSubs: r.googleTrialSubs,
+        monthlySubs: r.googleMonthlySubs,
+        yearlySubs: r.googleYearlySubs,
+      };
+    } else if (lastKnownGoogleSubs.activeSubs > 0) {
+      r.googlePaidSubs = lastKnownGoogleSubs.paidSubs;
+      r.googleActiveSubs = lastKnownGoogleSubs.activeSubs;
+      r.googleTrialSubs = lastKnownGoogleSubs.trialSubs;
+      r.googleMonthlySubs = lastKnownGoogleSubs.monthlySubs;
+      r.googleYearlySubs = lastKnownGoogleSubs.yearlySubs;
+    }
+  }
+
+  const monthlyResult = Object.entries(monthlyData)
+    .map(([month, platforms]) => {
+      const platformsInMonth = new Set(Object.keys(platforms));
+      const hasAllPlatforms = Array.from(activePlatforms).every((p) => platformsInMonth.has(p));
+
+      if (isChurnRate) {
+        const getChurnRate = (p?: { churnSum?: number; startingPaidSubs?: number }) => {
+          if (!p) return null;
+          return calculateChurnRate(p.churnSum || 0, p.startingPaidSubs || 0);
+        };
+        const appstore = getChurnRate((platforms as any).appstore);
+        const googleplay = getChurnRate((platforms as any).googleplay);
+        const stripe = getChurnRate((platforms as any).stripe);
+
+        const totalChurn =
+          ((platforms as any).appstore?.churnSum || 0) +
+          ((platforms as any).googleplay?.churnSum || 0) +
+          ((platforms as any).stripe?.churnSum || 0);
+        const totalStartingSubs =
+          ((platforms as any).appstore?.startingPaidSubs || 0) +
+          ((platforms as any).googleplay?.startingPaidSubs || 0) +
+          ((platforms as any).stripe?.startingPaidSubs || 0);
+        const unified = calculateChurnRate(totalChurn, totalStartingSubs);
+
+        const appstoreStatus = (platforms as any).appstore ? ("real" as const) : ("unavailable" as const);
+        const googleplayStatus = (platforms as any).googleplay ? ("real" as const) : ("unavailable" as const);
+        const stripeStatus = (platforms as any).stripe ? ("real" as const) : ("unavailable" as const);
+
+        return {
+          month,
+          appstore,
+          googleplay,
+          stripe,
+          unified,
+          hasAllPlatforms,
+          hasValidStockData: true,
+          appstoreStatus,
+          googleplayStatus,
+          stripeStatus,
+        };
+      }
+
+      if (isArpu) {
+        const getArpuValue = (p?: { revenueSum?: number; lastActiveSubscribers?: number }) => {
+          if (!p) return null;
+          return calculateArpu(p.revenueSum || 0, p.lastActiveSubscribers || 0);
+        };
+        const appstore = getArpuValue((platforms as any).appstore);
+        const googleplay = getArpuValue((platforms as any).googleplay);
+        const stripe = getArpuValue((platforms as any).stripe);
+
+        const totalRevenue =
+          ((platforms as any).appstore?.revenueSum || 0) +
+          ((platforms as any).googleplay?.revenueSum || 0) +
+          ((platforms as any).stripe?.revenueSum || 0);
+        const totalActiveSubs =
+          ((platforms as any).appstore?.lastActiveSubscribers || 0) +
+          ((platforms as any).googleplay?.lastActiveSubscribers || 0) +
+          ((platforms as any).stripe?.lastActiveSubscribers || 0);
+        const unified = calculateArpu(totalRevenue, totalActiveSubs);
+
+        const appstoreStatus = (platforms as any).appstore ? ("real" as const) : ("unavailable" as const);
+        const googleplayStatus = (platforms as any).googleplay ? ("real" as const) : ("unavailable" as const);
+        const stripeStatus = (platforms as any).stripe ? ("real" as const) : ("unavailable" as const);
+
+        return {
+          month,
+          appstore,
+          googleplay,
+          stripe,
+          unified,
+          hasAllPlatforms,
+          hasValidStockData: true,
+          appstoreStatus,
+          googleplayStatus,
+          stripeStatus,
+        };
+      }
+
+      const val = (p?: { sum: number; last: number; lastDate: string }) => (p ? (isFlowMetric ? p.sum : p.last) : null);
+      const appstore = val((platforms as any).appstore);
+      let googleplay = val((platforms as any).googleplay);
+      const stripe = val((platforms as any).stripe);
+
+      let googleplayDerived = false;
+
+      const googlePlayDelayedMetrics = ["activeSubscribers", "trialSubscribers", "paidSubscribers", "monthlySubscribers", "yearlySubscribers", "mrr"];
+      if (googlePlayDelayedMetrics.includes(metric) && googleplay === 0) {
+        googleplay = null;
+      }
+
+      if (useAppStoreRatioForGooglePlay && (googleplay === null || googleplay === 0)) {
+        const ratioInfo = ratioByMonth[month];
+        const totalPlan = (ratioInfo?.appStorePlanMonthly || 0) + (ratioInfo?.appStorePlanYearly || 0);
+        if (ratioInfo && totalPlan > 0) {
+          const monthlyRatio = ratioInfo.appStorePlanMonthly / totalPlan;
+          const yearlyRatio = ratioInfo.appStorePlanYearly / totalPlan;
+
+          const deriveFromTotals = () => {
+            if (metric === "monthlyPlanChargedRevenue" || metric === "weeklyPlanChargedRevenueMonthly") {
+              googleplay = Math.round(((ratioInfo.googleCharged || 0) * monthlyRatio + Number.EPSILON) * 100) / 100;
+              googleplayDerived = true;
+            } else if (metric === "yearlyPlanChargedRevenue" || metric === "weeklyPlanChargedRevenueYearly") {
+              googleplay = Math.round(((ratioInfo.googleCharged || 0) * yearlyRatio + Number.EPSILON) * 100) / 100;
+              googleplayDerived = true;
+            } else if (metric === "monthlyPlanRevenue" || metric === "weeklyPlanRevenueMonthly") {
+              googleplay = Math.round(((ratioInfo.googleRevenue || 0) * monthlyRatio + Number.EPSILON) * 100) / 100;
+              googleplayDerived = true;
+            } else if (metric === "yearlyPlanRevenue" || metric === "weeklyPlanRevenueYearly") {
+              googleplay = Math.round(((ratioInfo.googleRevenue || 0) * yearlyRatio + Number.EPSILON) * 100) / 100;
+              googleplayDerived = true;
+            } else if (metric === "monthlyPlanProceeds" || metric === "weeklyPlanProceedsMonthly") {
+              googleplay = Math.round(((ratioInfo.googleProceeds || 0) * monthlyRatio + Number.EPSILON) * 100) / 100;
+              googleplayDerived = true;
+            } else if (metric === "yearlyPlanProceeds" || metric === "weeklyPlanProceedsYearly") {
+              googleplay = Math.round(((ratioInfo.googleProceeds || 0) * yearlyRatio + Number.EPSILON) * 100) / 100;
+              googleplayDerived = true;
+            } else if (metric === "trialSubscribers" || metric === "paidSubscribers") {
+              // Derive Google Play trial/paid from App Store ratio
+              // This runs when Google Play has no trial data (trial = 0)
+              const gpActive = ratioInfo.googleActiveSubs || 0;
+              const asActive = ratioInfo.appStoreActiveSubs || 0;
+              const asTrial = ratioInfo.appStoreTrialSubs || 0;
+              if (gpActive > 0 && asActive > 0 && asTrial > 0) {
+                const trialRatio = asTrial / asActive;
+                const derivedTrials = Math.round(gpActive * trialRatio);
+                const derivedPaid = Math.max(0, gpActive - derivedTrials);
+                if (metric === "trialSubscribers") {
+                  googleplay = derivedTrials;
+                  googleplayDerived = true;
+                } else {
+                  googleplay = derivedPaid;
+                  googleplayDerived = true;
+                }
+              }
+            } else if (metric === "monthlySubscribers" || metric === "yearlySubscribers") {
+              let baseSubs = ratioInfo.googlePaidSubs || 0;
+              if (baseSubs === 0 && ratioInfo.googleActiveSubs > 0) {
+                baseSubs = Math.max(0, ratioInfo.googleActiveSubs - (ratioInfo.googleTrialSubs || 0));
+              }
+              if (metric === "monthlySubscribers") {
+                googleplay = Math.round(baseSubs * monthlyRatio);
+                googleplayDerived = true;
+              } else {
+                googleplay = Math.round(baseSubs * yearlyRatio);
+                googleplayDerived = true;
+              }
+            } else if (metric === "mrr") {
+              // Derive Google Play MRR using App Store's MRR per subscriber ratio
+              const gpPaidSubs = ratioInfo.googlePaidSubs || Math.max(0, (ratioInfo.googleActiveSubs || 0) - (ratioInfo.googleTrialSubs || 0));
+              const asPaidSubs = ratioInfo.appStorePaidSubs || 0;
+              const asMRR = ratioInfo.appStoreMRR || 0;
+              
+              if (gpPaidSubs > 0 && asPaidSubs > 0 && asMRR > 0) {
+                const mrrPerSub = asMRR / asPaidSubs;
+                googleplay = Math.round((gpPaidSubs * mrrPerSub + Number.EPSILON) * 100) / 100;
+                googleplayDerived = true;
+              }
+            }
+          };
+
+          deriveFromTotals();
+        }
+      }
+      
+      // FALLBACK: Always derive Google Play trial/paid from App Store ratio when GP has no trial data
+      // This runs regardless of useAppStoreRatioForGooglePlay setting
+      if ((metric === "trialSubscribers" || metric === "paidSubscribers") && !googleplayDerived) {
+        const ratioInfo = ratioByMonth[month];
+        if (ratioInfo) {
+          const gpActive = ratioInfo.googleActiveSubs || 0;
+          const gpTrial = ratioInfo.googleTrialSubs || 0;
+          const asActive = ratioInfo.appStoreActiveSubs || 0;
+          const asTrial = ratioInfo.appStoreTrialSubs || 0;
+          
+          // Only derive if Google Play has no trial data but App Store does
+          if (gpActive > 0 && gpTrial === 0 && asActive > 0 && asTrial > 0) {
+            const trialRatio = asTrial / asActive;
+            const derivedTrials = Math.round(gpActive * trialRatio);
+            const derivedPaid = Math.max(0, gpActive - derivedTrials);
+            
+            if (metric === "trialSubscribers") {
+              googleplay = derivedTrials;
+              googleplayDerived = true;
+            } else if (metric === "paidSubscribers") {
+              googleplay = derivedPaid;
+              googleplayDerived = true;
+            }
+          }
+        }
+      }
+
+      const isCurrencyMetric = [
+        "mrr",
+        "weeklyRevenue",
+        "weeklyProceeds",
+        "monthlyChargedRevenue",
+        "monthlyRevenue",
+        "monthlyProceeds",
+        "monthlyPlanChargedRevenue",
+        "yearlyPlanChargedRevenue",
+        "monthlyPlanRevenue",
+        "yearlyPlanRevenue",
+        "monthlyPlanProceeds",
+        "yearlyPlanProceeds",
+        "weeklyPlanChargedRevenueMonthly",
+        "weeklyPlanChargedRevenueYearly",
+        "weeklyPlanRevenueMonthly",
+        "weeklyPlanRevenueYearly",
+        "weeklyPlanProceedsMonthly",
+        "weeklyPlanProceedsYearly",
+      ].includes(metric);
+      const sum = (appstore ?? 0) + (googleplay ?? 0) + (stripe ?? 0);
+      const unified = isCurrencyMetric ? Math.round((sum + Number.EPSILON) * 100) / 100 : sum;
+
+      const hasValidStockData =
+        !["activeSubscribers", "trialSubscribers", "paidSubscribers", "monthlySubscribers", "yearlySubscribers", "mrr", "arpu"].includes(metric) ||
+        Array.from(activePlatforms).every((p) => {
+          if (p === "appstore") return appstore !== null;
+          if (p === "googleplay") return googleplay !== null;
+          if (p === "stripe") return stripe !== null;
+          return true;
+        });
+
+      const appstoreStatus: "real" | "unavailable" = appstore !== null ? "real" : "unavailable";
+      const googleplayStatus: "real" | "derived" | "unavailable" = googleplay !== null ? (googleplayDerived ? "derived" : "real") : "unavailable";
+      const stripeStatus: "real" | "unavailable" = stripe !== null ? "real" : "unavailable";
+
+      return {
+        month,
+        appstore,
+        googleplay,
+        stripe,
+        unified,
+        hasAllPlatforms,
+        hasValidStockData,
+        appstoreStatus,
+        googleplayStatus,
+        stripeStatus,
+      };
+    })
+    .map((m) => {
+      const now = new Date();
+      const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+      const isCurrentMonth = m.month === currentMonth;
+      const isIncomplete = !m.hasAllPlatforms || isCurrentMonth || !m.hasValidStockData;
+
+      return { ...m, isIncomplete };
+    })
+    .sort((a, b) => a.month.localeCompare(b.month))
+    .slice(-12);
+
+  return monthlyResult;
+}
+
 export const getLatestMetrics = query({
   args: { appId: v.id("apps") },
   handler: async (ctx, { appId }) => {
@@ -73,7 +981,6 @@ export const getLatestMetrics = query({
     const flowMetrics = [
       "cancellations",
       "churn",
-      "graceEvents",
       "firstPayments",
       "renewals",
       "weeklyChargedRevenue",
@@ -182,9 +1089,9 @@ export const getLatestMetrics = query({
         flowSumsByPlatform[snap.platform] = {
           cancellations: 0,
           churn: 0,
-          graceEvents: 0,
           firstPayments: 0,
           renewals: 0,
+          refunds: 0,
           monthlyChargedRevenue: 0,
           monthlyRevenue: 0,
           monthlyProceeds: 0,
@@ -201,9 +1108,9 @@ export const getLatestMetrics = query({
       }
       flowSumsByPlatform[snap.platform].cancellations += snap.cancellations;
       flowSumsByPlatform[snap.platform].churn += snap.churn;
-      flowSumsByPlatform[snap.platform].graceEvents += snap.graceEvents;
       flowSumsByPlatform[snap.platform].firstPayments += snap.firstPayments;
       flowSumsByPlatform[snap.platform].renewals += (snap.renewals || 0);
+      flowSumsByPlatform[snap.platform].refunds += (snap.refunds || 0);
       flowSumsByPlatform[snap.platform].monthlyChargedRevenue += snap.monthlyChargedRevenue;
       flowSumsByPlatform[snap.platform].monthlyRevenue += snap.monthlyRevenue;
       flowSumsByPlatform[snap.platform].monthlyProceeds += (snap.monthlyProceeds || 0);
@@ -295,9 +1202,9 @@ export const getLatestMetrics = query({
         weeklyChurnRate: weeklyChurnRate,
         arpu: monthlyArpu,
         weeklyArpu: weeklyArpu,
-        graceEvents: flowSums?.graceEvents || 0,
         firstPayments: flowSums?.firstPayments || 0,
         renewals: flowSums?.renewals || 0,
+        refunds: flowSums?.refunds || 0,
         weeklyChargedRevenue: weeklySums?.weeklyChargedRevenue || 0,
         weeklyRevenue: weeklySums?.weeklyRevenue || 0,
         weeklyProceeds: weeklySums?.weeklyProceeds || 0,
@@ -333,6 +1240,24 @@ export const getLatestMetrics = query({
       
       console.log(`[Google Play Ratio] App Store plan split: monthly=${appStore.monthlyPlanChargedRevenue}, yearly=${appStore.yearlyPlanChargedRevenue}`);
       console.log(`[Google Play Ratio] Google Play total revenue: monthlyCharged=${googlePlay.monthlyChargedRevenue}, monthlyRevenue=${googlePlay.monthlyRevenue}, monthlyProceeds=${googlePlay.monthlyProceeds}`);
+      
+      // DERIVE TRIAL/PAID SUBSCRIBERS FROM APP STORE RATIO
+      // Google Play reports don't have separate trial counts, so we estimate from App Store's ratio
+      if (appStore.activeSubscribers > 0 && googlePlay.activeSubscribers > 0) {
+        const appStoreTrialRatio = appStore.trialSubscribers / appStore.activeSubscribers;
+        const estimatedGoogleTrials = Math.round(googlePlay.activeSubscribers * appStoreTrialRatio);
+        const estimatedGooglePaid = Math.max(0, googlePlay.activeSubscribers - estimatedGoogleTrials);
+        
+        console.log(`[Google Play Trial Ratio] App Store: ${appStore.trialSubscribers}/${appStore.activeSubscribers} = ${(appStoreTrialRatio * 100).toFixed(1)}% trials`);
+        console.log(`[Google Play Trial Ratio] Google Play before: active=${googlePlay.activeSubscribers}, trial=${googlePlay.trialSubscribers}, paid=${googlePlay.paidSubscribers}`);
+        
+        // Only override if Google Play has no trial data (trial = 0)
+        if (googlePlay.trialSubscribers === 0 && estimatedGoogleTrials > 0) {
+          platformMap.googleplay.trialSubscribers = estimatedGoogleTrials;
+          platformMap.googleplay.paidSubscribers = estimatedGooglePaid;
+          console.log(`[Google Play Trial Ratio] Google Play after: trial=${estimatedGoogleTrials}, paid=${estimatedGooglePaid} (derived from App Store ratio)`);
+        }
+      }
       
       // Calculate App Store's monthly/yearly ratio from total revenue
       const appStoreTotal = appStore.monthlyPlanChargedRevenue + appStore.yearlyPlanChargedRevenue;
@@ -423,51 +1348,47 @@ export const getLatestMetrics = query({
         }
       }
       
-      // Calculate MRR using App Store's average prices per subscriber
-      if ((gpMonthlySubs > 0 || gpYearlySubs > 0) && (appStore.monthlySubscribers > 0 || appStore.yearlySubscribers > 0)) {
-        let derivedMRR = 0;
+      // Calculate MRR using App Store's MRR per subscriber ratio
+      // This is more accurate than using daily revenue per subscriber
+      const asPaidSubs = appStore.paidSubscribers || Math.max(0, appStore.activeSubscribers - (appStore.trialSubscribers || 0));
+      const gpPaidSubs = platformMap.googleplay.paidSubscribers || Math.max(0, googlePlay.activeSubscribers - (platformMap.googleplay.trialSubscribers || 0));
+      
+      if (gpPaidSubs > 0 && asPaidSubs > 0 && appStore.mrr > 0) {
+        // Use App Store's MRR per paid subscriber as the basis
+        const asMRRPerSub = appStore.mrr / asPaidSubs;
+        const derivedMRR = Math.round((gpPaidSubs * asMRRPerSub + Number.EPSILON) * 100) / 100;
         
-        // Monthly subscriber MRR contribution
-        if (gpMonthlySubs > 0 && appStore.monthlySubscribers > 0) {
-          const avgMonthlyPrice = appStore.monthlyPlanChargedRevenue / appStore.monthlySubscribers;
-          derivedMRR += gpMonthlySubs * avgMonthlyPrice;
-          console.log(`[Google Play MRR] Monthly: ${gpMonthlySubs} subs × $${avgMonthlyPrice.toFixed(2)} avg = $${(gpMonthlySubs * avgMonthlyPrice).toFixed(2)}`);
-        }
-        
-        // Yearly subscriber MRR contribution (yearly price / 12)
-        // Note: yearlyPlanChargedRevenue represents ~1/12 of yearly subscribers renewing each month
-        // So avg yearly price = yearlyPlanChargedRevenue × 12 / yearlySubscribers
-        // MRR contribution = yearly price / 12 = yearlyPlanChargedRevenue / yearlySubscribers
-        if (gpYearlySubs > 0 && appStore.yearlySubscribers > 0) {
-          const yearlyMRRPerSub = appStore.yearlyPlanChargedRevenue / appStore.yearlySubscribers;
-          derivedMRR += gpYearlySubs * yearlyMRRPerSub;
-          console.log(`[Google Play MRR] Yearly: ${gpYearlySubs} subs × $${yearlyMRRPerSub.toFixed(2)} MRR/sub = $${(gpYearlySubs * yearlyMRRPerSub).toFixed(2)}`);
-        }
-        
-        derivedMRR = Math.round((derivedMRR + Number.EPSILON) * 100) / 100;
-        console.log(`[Google Play MRR] Total derived MRR: $${derivedMRR.toFixed(2)} (was $${googlePlay.mrr})`);
+        console.log(`[Google Play MRR] Derived: ${gpPaidSubs} paid subs × ${asMRRPerSub.toFixed(2)} MRR/sub (from AS: ${appStore.mrr}/${asPaidSubs}) = ${derivedMRR.toFixed(2)}`);
         platformMap.googleplay.mrr = derivedMRR;
-      } else if (appStoreTotal > 0 && googlePlay.monthlyRevenue > 0) {
-        // Fallback: If no subscriber data available, use revenue-based estimation
+      } else if (googlePlay.monthlyRevenue > 0) {
+        // Fallback: Use 30-day revenue as approximation
         // This is less accurate but better than 0
-        const monthlyRatio = appStore.monthlyPlanChargedRevenue / appStoreTotal;
-        const yearlyRatio = appStore.yearlyPlanChargedRevenue / appStoreTotal;
-        
-        // Estimate MRR from revenue using simplified approach:
-        // Monthly revenue portion contributes fully to MRR
-        // Yearly revenue portion contributes 1/12 to MRR (but it's already 1/12 of annual in 30-day window)
-        // So we treat yearly revenue as-is for MRR contribution
-        const gpMonthlyRevPortion = googlePlay.monthlyRevenue * monthlyRatio;
-        const gpYearlyRevPortion = googlePlay.monthlyRevenue * yearlyRatio;
-        
-        // For MRR from revenue: monthly portion + yearly portion (yearly is already monthly-equivalent)
-        const derivedMRR = Math.round((gpMonthlyRevPortion + gpYearlyRevPortion + Number.EPSILON) * 100) / 100;
-        
-        console.log(`[Google Play MRR] Fallback (no subs): monthlyRev=$${gpMonthlyRevPortion.toFixed(2)}, yearlyRev=$${gpYearlyRevPortion.toFixed(2)}, MRR=$${derivedMRR.toFixed(2)}`);
+        const derivedMRR = Math.round((googlePlay.monthlyRevenue + Number.EPSILON) * 100) / 100;
+        console.log(`[Google Play MRR] Fallback: Using 30-day revenue ${derivedMRR.toFixed(2)} as MRR approximation`);
         platformMap.googleplay.mrr = derivedMRR;
       }
     } else {
       console.log(`[Google Play Ratio] SKIPPED: Condition not met - setting=${useAppStoreRatioForGooglePlay}, gp=${!!platformMap.googleplay}, as=${!!platformMap.appstore}`);
+    }
+    
+    // FALLBACK: Always derive Google Play trial/paid from App Store ratio when GP has no trial data
+    // This runs regardless of useAppStoreRatioForGooglePlay setting
+    if (platformMap.googleplay && platformMap.appstore) {
+      const gpActive = platformMap.googleplay.activeSubscribers || 0;
+      const gpTrial = platformMap.googleplay.trialSubscribers || 0;
+      const asActive = platformMap.appstore.activeSubscribers || 0;
+      const asTrial = platformMap.appstore.trialSubscribers || 0;
+      
+      // Only derive if Google Play has no trial data but App Store does
+      if (gpActive > 0 && gpTrial === 0 && asActive > 0 && asTrial > 0) {
+        const trialRatio = asTrial / asActive;
+        const derivedTrials = Math.round(gpActive * trialRatio);
+        const derivedPaid = Math.max(0, gpActive - derivedTrials);
+        
+        platformMap.googleplay.trialSubscribers = derivedTrials;
+        platformMap.googleplay.paidSubscribers = derivedPaid;
+        console.log(`[Google Play Trial Fallback] Derived: trial=${derivedTrials}, paid=${derivedPaid} (from AS ratio ${(trialRatio*100).toFixed(1)}%)`);
+      }
     }
 
     // Calculate unified by summing all platforms (use 0 if platform not in map)
@@ -497,10 +1418,10 @@ export const getLatestMetrics = query({
       weeklyChurnRate: calculateChurnRate(totalWeeklyChurn, totalStartingPaidSubs7),
       arpu: calculateArpu(totalMonthlyRevenue, totalActiveSubscribers),
       weeklyArpu: calculateArpu(totalWeeklyRevenue, totalActiveSubscribers),
-      graceEvents: (platformMap.appstore?.graceEvents || 0) + (platformMap.googleplay?.graceEvents || 0) + (platformMap.stripe?.graceEvents || 0),
       paybacks: 0,
       firstPayments: (platformMap.appstore?.firstPayments || 0) + (platformMap.googleplay?.firstPayments || 0) + (platformMap.stripe?.firstPayments || 0),
       renewals: (platformMap.appstore?.renewals || 0) + (platformMap.googleplay?.renewals || 0) + (platformMap.stripe?.renewals || 0),
+      refunds: (platformMap.appstore?.refunds || 0) + (platformMap.googleplay?.refunds || 0) + (platformMap.stripe?.refunds || 0),
       weeklyChargedRevenue: Math.round(((platformMap.appstore?.weeklyChargedRevenue || 0) + (platformMap.googleplay?.weeklyChargedRevenue || 0) + (platformMap.stripe?.weeklyChargedRevenue || 0) + Number.EPSILON) * 100) / 100,
       weeklyRevenue: Math.round((totalWeeklyRevenue + Number.EPSILON) * 100) / 100,
       weeklyProceeds: Math.round((totalWeeklyProceeds + Number.EPSILON) * 100) / 100,
@@ -617,371 +1538,14 @@ export const getWeeklyMetricsHistory = query({
   },
   handler: async (ctx, { appId, metric }) => {
     const app = await validateAppOwnership(ctx, appId);
-    const useAppStoreRatioForGooglePlay = app.useAppStoreRatioForGooglePlay ?? false;
-
     const oneYearAgo = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
-    
-    // Determine which platforms actually have data by checking for snapshots
-    // (not just active connections, since a platform might be connected but not synced yet)
-    const allSnapshots = await ctx.db
+    const snapshots = await ctx.db
       .query("metricsSnapshots")
       .withIndex("by_app_date", (q) => q.eq("appId", appId))
       .filter((q) => q.gte(q.field("date"), oneYearAgo))
       .collect();
-    
-    const platformsWithData = new Set(
-      allSnapshots
-        .filter((s) => s.platform !== "unified")
-        .map((s) => s.platform)
-    );
-    
-    const activePlatforms = platformsWithData;
-    
-    // Special handling for churnRate and arpu - they're calculated metrics
-    const isChurnRate = metric === "churnRate";
-    const isArpu = metric === "arpu";
-    
-    // Determine if this is a flow metric (sum weekly) or stock metric (last value)
-    const flowMetrics = [
-      "cancellations",
-      "churn",
-      "graceEvents",
-      "firstPayments",
-      "renewals",
-      "weeklyRevenue",
-      "weeklyProceeds",
-      "monthlyChargedRevenue",
-      "monthlyRevenue",
-      "monthlyProceeds",
-      // Plan split metrics should be summed over the period (not last value)
-      "monthlyPlanChargedRevenue",
-      "yearlyPlanChargedRevenue",
-      "monthlyPlanRevenue",
-      "yearlyPlanRevenue",
-      "monthlyPlanProceeds",
-      "yearlyPlanProceeds",
-      "weeklyPlanChargedRevenueMonthly",
-      "weeklyPlanChargedRevenueYearly",
-      "weeklyPlanRevenueMonthly",
-      "weeklyPlanRevenueYearly",
-      "weeklyPlanProceedsMonthly",
-      "weeklyPlanProceedsYearly",
-    ];
-    const isFlowMetric = flowMetrics.includes(metric) || isChurnRate || isArpu; // churnRate and arpu use flow logic
 
-    // Use the snapshots we already fetched
-    const snapshots = allSnapshots;
-
-    // Group by week and platform
-    // For churnRate, we need both churn (sum) and paidSubscribers (first value of week)
-    // For arpu, we need revenue (sum) and activeSubscribers (last value of week)
-    const weeklyData: Record<string, Record<string, { sum: number; last: number; lastDate: string; churnSum?: number; startingPaidSubs?: number; firstDate?: string; revenueSum?: number; lastActiveSubscribers?: number }>> = {};
-    
-    // Track App Store plan split (sum) and Google Play totals (sum) per week so we can derive
-    // Google Play plan-split values historically (using App Store ratios)
-    const ratioByWeek: Record<string, {
-      appStorePlanMonthly: number;
-      appStorePlanYearly: number;
-      googleCharged: number;
-      googleRevenue: number;
-      googleProceeds: number;
-      googlePaidSubs: number;
-      googleActiveSubs: number;
-      googleTrialSubs: number;
-      googleSubsDate: string;
-    }> = {};
-
-    for (const snap of snapshots) {
-      // Skip unified platform - we'll calculate it from the sum of platforms
-      if (snap.platform === "unified") continue;
-
-      const date = new Date(snap.date);
-      const weekStart = getWeekStart(date, app.weekStartDay || "monday");
-      const weekKey = weekStart.toISOString().split("T")[0];
-      
-      // Track ratios/totals needed for historical Google Play derivation
-      if (!ratioByWeek[weekKey]) {
-        ratioByWeek[weekKey] = {
-          appStorePlanMonthly: 0,
-          appStorePlanYearly: 0,
-          googleCharged: 0,
-          googleRevenue: 0,
-          googleProceeds: 0,
-          googlePaidSubs: 0,
-          googleActiveSubs: 0,
-          googleTrialSubs: 0,
-          googleSubsDate: "",
-        };
-      }
-      if (snap.platform === "appstore") {
-        ratioByWeek[weekKey].appStorePlanMonthly += snap.monthlyPlanChargedRevenue || 0;
-        ratioByWeek[weekKey].appStorePlanYearly += snap.yearlyPlanChargedRevenue || 0;
-      } else if (snap.platform === "googleplay") {
-        ratioByWeek[weekKey].googleCharged += snap.monthlyChargedRevenue || 0;
-        ratioByWeek[weekKey].googleRevenue += snap.monthlyRevenue || 0;
-        ratioByWeek[weekKey].googleProceeds += snap.monthlyProceeds || 0;
-        // Track the most recent NON-ZERO subscriber values in this week for subscriber split
-        // (Google Play has reporting delays, so we keep last known good values)
-        const snapActiveSubs = snap.activeSubscribers || 0;
-        if (snapActiveSubs > 0 && (!ratioByWeek[weekKey].googleSubsDate || snap.date >= ratioByWeek[weekKey].googleSubsDate)) {
-          ratioByWeek[weekKey].googlePaidSubs = snap.paidSubscribers || 0;
-          ratioByWeek[weekKey].googleActiveSubs = snapActiveSubs;
-          ratioByWeek[weekKey].googleTrialSubs = snap.trialSubscribers || 0;
-          ratioByWeek[weekKey].googleSubsDate = snap.date;
-        }
-      }
-
-      if (!weeklyData[weekKey]) weeklyData[weekKey] = {} as any;
-      const value = (isChurnRate || isArpu) ? 0 : ((snap as any)[metric] || 0); // For calculated metrics, we calculate separately
-      const entry = weeklyData[weekKey][snap.platform] || { sum: 0, last: 0, lastDate: "", churnSum: 0, startingPaidSubs: 0, firstDate: "9999-99-99", revenueSum: 0, lastActiveSubscribers: 0 };
-      entry.sum += value;
-      // Only update last if this is a more recent date
-      if (snap.date >= entry.lastDate) {
-        entry.last = value;
-        entry.lastDate = snap.date;
-      }
-      
-      // For churnRate calculation: track churn sum and starting paid subscribers
-      if (isChurnRate) {
-        entry.churnSum = (entry.churnSum || 0) + (snap.churn || 0);
-        // Track the earliest date's paidSubscribers as "starting"
-        if (snap.date < (entry.firstDate || "9999-99-99")) {
-          entry.startingPaidSubs = snap.paidSubscribers || 0;
-          entry.firstDate = snap.date;
-        }
-      }
-      
-      // For arpu calculation: track revenue sum and last active subscribers
-      if (isArpu) {
-        entry.revenueSum = (entry.revenueSum || 0) + (snap.monthlyRevenue || 0);
-        // Track the most recent date's activeSubscribers
-        if (snap.date >= entry.lastDate) {
-          entry.lastActiveSubscribers = snap.activeSubscribers || 0;
-        }
-      }
-      
-      weeklyData[weekKey][snap.platform] = entry;
-    }
-
-    // Fill in missing Google Play subscriber data from previous weeks
-    // (Google Play has reporting delays, so carry forward last known values)
-    const sortedWeeks = Object.keys(ratioByWeek).sort();
-    let lastKnownGoogleSubs = { paidSubs: 0, activeSubs: 0, trialSubs: 0 };
-    for (const week of sortedWeeks) {
-      const r = ratioByWeek[week];
-      if (r.googleActiveSubs > 0) {
-        lastKnownGoogleSubs = { paidSubs: r.googlePaidSubs, activeSubs: r.googleActiveSubs, trialSubs: r.googleTrialSubs };
-      } else if (lastKnownGoogleSubs.activeSubs > 0) {
-        // Carry forward from previous week
-        r.googlePaidSubs = lastKnownGoogleSubs.paidSubs;
-        r.googleActiveSubs = lastKnownGoogleSubs.activeSubs;
-        r.googleTrialSubs = lastKnownGoogleSubs.trialSubs;
-      }
-    }
-
-    // Stock metrics that should show null (line stops) when value is 0 for Google Play
-    // These are subscription counts that come from delayed reports
-    const stockMetrics = [
-      "activeSubscribers",
-      "trialSubscribers", 
-      "paidSubscribers",
-      "monthlySubscribers",
-      "yearlySubscribers",
-      "mrr",
-    ];
-    const isStockMetric = stockMetrics.includes(metric);
-
-    // Convert to array, filter incomplete weeks, and sort by date
-    const result = Object.entries(weeklyData)
-      .map(([week, platforms]) => {
-        // Check if all active platforms have data for this week
-        const platformsInWeek = new Set(Object.keys(platforms));
-        const hasAllPlatforms = Array.from(activePlatforms).every((p) => platformsInWeek.has(p));
-        
-        // For churnRate, calculate using the shared helper
-        if (isChurnRate) {
-          const getChurnRate = (p?: { churnSum?: number; startingPaidSubs?: number }) => {
-            if (!p) return null;
-            return calculateChurnRate(p.churnSum || 0, p.startingPaidSubs || 0);
-          };
-          const appstore = getChurnRate((platforms as any).appstore);
-          const googleplay = getChurnRate((platforms as any).googleplay);
-          const stripe = getChurnRate((platforms as any).stripe);
-          
-          // Calculate unified churn rate from totals (not average of rates)
-          const totalChurn = ((platforms as any).appstore?.churnSum || 0) + ((platforms as any).googleplay?.churnSum || 0) + ((platforms as any).stripe?.churnSum || 0);
-          const totalStartingSubs = ((platforms as any).appstore?.startingPaidSubs || 0) + ((platforms as any).googleplay?.startingPaidSubs || 0) + ((platforms as any).stripe?.startingPaidSubs || 0);
-          const unified = calculateChurnRate(totalChurn, totalStartingSubs);
-          
-          // Status flags for calculated metrics
-          const appstoreStatus = (platforms as any).appstore ? 'real' as const : 'unavailable' as const;
-          const googleplayStatus = (platforms as any).googleplay ? 'real' as const : 'unavailable' as const;
-          const stripeStatus = (platforms as any).stripe ? 'real' as const : 'unavailable' as const;
-          
-          return {
-            week,
-            appstore,
-            googleplay,
-            stripe,
-            unified,
-            hasAllPlatforms,
-            hasValidStockData: true, // churnRate is always valid if we have data
-            appstoreStatus,
-            googleplayStatus,
-            stripeStatus,
-          };
-        }
-        
-        // For arpu, calculate using the shared helper
-        if (isArpu) {
-          const getArpu = (p?: { revenueSum?: number; lastActiveSubscribers?: number }) => {
-            if (!p) return null;
-            return calculateArpu(p.revenueSum || 0, p.lastActiveSubscribers || 0);
-          };
-          const appstore = getArpu((platforms as any).appstore);
-          const googleplay = getArpu((platforms as any).googleplay);
-          const stripe = getArpu((platforms as any).stripe);
-          
-          // Calculate unified ARPU from total revenue / total active subscribers
-          const totalRevenue = ((platforms as any).appstore?.revenueSum || 0) + ((platforms as any).googleplay?.revenueSum || 0) + ((platforms as any).stripe?.revenueSum || 0);
-          const totalActiveSubs = ((platforms as any).appstore?.lastActiveSubscribers || 0) + ((platforms as any).googleplay?.lastActiveSubscribers || 0) + ((platforms as any).stripe?.lastActiveSubscribers || 0);
-          const unified = calculateArpu(totalRevenue, totalActiveSubs);
-          
-          // Status flags for calculated metrics
-          const appstoreStatus = (platforms as any).appstore ? 'real' as const : 'unavailable' as const;
-          const googleplayStatus = (platforms as any).googleplay ? 'real' as const : 'unavailable' as const;
-          const stripeStatus = (platforms as any).stripe ? 'real' as const : 'unavailable' as const;
-          
-          return {
-            week,
-            appstore,
-            googleplay,
-            stripe,
-            unified,
-            hasAllPlatforms,
-            hasValidStockData: true, // arpu is always valid if we have data
-            appstoreStatus,
-            googleplayStatus,
-            stripeStatus,
-          };
-        }
-        
-        // For flow metrics, use sum of all days in the week; for stock metrics, use last day
-        // Return null if platform has no data for this week (so chart line stops instead of dropping to 0)
-        const val = (p?: { sum: number; last: number; lastDate: string }) => (p ? (isFlowMetric ? p.sum : p.last) : null);
-        const appstore = val((platforms as any).appstore);
-        let googleplay = val((platforms as any).googleplay);
-        const stripe = val((platforms as any).stripe);
-        
-        // Track if Google Play data was derived vs real
-        let googleplayDerived = false;
-        const originalGoogleplay = googleplay;
-        
-        // For Google Play subscriber/stock metrics, treat 0 as null (no data) so line stops
-        // Google Play subscription reports have delays, so 0 means no data, not zero subscribers
-        // MRR is calculated from subscriber data, so 0 MRR also indicates missing data
-        const googlePlayDelayedMetrics = ["activeSubscribers", "trialSubscribers", "paidSubscribers", "monthlySubscribers", "yearlySubscribers", "mrr"];
-        if (googlePlayDelayedMetrics.includes(metric) && googleplay === 0) {
-          googleplay = null;
-        }
-        
-        // Apply App Store ratio to derive Google Play split for plan metrics and subs (historical)
-        if (useAppStoreRatioForGooglePlay && (googleplay === null || googleplay === 0)) {
-          const ratioInfo = ratioByWeek[week];
-          const totalPlan = (ratioInfo?.appStorePlanMonthly || 0) + (ratioInfo?.appStorePlanYearly || 0);
-          if (ratioInfo && totalPlan > 0) {
-            const monthlyRatio = ratioInfo.appStorePlanMonthly / totalPlan;
-            const yearlyRatio = ratioInfo.appStorePlanYearly / totalPlan;
-
-            const deriveFromTotals = () => {
-              if (metric === "monthlyPlanChargedRevenue" || metric === "weeklyPlanChargedRevenueMonthly") {
-                googleplay = Math.round(((ratioInfo.googleCharged || 0) * monthlyRatio + Number.EPSILON) * 100) / 100;
-                googleplayDerived = true;
-              } else if (metric === "yearlyPlanChargedRevenue" || metric === "weeklyPlanChargedRevenueYearly") {
-                googleplay = Math.round(((ratioInfo.googleCharged || 0) * yearlyRatio + Number.EPSILON) * 100) / 100;
-                googleplayDerived = true;
-              } else if (metric === "monthlyPlanRevenue" || metric === "weeklyPlanRevenueMonthly") {
-                googleplay = Math.round(((ratioInfo.googleRevenue || 0) * monthlyRatio + Number.EPSILON) * 100) / 100;
-                googleplayDerived = true;
-              } else if (metric === "yearlyPlanRevenue" || metric === "weeklyPlanRevenueYearly") {
-                googleplay = Math.round(((ratioInfo.googleRevenue || 0) * yearlyRatio + Number.EPSILON) * 100) / 100;
-                googleplayDerived = true;
-              } else if (metric === "monthlyPlanProceeds" || metric === "weeklyPlanProceedsMonthly") {
-                googleplay = Math.round(((ratioInfo.googleProceeds || 0) * monthlyRatio + Number.EPSILON) * 100) / 100;
-                googleplayDerived = true;
-              } else if (metric === "yearlyPlanProceeds" || metric === "weeklyPlanProceedsYearly") {
-                googleplay = Math.round(((ratioInfo.googleProceeds || 0) * yearlyRatio + Number.EPSILON) * 100) / 100;
-                googleplayDerived = true;
-              } else if (metric === "monthlySubscribers" || metric === "yearlySubscribers") {
-                // Use paidSubs if available, otherwise derive from activeSubs - trialSubs
-                let baseSubs = ratioInfo.googlePaidSubs || 0;
-                if (baseSubs === 0 && ratioInfo.googleActiveSubs > 0) {
-                  baseSubs = Math.max(0, ratioInfo.googleActiveSubs - (ratioInfo.googleTrialSubs || 0));
-                }
-                if (metric === "monthlySubscribers") {
-                  googleplay = Math.round(baseSubs * monthlyRatio);
-                  googleplayDerived = true;
-                } else {
-                  googleplay = Math.round(baseSubs * yearlyRatio);
-                  googleplayDerived = true;
-                }
-              }
-            };
-
-            deriveFromTotals();
-          }
-        }
-
-        // Round currency values to 2 decimals
-        const isCurrencyMetric = ["mrr", "weeklyRevenue", "monthlyChargedRevenue", "monthlyRevenue", "monthlyPlanChargedRevenue", "yearlyPlanChargedRevenue", "monthlyPlanRevenue", "yearlyPlanRevenue", "monthlyPlanProceeds", "yearlyPlanProceeds", "weeklyPlanChargedRevenueMonthly", "weeklyPlanChargedRevenueYearly", "weeklyPlanRevenueMonthly", "weeklyPlanRevenueYearly", "weeklyPlanProceedsMonthly", "weeklyPlanProceedsYearly"].includes(metric);
-        // Sum only platforms that have data (null values are excluded)
-        const sum = (appstore ?? 0) + (googleplay ?? 0) + (stripe ?? 0);
-        const unified = isCurrencyMetric 
-          ? Math.round((sum + Number.EPSILON) * 100) / 100
-          : sum;
-        
-        // For stock metrics, check if all active platforms have valid (non-null) values
-        // This is crucial for accurate percentage change calculations
-        const hasValidStockData = !isStockMetric || Array.from(activePlatforms).every((p) => {
-          if (p === 'appstore') return appstore !== null;
-          if (p === 'googleplay') return googleplay !== null;
-          if (p === 'stripe') return stripe !== null;
-          return true;
-        });
-        
-        // Determine status for each platform: 'real' | 'derived' | 'unavailable'
-        const appstoreStatus = appstore !== null ? 'real' as const : 'unavailable' as const;
-        const googleplayStatus = googleplay !== null 
-          ? (googleplayDerived ? 'derived' as const : 'real' as const) 
-          : 'unavailable' as const;
-        const stripeStatus = stripe !== null ? 'real' as const : 'unavailable' as const;
-        
-        return {
-          week,
-          appstore,
-          googleplay,
-          stripe,
-          unified,
-          hasAllPlatforms,
-          hasValidStockData,
-          appstoreStatus,
-          googleplayStatus,
-          stripeStatus,
-        };
-      })
-      .map((w) => {
-        // Check if week is incomplete: missing platforms, current/future week, or missing stock data
-        const weekEnd = new Date(w.week);
-        weekEnd.setDate(weekEnd.getDate() + 6); // End of week
-        const isCurrentOrFutureWeek = weekEnd >= new Date();
-        const isIncomplete = !w.hasAllPlatforms || isCurrentOrFutureWeek || !w.hasValidStockData;
-        
-        return { ...w, isIncomplete };
-      })
-      .sort((a, b) => a.week.localeCompare(b.week))
-      .slice(-52); // Keep last 52 weeks
-
-    return result;
+    return buildWeeklyHistoryFromSnapshots({ app, metric, snapshots });
   },
 });
 
@@ -992,417 +1556,15 @@ export const getMonthlyMetricsHistory = query({
   },
   handler: async (ctx, { appId, metric }) => {
     const app = await validateAppOwnership(ctx, appId);
-    const useAppStoreRatioForGooglePlay = app.useAppStoreRatioForGooglePlay ?? false;
-
     const oneYearAgo = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
-    
-    const allSnapshots = await ctx.db
+
+    const snapshots = await ctx.db
       .query("metricsSnapshots")
       .withIndex("by_app_date", (q) => q.eq("appId", appId))
       .filter((q) => q.gte(q.field("date"), oneYearAgo))
       .collect();
-    
-    const platformsWithData = new Set(
-      allSnapshots
-        .filter((s) => s.platform !== "unified")
-        .map((s) => s.platform)
-    );
-    
-    const activePlatforms = platformsWithData;
-    
-    // Special handling for churnRate and arpu - they're calculated metrics
-    const isChurnRate = metric === "churnRate";
-    const isArpu = metric === "arpu";
-    
-    const flowMetrics = [
-      "cancellations",
-      "churn",
-      "graceEvents",
-      "firstPayments",
-      "renewals",
-      "weeklyRevenue",
-      "weeklyProceeds",
-      "monthlyChargedRevenue",
-      "monthlyRevenue",
-      "monthlyProceeds",
-      // Plan split metrics should be summed over the period (not last value)
-      "monthlyPlanChargedRevenue",
-      "yearlyPlanChargedRevenue",
-      "monthlyPlanRevenue",
-      "yearlyPlanRevenue",
-      "monthlyPlanProceeds",
-      "yearlyPlanProceeds",
-      "weeklyPlanChargedRevenueMonthly",
-      "weeklyPlanChargedRevenueYearly",
-      "weeklyPlanRevenueMonthly",
-      "weeklyPlanRevenueYearly",
-      "weeklyPlanProceedsMonthly",
-      "weeklyPlanProceedsYearly",
-    ];
-    const isFlowMetric = flowMetrics.includes(metric) || isChurnRate || isArpu; // churnRate and arpu use flow logic
 
-    const snapshots = allSnapshots;
-
-    // Track App Store plan split (sum) and Google Play totals (sum) per month for historical derivation
-    const ratioByMonth: Record<string, {
-      appStorePlanMonthly: number;
-      appStorePlanYearly: number;
-      appStoreMonthlySubs: number;
-      appStoreYearlySubs: number;
-      appStoreSubsDate: string;
-      googleCharged: number;
-      googleRevenue: number;
-      googleProceeds: number;
-      googlePaidSubs: number;
-      googleActiveSubs: number;
-      googleTrialSubs: number;
-      googleMonthlySubs: number;
-      googleYearlySubs: number;
-      googleSubsDate: string;
-    }> = {};
-
-    // Group by month (YYYY-MM) and platform
-    // For churnRate, we need both churn (sum) and paidSubscribers (first value of month)
-    // For arpu, we need revenue (sum) and activeSubscribers (last value of month)
-    const monthlyData: Record<string, Record<string, { sum: number; last: number; lastDate: string; churnSum?: number; startingPaidSubs?: number; firstDate?: string; revenueSum?: number; lastActiveSubscribers?: number }>> = {};
-    
-    for (const snap of snapshots) {
-      if (snap.platform === "unified") continue;
-
-      // Extract YYYY-MM from date
-      const monthKey = snap.date.substring(0, 7);
-
-      if (!ratioByMonth[monthKey]) {
-        ratioByMonth[monthKey] = {
-          appStorePlanMonthly: 0,
-          appStorePlanYearly: 0,
-          appStoreMonthlySubs: 0,
-          appStoreYearlySubs: 0,
-          appStoreSubsDate: "",
-          googleCharged: 0,
-          googleRevenue: 0,
-          googleProceeds: 0,
-          googlePaidSubs: 0,
-          googleActiveSubs: 0,
-          googleTrialSubs: 0,
-          googleMonthlySubs: 0,
-          googleYearlySubs: 0,
-          googleSubsDate: "",
-        };
-      }
-      if (snap.platform === "appstore") {
-        ratioByMonth[monthKey].appStorePlanMonthly += snap.monthlyPlanChargedRevenue || 0;
-        ratioByMonth[monthKey].appStorePlanYearly += snap.yearlyPlanChargedRevenue || 0;
-        // Track App Store subscriber counts for MRR calculation
-        const asMonthlySubs = snap.monthlySubscribers || 0;
-        const asYearlySubs = snap.yearlySubscribers || 0;
-        if ((asMonthlySubs > 0 || asYearlySubs > 0) && (!ratioByMonth[monthKey].appStoreSubsDate || snap.date >= ratioByMonth[monthKey].appStoreSubsDate)) {
-          ratioByMonth[monthKey].appStoreMonthlySubs = asMonthlySubs;
-          ratioByMonth[monthKey].appStoreYearlySubs = asYearlySubs;
-          ratioByMonth[monthKey].appStoreSubsDate = snap.date;
-        }
-      } else if (snap.platform === "googleplay") {
-        ratioByMonth[monthKey].googleCharged += snap.monthlyChargedRevenue || 0;
-        ratioByMonth[monthKey].googleRevenue += snap.monthlyRevenue || 0;
-        ratioByMonth[monthKey].googleProceeds += snap.monthlyProceeds || 0;
-        // Track the most recent NON-ZERO subscriber values in this month for subscriber split
-        // (Google Play has reporting delays, so we keep last known good values)
-        const snapActiveSubs = snap.activeSubscribers || 0;
-        if (snapActiveSubs > 0 && (!ratioByMonth[monthKey].googleSubsDate || snap.date >= ratioByMonth[monthKey].googleSubsDate)) {
-          ratioByMonth[monthKey].googlePaidSubs = snap.paidSubscribers || 0;
-          ratioByMonth[monthKey].googleActiveSubs = snapActiveSubs;
-          ratioByMonth[monthKey].googleTrialSubs = snap.trialSubscribers || 0;
-          ratioByMonth[monthKey].googleMonthlySubs = snap.monthlySubscribers || 0;
-          ratioByMonth[monthKey].googleYearlySubs = snap.yearlySubscribers || 0;
-          ratioByMonth[monthKey].googleSubsDate = snap.date;
-        }
-      }
-      
-      if (!monthlyData[monthKey]) monthlyData[monthKey] = {} as any;
-      const value = (isChurnRate || isArpu) ? 0 : ((snap as any)[metric] || 0); // For calculated metrics, we calculate separately
-      const entry = monthlyData[monthKey][snap.platform] || { sum: 0, last: 0, lastDate: "", churnSum: 0, startingPaidSubs: 0, firstDate: "9999-99-99", revenueSum: 0, lastActiveSubscribers: 0 };
-      entry.sum += value;
-      if (snap.date >= entry.lastDate) {
-        entry.last = value;
-        entry.lastDate = snap.date;
-      }
-      
-      // For churnRate calculation: track churn sum and starting paid subscribers
-      if (isChurnRate) {
-        entry.churnSum = (entry.churnSum || 0) + (snap.churn || 0);
-        // Track the earliest date's paidSubscribers as "starting"
-        if (snap.date < (entry.firstDate || "9999-99-99")) {
-          entry.startingPaidSubs = snap.paidSubscribers || 0;
-          entry.firstDate = snap.date;
-        }
-      }
-      
-      // For arpu calculation: track revenue sum and last active subscribers
-      if (isArpu) {
-        entry.revenueSum = (entry.revenueSum || 0) + (snap.monthlyRevenue || 0);
-        // Track the most recent date's activeSubscribers
-        if (snap.date >= entry.lastDate) {
-          entry.lastActiveSubscribers = snap.activeSubscribers || 0;
-        }
-      }
-      
-      monthlyData[monthKey][snap.platform] = entry;
-    }
-
-    // Fill in missing Google Play subscriber data from previous months
-    // (Google Play has reporting delays, so carry forward last known values)
-    const sortedMonths = Object.keys(ratioByMonth).sort();
-    let lastKnownGoogleSubsMonthly = { paidSubs: 0, activeSubs: 0, trialSubs: 0, monthlySubs: 0, yearlySubs: 0 };
-    for (const month of sortedMonths) {
-      const r = ratioByMonth[month];
-      if (r.googleActiveSubs > 0) {
-        lastKnownGoogleSubsMonthly = { 
-          paidSubs: r.googlePaidSubs, 
-          activeSubs: r.googleActiveSubs, 
-          trialSubs: r.googleTrialSubs,
-          monthlySubs: r.googleMonthlySubs,
-          yearlySubs: r.googleYearlySubs
-        };
-      } else if (lastKnownGoogleSubsMonthly.activeSubs > 0) {
-        // Carry forward from previous month
-        r.googlePaidSubs = lastKnownGoogleSubsMonthly.paidSubs;
-        r.googleActiveSubs = lastKnownGoogleSubsMonthly.activeSubs;
-        r.googleTrialSubs = lastKnownGoogleSubsMonthly.trialSubs;
-        r.googleMonthlySubs = lastKnownGoogleSubsMonthly.monthlySubs;
-        r.googleYearlySubs = lastKnownGoogleSubsMonthly.yearlySubs;
-      }
-    }
-
-    const stockMetrics = [
-      "activeSubscribers",
-      "trialSubscribers", 
-      "paidSubscribers",
-      "monthlySubscribers",
-      "yearlySubscribers",
-      "mrr",
-    ];
-    const isStockMetric = stockMetrics.includes(metric);
-
-    const result = Object.entries(monthlyData)
-      .map(([month, platforms]) => {
-        const platformsInMonth = new Set(Object.keys(platforms));
-        const hasAllPlatforms = Array.from(activePlatforms).every((p) => platformsInMonth.has(p));
-        
-        // For churnRate, calculate using the shared helper
-        if (isChurnRate) {
-          const getChurnRate = (p?: { churnSum?: number; startingPaidSubs?: number }) => {
-            if (!p) return null;
-            return calculateChurnRate(p.churnSum || 0, p.startingPaidSubs || 0);
-          };
-          const appstore = getChurnRate((platforms as any).appstore);
-          const googleplay = getChurnRate((platforms as any).googleplay);
-          const stripe = getChurnRate((platforms as any).stripe);
-          
-          // Calculate unified churn rate from totals (not average of rates)
-          const totalChurn = ((platforms as any).appstore?.churnSum || 0) + ((platforms as any).googleplay?.churnSum || 0) + ((platforms as any).stripe?.churnSum || 0);
-          const totalStartingSubs = ((platforms as any).appstore?.startingPaidSubs || 0) + ((platforms as any).googleplay?.startingPaidSubs || 0) + ((platforms as any).stripe?.startingPaidSubs || 0);
-          const unified = calculateChurnRate(totalChurn, totalStartingSubs);
-          
-          // Status flags for calculated metrics
-          const appstoreStatus = (platforms as any).appstore ? 'real' as const : 'unavailable' as const;
-          const googleplayStatus = (platforms as any).googleplay ? 'real' as const : 'unavailable' as const;
-          const stripeStatus = (platforms as any).stripe ? 'real' as const : 'unavailable' as const;
-          
-          return {
-            month,
-            appstore,
-            googleplay,
-            stripe,
-            unified,
-            hasAllPlatforms,
-            hasValidStockData: true, // churnRate is always valid if we have data
-            appstoreStatus,
-            googleplayStatus,
-            stripeStatus,
-          };
-        }
-        
-        // For arpu, calculate using the shared helper
-        if (isArpu) {
-          const getArpu = (p?: { revenueSum?: number; lastActiveSubscribers?: number }) => {
-            if (!p) return null;
-            return calculateArpu(p.revenueSum || 0, p.lastActiveSubscribers || 0);
-          };
-          const appstore = getArpu((platforms as any).appstore);
-          const googleplay = getArpu((platforms as any).googleplay);
-          const stripe = getArpu((platforms as any).stripe);
-          
-          // Calculate unified ARPU from total revenue / total active subscribers
-          const totalRevenue = ((platforms as any).appstore?.revenueSum || 0) + ((platforms as any).googleplay?.revenueSum || 0) + ((platforms as any).stripe?.revenueSum || 0);
-          const totalActiveSubs = ((platforms as any).appstore?.lastActiveSubscribers || 0) + ((platforms as any).googleplay?.lastActiveSubscribers || 0) + ((platforms as any).stripe?.lastActiveSubscribers || 0);
-          const unified = calculateArpu(totalRevenue, totalActiveSubs);
-          
-          // Status flags for calculated metrics
-          const appstoreStatus = (platforms as any).appstore ? 'real' as const : 'unavailable' as const;
-          const googleplayStatus = (platforms as any).googleplay ? 'real' as const : 'unavailable' as const;
-          const stripeStatus = (platforms as any).stripe ? 'real' as const : 'unavailable' as const;
-          
-          return {
-            month,
-            appstore,
-            googleplay,
-            stripe,
-            unified,
-            hasAllPlatforms,
-            hasValidStockData: true, // arpu is always valid if we have data
-            appstoreStatus,
-            googleplayStatus,
-            stripeStatus,
-          };
-        }
-        
-        const val = (p?: { sum: number; last: number; lastDate: string }) => (p ? (isFlowMetric ? p.sum : p.last) : null);
-        const appstore = val((platforms as any).appstore);
-        let googleplay = val((platforms as any).googleplay);
-        const stripe = val((platforms as any).stripe);
-        
-        // Track if Google Play data was derived vs real
-        let googleplayDerived = false;
-        
-        // For Google Play subscriber/stock metrics, treat 0 as null (no data)
-        // MRR is calculated from subscriber data, so 0 MRR also indicates missing data
-        const googlePlayDelayedMetrics = ["activeSubscribers", "trialSubscribers", "paidSubscribers", "monthlySubscribers", "yearlySubscribers", "mrr"];
-        if (googlePlayDelayedMetrics.includes(metric) && googleplay === 0) {
-          googleplay = null;
-        }
-        
-        // Apply App Store ratio to derive Google Play split for plan metrics and subs (historical)
-        if (useAppStoreRatioForGooglePlay && (googleplay === null || googleplay === 0)) {
-          const ratioInfo = ratioByMonth[month];
-          const totalPlan = (ratioInfo?.appStorePlanMonthly || 0) + (ratioInfo?.appStorePlanYearly || 0);
-          if (ratioInfo && totalPlan > 0) {
-            const monthlyRatio = ratioInfo.appStorePlanMonthly / totalPlan;
-            const yearlyRatio = ratioInfo.appStorePlanYearly / totalPlan;
-
-            const deriveFromTotals = () => {
-              if (metric === "monthlyPlanChargedRevenue" || metric === "weeklyPlanChargedRevenueMonthly") {
-                googleplay = Math.round(((ratioInfo.googleCharged || 0) * monthlyRatio + Number.EPSILON) * 100) / 100;
-                googleplayDerived = true;
-              } else if (metric === "yearlyPlanChargedRevenue" || metric === "weeklyPlanChargedRevenueYearly") {
-                googleplay = Math.round(((ratioInfo.googleCharged || 0) * yearlyRatio + Number.EPSILON) * 100) / 100;
-                googleplayDerived = true;
-              } else if (metric === "monthlyPlanRevenue" || metric === "weeklyPlanRevenueMonthly") {
-                googleplay = Math.round(((ratioInfo.googleRevenue || 0) * monthlyRatio + Number.EPSILON) * 100) / 100;
-                googleplayDerived = true;
-              } else if (metric === "yearlyPlanRevenue" || metric === "weeklyPlanRevenueYearly") {
-                googleplay = Math.round(((ratioInfo.googleRevenue || 0) * yearlyRatio + Number.EPSILON) * 100) / 100;
-                googleplayDerived = true;
-              } else if (metric === "monthlyPlanProceeds" || metric === "weeklyPlanProceedsMonthly") {
-                googleplay = Math.round(((ratioInfo.googleProceeds || 0) * monthlyRatio + Number.EPSILON) * 100) / 100;
-                googleplayDerived = true;
-              } else if (metric === "yearlyPlanProceeds" || metric === "weeklyPlanProceedsYearly") {
-                googleplay = Math.round(((ratioInfo.googleProceeds || 0) * yearlyRatio + Number.EPSILON) * 100) / 100;
-                googleplayDerived = true;
-              } else if (metric === "monthlySubscribers" || metric === "yearlySubscribers") {
-                // Use paidSubs if available, otherwise derive from activeSubs - trialSubs
-                let baseSubs = ratioInfo.googlePaidSubs || 0;
-                if (baseSubs === 0 && ratioInfo.googleActiveSubs > 0) {
-                  baseSubs = Math.max(0, ratioInfo.googleActiveSubs - (ratioInfo.googleTrialSubs || 0));
-                }
-                if (metric === "monthlySubscribers") {
-                  googleplay = Math.round(baseSubs * monthlyRatio);
-                  googleplayDerived = true;
-                } else {
-                  googleplay = Math.round(baseSubs * yearlyRatio);
-                  googleplayDerived = true;
-                }
-              } else if (metric === "mrr") {
-                // Calculate MRR using subscriber counts × App Store average prices
-                // Get Google Play subscriber counts (use stored or derive from paidSubs)
-                let gpMonthlySubs = ratioInfo.googleMonthlySubs || 0;
-                let gpYearlySubs = ratioInfo.googleYearlySubs || 0;
-                
-                // If no monthly/yearly breakdown, derive from paid subscribers
-                if (gpMonthlySubs === 0 && gpYearlySubs === 0) {
-                  let baseSubs = ratioInfo.googlePaidSubs || 0;
-                  if (baseSubs === 0 && ratioInfo.googleActiveSubs > 0) {
-                    baseSubs = Math.max(0, ratioInfo.googleActiveSubs - (ratioInfo.googleTrialSubs || 0));
-                  }
-                  if (baseSubs > 0) {
-                    gpMonthlySubs = Math.round(baseSubs * monthlyRatio);
-                    gpYearlySubs = Math.round(baseSubs * yearlyRatio);
-                  }
-                }
-                
-                // Calculate MRR using App Store's average prices per subscriber
-                if ((gpMonthlySubs > 0 || gpYearlySubs > 0) && (ratioInfo.appStoreMonthlySubs > 0 || ratioInfo.appStoreYearlySubs > 0)) {
-                  let derivedMRR = 0;
-                  
-                  // Monthly subscriber MRR contribution
-                  if (gpMonthlySubs > 0 && ratioInfo.appStoreMonthlySubs > 0) {
-                    const avgMonthlyPrice = ratioInfo.appStorePlanMonthly / ratioInfo.appStoreMonthlySubs;
-                    derivedMRR += gpMonthlySubs * avgMonthlyPrice;
-                  }
-                  
-                  // Yearly subscriber MRR contribution
-                  // yearlyPlanChargedRevenue / yearlySubscribers gives MRR per yearly sub
-                  if (gpYearlySubs > 0 && ratioInfo.appStoreYearlySubs > 0) {
-                    const yearlyMRRPerSub = ratioInfo.appStorePlanYearly / ratioInfo.appStoreYearlySubs;
-                    derivedMRR += gpYearlySubs * yearlyMRRPerSub;
-                  }
-                  
-                  googleplay = Math.round((derivedMRR + Number.EPSILON) * 100) / 100;
-                  googleplayDerived = true;
-                }
-              }
-            };
-
-            deriveFromTotals();
-          }
-        }
-
-        const isCurrencyMetric = ["mrr", "weeklyRevenue", "monthlyChargedRevenue", "monthlyRevenue", "monthlyPlanChargedRevenue", "yearlyPlanChargedRevenue", "monthlyPlanRevenue", "yearlyPlanRevenue", "monthlyPlanProceeds", "yearlyPlanProceeds", "weeklyPlanChargedRevenueMonthly", "weeklyPlanChargedRevenueYearly", "weeklyPlanRevenueMonthly", "weeklyPlanRevenueYearly", "weeklyPlanProceedsMonthly", "weeklyPlanProceedsYearly"].includes(metric);
-        const sum = (appstore ?? 0) + (googleplay ?? 0) + (stripe ?? 0);
-        const unified = isCurrencyMetric 
-          ? Math.round((sum + Number.EPSILON) * 100) / 100
-          : sum;
-        
-        // For stock metrics, check if all active platforms have valid (non-null) values
-        const hasValidStockData = !isStockMetric || Array.from(activePlatforms).every((p) => {
-          if (p === 'appstore') return appstore !== null;
-          if (p === 'googleplay') return googleplay !== null;
-          if (p === 'stripe') return stripe !== null;
-          return true;
-        });
-        
-        // Determine status for each platform: 'real' | 'derived' | 'unavailable'
-        const appstoreStatus = appstore !== null ? 'real' as const : 'unavailable' as const;
-        const googleplayStatus = googleplay !== null 
-          ? (googleplayDerived ? 'derived' as const : 'real' as const) 
-          : 'unavailable' as const;
-        const stripeStatus = stripe !== null ? 'real' as const : 'unavailable' as const;
-        
-        return {
-          month,
-          appstore,
-          googleplay,
-          stripe,
-          unified,
-          hasAllPlatforms,
-          hasValidStockData,
-          appstoreStatus,
-          googleplayStatus,
-          stripeStatus,
-        };
-      })
-      .map((m) => {
-        // Check if month is incomplete: current month, missing platforms, or missing stock data
-        const now = new Date();
-        const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-        const isCurrentMonth = m.month === currentMonth;
-        const isIncomplete = !m.hasAllPlatforms || isCurrentMonth || !m.hasValidStockData;
-        
-        return { ...m, isIncomplete };
-      })
-      .sort((a, b) => a.month.localeCompare(b.month))
-      .slice(-12); // Keep last 12 months
-
-    return result;
+    return buildMonthlyHistoryFromSnapshots({ app, metric, snapshots });
   },
 });
 
@@ -1453,58 +1615,20 @@ export const getAllDebugData = query({
   handler: async (ctx, { appId }) => {
     const app = await validateAppOwnership(ctx, appId);
 
-    const metrics = [
-      "activeSubscribers",
-      "trialSubscribers",
-      "paidSubscribers",
-      "monthlySubscribers",
-      "yearlySubscribers",
-      "cancellations",
-      "churn",
-      "churnRate", // Calculated metric: (churn / starting paid subscribers) × 100
-      "graceEvents",
-      "firstPayments",
-      "renewals",
-      "weeklyRevenue",
-      "mrr",
-      "monthlyChargedRevenue",
-      "monthlyRevenue",
-    ];
+    const metrics = Array.from(HISTORY_METRICS);
+    const flowMetrics = Array.from(FLOW_METRICS);
 
     const oneYearAgo = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
-    const today = new Date().toISOString().split("T")[0];
 
-    // Get active platform connections to determine which platforms should have data
-    const connections = await ctx.db
-      .query("platformConnections")
-      .withIndex("by_app", (q) => q.eq("appId", appId))
-      .filter((q) => q.eq(q.field("isActive"), true))
-      .collect();
-    
-    const activePlatforms = new Set(connections.map((c) => c.platform));
-
-    const flowMetrics = [
-      "cancellations",
-      "churn",
-      "graceEvents",
-      "firstPayments",
-      "renewals",
-      "weeklyRevenue",
-      "weeklyProceeds",
-      "monthlyChargedRevenue",
-      "monthlyRevenue",
-      "monthlyProceeds",
-    ];
-
-    // Get all snapshots from past year for weekly data
     const snapshots = await ctx.db
       .query("metricsSnapshots")
       .withIndex("by_app_date", (q) => q.eq("appId", appId))
       .filter((q) => q.gte(q.field("date"), oneYearAgo))
       .collect();
 
-    // Get the most recent snapshots for each platform (for stock metrics like activeSubscribers, MRR)
+    const activePlatforms = deriveActivePlatforms(snapshots);
+
     const recentSnapshots = await ctx.db
       .query("metricsSnapshots")
       .withIndex("by_app_date", (q) => q.eq("appId", appId))
@@ -1512,10 +1636,9 @@ export const getAllDebugData = query({
       .order("desc")
       .take(100);
 
-    // Get latest snapshot per platform for stock metrics
     const latestByPlatform: Record<string, any> = {};
     const latestWithSubsByPlatform: Record<string, any> = {};
-    
+
     for (const snap of recentSnapshots) {
       if (!latestByPlatform[snap.platform]) {
         latestByPlatform[snap.platform] = snap;
@@ -1524,12 +1647,10 @@ export const getAllDebugData = query({
         latestWithSubsByPlatform[snap.platform] = snap;
       }
     }
-    
-    // For Google Play, prefer the snapshot with actual subscription data for stock metrics
+
     if (latestByPlatform.googleplay && latestWithSubsByPlatform.googleplay) {
       const latest = latestByPlatform.googleplay;
       const latestWithSubs = latestWithSubsByPlatform.googleplay;
-      
       if (latest.activeSubscribers === 0 && latestWithSubs.activeSubscribers > 0) {
         latestByPlatform.googleplay = {
           ...latest,
@@ -1543,231 +1664,40 @@ export const getAllDebugData = query({
       }
     }
 
-    // Get 30-day snapshots for summing flow metrics
     const snapshots30 = snapshots.filter((s) => s.date >= thirtyDaysAgo && s.platform !== "unified");
 
-    // Calculate 30-day sums for flow metrics by platform
-    const flowSumsByPlatform: Record<string, any> = {};
-    for (const snap of snapshots30) {
-      if (!flowSumsByPlatform[snap.platform]) {
-        flowSumsByPlatform[snap.platform] = {
-          cancellations: 0,
-          churn: 0,
-          graceEvents: 0,
-          firstPayments: 0,
-          renewals: 0,
-          weeklyChargedRevenue: 0,
-          weeklyRevenue: 0,
-          monthlyChargedRevenue: 0,
-          monthlyRevenue: 0,
-        };
+    const createEmptyFlowBucket = () => {
+      const bucket: Record<string, number> = {};
+      for (const key of flowMetrics) {
+        bucket[key] = 0;
       }
-      flowSumsByPlatform[snap.platform].cancellations += snap.cancellations;
-      flowSumsByPlatform[snap.platform].churn += snap.churn;
-      flowSumsByPlatform[snap.platform].graceEvents += snap.graceEvents;
-      flowSumsByPlatform[snap.platform].firstPayments += snap.firstPayments;
-      flowSumsByPlatform[snap.platform].renewals += (snap.renewals || 0);
-      // weeklyRevenue is optional - fallback to monthlyRevenue for old data
-      flowSumsByPlatform[snap.platform].weeklyChargedRevenue += (snap.weeklyChargedRevenue !== undefined ? snap.weeklyChargedRevenue : snap.monthlyChargedRevenue);
-      flowSumsByPlatform[snap.platform].weeklyRevenue += (snap.weeklyRevenue !== undefined ? snap.weeklyRevenue : snap.monthlyRevenue);
-      flowSumsByPlatform[snap.platform].monthlyChargedRevenue += snap.monthlyChargedRevenue;
-      flowSumsByPlatform[snap.platform].monthlyRevenue += snap.monthlyRevenue;
+      return bucket;
+    };
+
+    const getFlowValue = (snap: any, metric: string) => {
+      if (metric === "weeklyChargedRevenue") return snap.weeklyChargedRevenue ?? snap.monthlyChargedRevenue ?? 0;
+      if (metric === "weeklyRevenue") return snap.weeklyRevenue ?? snap.monthlyRevenue ?? 0;
+      if (metric === "weeklyProceeds") return snap.weeklyProceeds ?? snap.monthlyProceeds ?? 0;
+      return snap[metric] ?? 0;
+    };
+
+    const flowSumsByPlatform: Record<string, Record<string, number>> = {};
+    for (const snap of snapshots30) {
+      const platform = snap.platform;
+      if (platform === "unified") continue;
+      const bucket = flowSumsByPlatform[platform] ?? createEmptyFlowBucket();
+      for (const metric of flowMetrics) {
+        bucket[metric] += getFlowValue(snap, metric);
+      }
+      flowSumsByPlatform[platform] = bucket;
     }
 
-    // Calculate weekly data for each metric
     const weeklyDataByMetric: Record<string, any[]> = {};
-    // Calculate monthly data for each metric
     const monthlyDataByMetric: Record<string, any[]> = {};
 
-    // Stock metrics that should show null when value is 0 for Google Play
-    const stockMetrics = [
-      "activeSubscribers",
-      "trialSubscribers", 
-      "paidSubscribers",
-      "monthlySubscribers",
-      "yearlySubscribers",
-      "mrr",
-    ];
-
     for (const metric of metrics) {
-      // Special handling for churnRate - it's a calculated metric
-      const isChurnRate = metric === "churnRate";
-      const weeklyData: Record<string, Record<string, { sum: number; last: number; lastDate: string; churnSum?: number; startingPaidSubs?: number; firstDate?: string }>> = {};
-      const monthlyData: Record<string, Record<string, { sum: number; last: number; lastDate: string; churnSum?: number; startingPaidSubs?: number; firstDate?: string }>> = {};
-      const isFlowMetric = flowMetrics.includes(metric) || isChurnRate;
-      const isStockMetric = stockMetrics.includes(metric);
-
-      for (const snap of snapshots) {
-        if (snap.platform === "unified") continue;
-
-        const date = new Date(snap.date);
-        const weekStart = getWeekStart(date, app.weekStartDay || "monday");
-        const weekKey = weekStart.toISOString().split("T")[0];
-        const monthKey = snap.date.substring(0, 7); // YYYY-MM
-
-        const value = isChurnRate ? 0 : ((snap as any)[metric] || 0);
-
-        // Weekly aggregation
-        if (!weeklyData[weekKey]) weeklyData[weekKey] = {} as any;
-        const weekEntry = weeklyData[weekKey][snap.platform] || { sum: 0, last: 0, lastDate: "", churnSum: 0, startingPaidSubs: 0, firstDate: "9999-99-99" };
-        weekEntry.sum += value;
-        if (snap.date >= weekEntry.lastDate) {
-          weekEntry.last = value;
-          weekEntry.lastDate = snap.date;
-        }
-        // For churnRate calculation
-        if (isChurnRate) {
-          weekEntry.churnSum = (weekEntry.churnSum || 0) + (snap.churn || 0);
-          if (snap.date < (weekEntry.firstDate || "9999-99-99")) {
-            weekEntry.startingPaidSubs = snap.paidSubscribers || 0;
-            weekEntry.firstDate = snap.date;
-          }
-        }
-        weeklyData[weekKey][snap.platform] = weekEntry;
-
-        // Monthly aggregation
-        if (!monthlyData[monthKey]) monthlyData[monthKey] = {} as any;
-        const monthEntry = monthlyData[monthKey][snap.platform] || { sum: 0, last: 0, lastDate: "", churnSum: 0, startingPaidSubs: 0, firstDate: "9999-99-99" };
-        monthEntry.sum += value;
-        if (snap.date >= monthEntry.lastDate) {
-          monthEntry.last = value;
-          monthEntry.lastDate = snap.date;
-        }
-        // For churnRate calculation
-        if (isChurnRate) {
-          monthEntry.churnSum = (monthEntry.churnSum || 0) + (snap.churn || 0);
-          if (snap.date < (monthEntry.firstDate || "9999-99-99")) {
-            monthEntry.startingPaidSubs = snap.paidSubscribers || 0;
-            monthEntry.firstDate = snap.date;
-          }
-        }
-        monthlyData[monthKey][snap.platform] = monthEntry;
-      }
-
-      // Process weekly data
-      const weeklyResult = Object.entries(weeklyData)
-        .map(([week, platforms]) => {
-          const platformsInWeek = new Set(Object.keys(platforms));
-          const hasAllPlatforms = Array.from(activePlatforms).every((p) => platformsInWeek.has(p));
-          
-          // For churnRate, calculate using the shared helper
-          if (isChurnRate) {
-            const getChurnRate = (p?: { churnSum?: number; startingPaidSubs?: number }) => {
-              if (!p) return null;
-              return calculateChurnRate(p.churnSum || 0, p.startingPaidSubs || 0);
-            };
-            const appstore = getChurnRate((platforms as any).appstore);
-            const googleplay = getChurnRate((platforms as any).googleplay);
-            const stripe = getChurnRate((platforms as any).stripe);
-            
-            // Calculate unified churn rate from totals
-            const totalChurn = ((platforms as any).appstore?.churnSum || 0) + ((platforms as any).googleplay?.churnSum || 0) + ((platforms as any).stripe?.churnSum || 0);
-            const totalStartingSubs = ((platforms as any).appstore?.startingPaidSubs || 0) + ((platforms as any).googleplay?.startingPaidSubs || 0) + ((platforms as any).stripe?.startingPaidSubs || 0);
-            const unified = calculateChurnRate(totalChurn, totalStartingSubs);
-            
-            return { week, appstore, googleplay, stripe, unified, hasAllPlatforms, hasValidStockData: true };
-          }
-          
-          const val = (p?: { sum: number; last: number; lastDate: string }) => (p ? (isFlowMetric ? p.sum : p.last) : null);
-          const appstore = val((platforms as any).appstore);
-          let googleplay = val((platforms as any).googleplay);
-          const stripe = val((platforms as any).stripe);
-          
-          // For Google Play subscriber/stock metrics, treat 0 as null (no data)
-          // MRR is calculated from subscriber data, so 0 MRR also indicates missing data
-          const googlePlayDelayedMetrics = ["activeSubscribers", "trialSubscribers", "paidSubscribers", "monthlySubscribers", "yearlySubscribers", "mrr"];
-          if (googlePlayDelayedMetrics.includes(metric) && googleplay === 0) {
-            googleplay = null;
-          }
-          
-          const sum = (appstore ?? 0) + (googleplay ?? 0) + (stripe ?? 0);
-          const unified = sum;
-          
-          // For stock metrics, check if all active platforms have valid (non-null) values
-          const hasValidStockData = !isStockMetric || Array.from(activePlatforms).every((p) => {
-            if (p === 'appstore') return appstore !== null;
-            if (p === 'googleplay') return googleplay !== null;
-            if (p === 'stripe') return stripe !== null;
-            return true;
-          });
-          
-          return { week, appstore, googleplay, stripe, unified, hasAllPlatforms, hasValidStockData };
-        })
-        .map((w) => {
-          const weekEnd = new Date(w.week);
-          weekEnd.setDate(weekEnd.getDate() + 6);
-          const isCurrentOrFutureWeek = weekEnd >= new Date();
-          const isIncomplete = !w.hasAllPlatforms || isCurrentOrFutureWeek || !w.hasValidStockData;
-          
-          return { ...w, isIncomplete };
-        })
-        .sort((a, b) => a.week.localeCompare(b.week))
-        .slice(-52);
-
-      weeklyDataByMetric[metric] = weeklyResult;
-
-      // Process monthly data
-      const now = new Date();
-      const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-
-      const monthlyResult = Object.entries(monthlyData)
-        .map(([month, platforms]) => {
-          const platformsInMonth = new Set(Object.keys(platforms));
-          const hasAllPlatforms = Array.from(activePlatforms).every((p) => platformsInMonth.has(p));
-          
-          // For churnRate, calculate using the shared helper
-          if (isChurnRate) {
-            const getChurnRate = (p?: { churnSum?: number; startingPaidSubs?: number }) => {
-              if (!p) return null;
-              return calculateChurnRate(p.churnSum || 0, p.startingPaidSubs || 0);
-            };
-            const appstore = getChurnRate((platforms as any).appstore);
-            const googleplay = getChurnRate((platforms as any).googleplay);
-            const stripe = getChurnRate((platforms as any).stripe);
-            
-            // Calculate unified churn rate from totals
-            const totalChurn = ((platforms as any).appstore?.churnSum || 0) + ((platforms as any).googleplay?.churnSum || 0) + ((platforms as any).stripe?.churnSum || 0);
-            const totalStartingSubs = ((platforms as any).appstore?.startingPaidSubs || 0) + ((platforms as any).googleplay?.startingPaidSubs || 0) + ((platforms as any).stripe?.startingPaidSubs || 0);
-            const unified = calculateChurnRate(totalChurn, totalStartingSubs);
-            
-            return { month, appstore, googleplay, stripe, unified, hasAllPlatforms, hasValidStockData: true };
-          }
-          
-          const val = (p?: { sum: number; last: number; lastDate: string }) => (p ? (isFlowMetric ? p.sum : p.last) : null);
-          const appstore = val((platforms as any).appstore);
-          let googleplay = val((platforms as any).googleplay);
-          const stripe = val((platforms as any).stripe);
-          
-          // For Google Play subscriber/stock metrics, treat 0 as null (no data)
-          // MRR is calculated from subscriber data, so 0 MRR also indicates missing data
-          const googlePlayDelayedMetrics = ["activeSubscribers", "trialSubscribers", "paidSubscribers", "monthlySubscribers", "yearlySubscribers", "mrr"];
-          if (googlePlayDelayedMetrics.includes(metric) && googleplay === 0) {
-            googleplay = null;
-          }
-          
-          const sum = (appstore ?? 0) + (googleplay ?? 0) + (stripe ?? 0);
-          const unified = sum;
-          
-          // For stock metrics, check if all active platforms have valid (non-null) values
-          const hasValidStockData = !isStockMetric || Array.from(activePlatforms).every((p) => {
-            if (p === 'appstore') return appstore !== null;
-            if (p === 'googleplay') return googleplay !== null;
-            if (p === 'stripe') return stripe !== null;
-            return true;
-          });
-          
-          return { month, appstore, googleplay, stripe, unified, hasAllPlatforms, hasValidStockData };
-        })
-        .map((m) => {
-          const isCurrentMonth = m.month === currentMonth;
-          const isIncomplete = !m.hasAllPlatforms || isCurrentMonth || !m.hasValidStockData;
-          
-          return { ...m, isIncomplete };
-        })
-        .sort((a, b) => a.month.localeCompare(b.month))
-        .slice(-12);
-
-      monthlyDataByMetric[metric] = monthlyResult;
+      weeklyDataByMetric[metric] = await buildWeeklyHistoryFromSnapshots({ app, metric, snapshots });
+      monthlyDataByMetric[metric] = await buildMonthlyHistoryFromSnapshots({ app, metric, snapshots });
     }
 
     return {
@@ -1856,7 +1786,6 @@ export const getChatContext = query({
       "yearlySubscribers",
       "cancellations",
       "churn",
-      "graceEvents",
       "firstPayments",
       "renewals",
       "mrr",
@@ -1867,7 +1796,6 @@ export const getChatContext = query({
     const flowMetrics = [
       "cancellations",
       "churn",
-      "graceEvents",
       "firstPayments",
       "renewals",
       "monthlyChargedRevenue",
@@ -1946,7 +1874,6 @@ export const getChatContext = query({
         yearlySubscribers: "Subscribers on yearly billing plans",
         cancellations: "Total cancellations in period",
         churn: "Subscribers who canceled (ended)",
-        graceEvents: "Subscriptions in grace/retry period",
         firstPayments: "New paying customers",
         renewals: "Subscription renewals",
         mrr: "Monthly Recurring Revenue",
@@ -2229,6 +2156,639 @@ export const validateRevenueData = query({
         Object.entries(octTotals).map(([p, t]) => [p, t.days])
       ),
     };
+  },
+});
+
+// COMPREHENSIVE DEBUG: Investigate all metric discrepancies for a specific month
+export const debugMonthlyMetrics = query({
+  args: { 
+    appId: v.id("apps"),
+    yearMonth: v.string(), // Format: "2024-11"
+  },
+  handler: async (ctx, { appId, yearMonth }) => {
+    await validateAppOwnership(ctx, appId);
+    const app = await ctx.db.get(appId);
+    const userCurrency = app?.currency || "USD";
+
+    // Date range for the month
+    const startDate = `${yearMonth}-01`;
+    const endDate = `${yearMonth}-31`; // Will naturally cap at month end
+
+    // 1. Get all snapshots for this month (all platforms)
+    const snapshots = await ctx.db
+      .query("metricsSnapshots")
+      .withIndex("by_app_date", (q) => q.eq("appId", appId))
+      .filter((q) => q.and(
+        q.gte(q.field("date"), startDate),
+        q.lte(q.field("date"), endDate)
+      ))
+      .collect();
+
+    // Group snapshots by platform
+    const snapshotsByPlatform: Record<string, typeof snapshots> = {};
+    for (const snap of snapshots) {
+      if (!snapshotsByPlatform[snap.platform]) {
+        snapshotsByPlatform[snap.platform] = [];
+      }
+      snapshotsByPlatform[snap.platform].push(snap);
+    }
+
+    // Calculate totals per platform
+    const platformTotals: Record<string, {
+      days: number;
+      // Stock metrics (use end-of-month)
+      endOfMonthPaidSubscribers: number;
+      endOfMonthActiveSubscribers: number;
+      endOfMonthTrialSubscribers: number;
+      endOfMonthMonthlySubscribers: number;
+      endOfMonthYearlySubscribers: number;
+      endOfMonthMRR: number;
+      // Flow metrics (sum)
+      totalCancellations: number;
+      totalChurn: number;
+      totalFirstPayments: number;
+      totalRenewals: number;
+      totalChargedRevenue: number;
+      totalRevenue: number;
+      totalProceeds: number;
+      // Daily breakdown for debugging
+      dailyBreakdown: Array<{
+        date: string;
+        paidSubs: number;
+        cancellations: number;
+        churn: number;
+        firstPayments: number;
+        renewals: number;
+        chargedRevenue: number;
+        revenue: number;
+        proceeds: number;
+      }>;
+    }> = {};
+
+    for (const [platform, snaps] of Object.entries(snapshotsByPlatform)) {
+      if (platform === "unified") continue;
+      
+      const sorted = snaps.sort((a, b) => a.date.localeCompare(b.date));
+      const lastDay = sorted[sorted.length - 1];
+      
+      platformTotals[platform] = {
+        days: sorted.length,
+        // Stock metrics from last day of month
+        endOfMonthPaidSubscribers: lastDay?.paidSubscribers || 0,
+        endOfMonthActiveSubscribers: lastDay?.activeSubscribers || 0,
+        endOfMonthTrialSubscribers: lastDay?.trialSubscribers || 0,
+        endOfMonthMonthlySubscribers: lastDay?.monthlySubscribers || 0,
+        endOfMonthYearlySubscribers: lastDay?.yearlySubscribers || 0,
+        endOfMonthMRR: lastDay?.mrr || 0,
+        // Flow metrics summed
+        totalCancellations: sorted.reduce((sum, s) => sum + (s.cancellations || 0), 0),
+        totalChurn: sorted.reduce((sum, s) => sum + (s.churn || 0), 0),
+        totalFirstPayments: sorted.reduce((sum, s) => sum + (s.firstPayments || 0), 0),
+        totalRenewals: sorted.reduce((sum, s) => sum + (s.renewals || 0), 0),
+        totalChargedRevenue: sorted.reduce((sum, s) => sum + (s.monthlyChargedRevenue || 0), 0),
+        totalRevenue: sorted.reduce((sum, s) => sum + (s.monthlyRevenue || 0), 0),
+        totalProceeds: sorted.reduce((sum, s) => sum + (s.monthlyProceeds || 0), 0),
+        // Daily breakdown
+        dailyBreakdown: sorted.map(s => ({
+          date: s.date,
+          paidSubs: s.paidSubscribers || 0,
+          cancellations: s.cancellations || 0,
+          churn: s.churn || 0,
+          firstPayments: s.firstPayments || 0,
+          renewals: s.renewals || 0,
+          chargedRevenue: s.monthlyChargedRevenue || 0,
+          revenue: s.monthlyRevenue || 0,
+          proceeds: s.monthlyProceeds || 0,
+        })),
+      };
+    }
+
+    // 2. Get raw subscription data to check endDate population
+    const subscriptions = await ctx.db
+      .query("subscriptions")
+      .withIndex("by_app", (q) => q.eq("appId", appId))
+      .collect();
+
+    const subscriptionStats = {
+      total: subscriptions.length,
+      byPlatform: {} as Record<string, {
+        total: number;
+        withEndDate: number;
+        withoutEndDate: number;
+        statusCanceled: number;
+        statusActive: number;
+        statusTrialing: number;
+        endedInMonth: number;
+        startedInMonth: number;
+      }>,
+    };
+
+    const monthStartMs = new Date(startDate).getTime();
+    const monthEndMs = new Date(endDate).getTime() + 24 * 60 * 60 * 1000;
+
+    for (const sub of subscriptions) {
+      if (!subscriptionStats.byPlatform[sub.platform]) {
+        subscriptionStats.byPlatform[sub.platform] = {
+          total: 0,
+          withEndDate: 0,
+          withoutEndDate: 0,
+          statusCanceled: 0,
+          statusActive: 0,
+          statusTrialing: 0,
+          endedInMonth: 0,
+          startedInMonth: 0,
+        };
+      }
+      const stats = subscriptionStats.byPlatform[sub.platform];
+      stats.total++;
+      if (sub.endDate) {
+        stats.withEndDate++;
+        if (sub.endDate >= monthStartMs && sub.endDate < monthEndMs) {
+          stats.endedInMonth++;
+        }
+      } else {
+        stats.withoutEndDate++;
+      }
+      if (sub.status === "canceled") stats.statusCanceled++;
+      if (sub.status === "active") stats.statusActive++;
+      if (sub.status === "trialing") stats.statusTrialing++;
+      if (sub.startDate >= monthStartMs && sub.startDate < monthEndMs) {
+        stats.startedInMonth++;
+      }
+    }
+
+    // 3. Get revenue events for this month
+    const revenueEvents = await ctx.db
+      .query("revenueEvents")
+      .withIndex("by_app", (q) => q.eq("appId", appId))
+      .filter((q) => q.and(
+        q.gte(q.field("timestamp"), monthStartMs),
+        q.lt(q.field("timestamp"), monthEndMs)
+      ))
+      .collect();
+
+    const revenueEventStats = {
+      total: revenueEvents.length,
+      byPlatform: {} as Record<string, {
+        total: number;
+        firstPayments: number;
+        renewals: number;
+        refunds: number;
+        totalAmount: number;
+      }>,
+    };
+
+    for (const event of revenueEvents) {
+      if (!revenueEventStats.byPlatform[event.platform]) {
+        revenueEventStats.byPlatform[event.platform] = {
+          total: 0,
+          firstPayments: 0,
+          renewals: 0,
+          refunds: 0,
+          totalAmount: 0,
+        };
+      }
+      const stats = revenueEventStats.byPlatform[event.platform];
+      stats.total++;
+      if (event.eventType === "first_payment") stats.firstPayments++;
+      if (event.eventType === "renewal") stats.renewals++;
+      if (event.eventType === "refund") stats.refunds++;
+      stats.totalAmount += event.amount;
+    }
+
+    // 4. Check App Store reports stored
+    const appStoreReports = await ctx.db
+      .query("appStoreReports")
+      .withIndex("by_app_date", (q) => q.eq("appId", appId))
+      .filter((q) => q.and(
+        q.gte(q.field("reportDate"), startDate),
+        q.lte(q.field("reportDate"), endDate)
+      ))
+      .collect();
+
+    const reportStats = {
+      totalReports: appStoreReports.length,
+      byType: {} as Record<string, number>,
+    };
+    for (const report of appStoreReports) {
+      const key = `${report.reportType}/${report.reportSubType}`;
+      reportStats.byType[key] = (reportStats.byType[key] || 0) + 1;
+    }
+
+    // Calculate unified totals
+    const unifiedTotals = {
+      endOfMonthPaidSubscribers: Object.values(platformTotals).reduce((sum, p) => sum + p.endOfMonthPaidSubscribers, 0),
+      endOfMonthActiveSubscribers: Object.values(platformTotals).reduce((sum, p) => sum + p.endOfMonthActiveSubscribers, 0),
+      totalCancellations: Object.values(platformTotals).reduce((sum, p) => sum + p.totalCancellations, 0),
+      totalChurn: Object.values(platformTotals).reduce((sum, p) => sum + p.totalChurn, 0),
+      totalFirstPayments: Object.values(platformTotals).reduce((sum, p) => sum + p.totalFirstPayments, 0),
+      totalRenewals: Object.values(platformTotals).reduce((sum, p) => sum + p.totalRenewals, 0),
+      totalChargedRevenue: Object.values(platformTotals).reduce((sum, p) => sum + p.totalChargedRevenue, 0),
+      totalRevenue: Object.values(platformTotals).reduce((sum, p) => sum + p.totalRevenue, 0),
+      totalProceeds: Object.values(platformTotals).reduce((sum, p) => sum + p.totalProceeds, 0),
+      totalMRR: Object.values(platformTotals).reduce((sum, p) => sum + p.endOfMonthMRR, 0),
+    };
+
+    return {
+      month: yearMonth,
+      currency: userCurrency,
+      platformTotals,
+      unifiedTotals,
+      subscriptionStats,
+      revenueEventStats,
+      appStoreReportStats: reportStats,
+      diagnostics: {
+        // Key metrics to compare with your data
+        "YOUR_PAID_SUBS": "Compare unifiedTotals.endOfMonthPaidSubscribers with your 11,377",
+        "YOUR_CANCELLATIONS": "Compare platformTotals.appstore.totalCancellations with your 1,400",
+        "YOUR_FIRST_PAYMENTS": "Compare platformTotals.appstore.totalFirstPayments with your 933",
+        "YOUR_REVENUE": "Compare unifiedTotals.totalRevenue with your 1.2mNOK for November",
+        // Potential issues
+        "SUBSCRIPTION_ENDDATE_CHECK": "If subscriptionStats.byPlatform.appstore.withoutEndDate is high, churn calculation will be wrong",
+        "REVENUE_EVENT_CHECK": "revenueEventStats shows raw events - if total differs from snapshots, there's a processing issue",
+      },
+    };
+  },
+});
+
+// DEBUG: Check Google Play specific data
+export const debugGooglePlayData = query({
+  args: { appId: v.id("apps") },
+  handler: async (ctx, { appId }) => {
+    await validateAppOwnership(ctx, appId);
+
+    // Get Google Play connection
+    const gpConnection = await ctx.db
+      .query("platformConnections")
+      .withIndex("by_app", (q) => q.eq("appId", appId))
+      .filter((q) => q.eq(q.field("platform"), "googleplay"))
+      .first();
+
+    // Get all Google Play snapshots
+    const gpSnapshots = await ctx.db
+      .query("metricsSnapshots")
+      .withIndex("by_app_platform", (q) => q.eq("appId", appId).eq("platform", "googleplay"))
+      .order("desc")
+      .take(60); // Last 60 days
+
+    // Get Google Play subscriptions
+    const gpSubscriptions = await ctx.db
+      .query("subscriptions")
+      .withIndex("by_app_platform", (q) => q.eq("appId", appId).eq("platform", "googleplay"))
+      .collect();
+
+    // Analyze snapshots
+    const snapshotsWithSubscribers = gpSnapshots.filter(s => s.activeSubscribers > 0 || s.paidSubscribers > 0);
+    const snapshotsWithRevenue = gpSnapshots.filter(s => s.monthlyChargedRevenue > 0 || s.monthlyRevenue > 0);
+
+    // Get date range
+    const sortedSnapshots = [...gpSnapshots].sort((a, b) => a.date.localeCompare(b.date));
+    const firstDate = sortedSnapshots[0]?.date || "none";
+    const lastDate = sortedSnapshots[sortedSnapshots.length - 1]?.date || "none";
+
+    // Sample snapshots with and without subscriber data
+    const sampleWithSubs = snapshotsWithSubscribers.slice(0, 5).map(s => ({
+      date: s.date,
+      active: s.activeSubscribers,
+      paid: s.paidSubscribers,
+      trial: s.trialSubscribers,
+      monthly: s.monthlySubscribers,
+      yearly: s.yearlySubscribers,
+      mrr: s.mrr,
+    }));
+
+    const sampleWithRevenue = snapshotsWithRevenue.slice(0, 5).map(s => ({
+      date: s.date,
+      chargedRevenue: s.monthlyChargedRevenue,
+      revenue: s.monthlyRevenue,
+      proceeds: s.monthlyProceeds,
+    }));
+
+    return {
+      connection: {
+        exists: !!gpConnection,
+        isActive: gpConnection?.isActive || false,
+        lastSync: gpConnection?.lastSync ? new Date(gpConnection.lastSync).toISOString() : null,
+      },
+      snapshots: {
+        total: gpSnapshots.length,
+        withSubscriberData: snapshotsWithSubscribers.length,
+        withRevenueData: snapshotsWithRevenue.length,
+        dateRange: { first: firstDate, last: lastDate },
+        sampleWithSubscribers: sampleWithSubs,
+        sampleWithRevenue: sampleWithRevenue,
+      },
+      subscriptions: {
+        total: gpSubscriptions.length,
+        byStatus: {
+          active: gpSubscriptions.filter(s => s.status === "active").length,
+          canceled: gpSubscriptions.filter(s => s.status === "canceled").length,
+          trialing: gpSubscriptions.filter(s => s.status === "trialing").length,
+        },
+      },
+      diagnosis: {
+        "SUBSCRIBER_DATA_MISSING": snapshotsWithSubscribers.length === 0 
+          ? "NO subscription data in snapshots - check if GCS bucket has subscription reports"
+          : `Found ${snapshotsWithSubscribers.length} days with subscriber data`,
+        "REVENUE_VS_SUBS": snapshotsWithRevenue.length > 0 && snapshotsWithSubscribers.length === 0
+          ? "Has revenue but NO subscriber data - financial reports exist but subscription reports missing"
+          : "OK",
+      },
+    };
+  },
+});
+
+// DEBUG: Revenue calculation breakdown for YTD vs 30-day
+export const debugRevenueBreakdown = query({
+  args: { 
+    appId: v.id("apps"),
+    year: v.optional(v.number()),
+  },
+  handler: async (ctx, { appId, year }) => {
+    await validateAppOwnership(ctx, appId);
+    const app = await ctx.db.get(appId);
+    const userCurrency = app?.currency || "USD";
+
+    const targetYear = year || new Date().getFullYear();
+    const yearStart = `${targetYear}-01-01`;
+    const yearEnd = `${targetYear}-12-31`;
+
+    // Get all snapshots for the year
+    const snapshots = await ctx.db
+      .query("metricsSnapshots")
+      .withIndex("by_app_date", (q) => q.eq("appId", appId))
+      .filter((q) => q.and(
+        q.gte(q.field("date"), yearStart),
+        q.lte(q.field("date"), yearEnd),
+        q.neq(q.field("platform"), "unified")
+      ))
+      .collect();
+
+    // Group by month and platform
+    const monthlyByPlatform: Record<string, Record<string, {
+      chargedRevenue: number;
+      revenue: number;
+      proceeds: number;
+      days: number;
+    }>> = {};
+
+    for (const snap of snapshots) {
+      const month = snap.date.substring(0, 7);
+      if (!monthlyByPlatform[month]) {
+        monthlyByPlatform[month] = {};
+      }
+      if (!monthlyByPlatform[month][snap.platform]) {
+        monthlyByPlatform[month][snap.platform] = {
+          chargedRevenue: 0,
+          revenue: 0,
+          proceeds: 0,
+          days: 0,
+        };
+      }
+      monthlyByPlatform[month][snap.platform].chargedRevenue += snap.monthlyChargedRevenue || 0;
+      monthlyByPlatform[month][snap.platform].revenue += snap.monthlyRevenue || 0;
+      monthlyByPlatform[month][snap.platform].proceeds += snap.monthlyProceeds || 0;
+      monthlyByPlatform[month][snap.platform].days += 1;
+    }
+
+    // Calculate totals
+    const monthlyTotals: Record<string, {
+      chargedRevenue: number;
+      revenue: number;
+      proceeds: number;
+      platforms: string[];
+    }> = {};
+
+    let ytdChargedRevenue = 0;
+    let ytdRevenue = 0;
+    let ytdProceeds = 0;
+
+    for (const [month, platforms] of Object.entries(monthlyByPlatform)) {
+      monthlyTotals[month] = {
+        chargedRevenue: 0,
+        revenue: 0,
+        proceeds: 0,
+        platforms: Object.keys(platforms),
+      };
+      for (const [platform, data] of Object.entries(platforms)) {
+        monthlyTotals[month].chargedRevenue += data.chargedRevenue;
+        monthlyTotals[month].revenue += data.revenue;
+        monthlyTotals[month].proceeds += data.proceeds;
+      }
+      ytdChargedRevenue += monthlyTotals[month].chargedRevenue;
+      ytdRevenue += monthlyTotals[month].revenue;
+      ytdProceeds += monthlyTotals[month].proceeds;
+    }
+
+    // Calculate 30-day total (what dashboard shows)
+    const now = new Date();
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const thirtyDaysAgoStr = thirtyDaysAgo.toISOString().split("T")[0];
+
+    const last30DaySnapshots = snapshots.filter(s => s.date >= thirtyDaysAgoStr);
+    const last30DayTotal = {
+      chargedRevenue: last30DaySnapshots.reduce((sum, s) => sum + (s.monthlyChargedRevenue || 0), 0),
+      revenue: last30DaySnapshots.reduce((sum, s) => sum + (s.monthlyRevenue || 0), 0),
+      proceeds: last30DaySnapshots.reduce((sum, s) => sum + (s.monthlyProceeds || 0), 0),
+      days: new Set(last30DaySnapshots.map(s => s.date)).size,
+      dateRange: {
+        start: thirtyDaysAgoStr,
+        end: now.toISOString().split("T")[0],
+      },
+    };
+
+    return {
+      year: targetYear,
+      currency: userCurrency,
+      ytdTotals: {
+        chargedRevenue: Math.round(ytdChargedRevenue * 100) / 100,
+        revenue: Math.round(ytdRevenue * 100) / 100,
+        proceeds: Math.round(ytdProceeds * 100) / 100,
+      },
+      last30DayTotal: {
+        chargedRevenue: Math.round(last30DayTotal.chargedRevenue * 100) / 100,
+        revenue: Math.round(last30DayTotal.revenue * 100) / 100,
+        proceeds: Math.round(last30DayTotal.proceeds * 100) / 100,
+        days: last30DayTotal.days,
+        dateRange: last30DayTotal.dateRange,
+      },
+      monthlyBreakdown: monthlyTotals,
+      monthlyByPlatform,
+      explanation: {
+        "DASHBOARD_BIG_NUMBER": "The dashboard shows 'last30DayTotal' - this is NOT year-to-date",
+        "YTD_CALCULATION": "ytdTotals shows your actual year-to-date revenue",
+        "YOUR_5.8M": "Compare ytdTotals.chargedRevenue with your 5.8mNOK",
+        "YOUR_0.8M": "Compare last30DayTotal.chargedRevenue with your dashboard showing 0.8mNOK",
+      },
+    };
+  },
+});
+
+// DEBUG: Analyze stored App Store reports to understand event classification
+export const debugAppStoreReportContent = query({
+  args: { 
+    appId: v.id("apps"),
+    reportDate: v.string(), // YYYY-MM-DD
+  },
+  handler: async (ctx, { appId, reportDate }) => {
+    await validateAppOwnership(ctx, appId);
+
+    // Find SUBSCRIBER report for this date
+    const subscriberReports = await ctx.db
+      .query("appStoreReports")
+      .withIndex("by_app_date", (q) => q.eq("appId", appId).eq("reportDate", reportDate))
+      .filter((q) => q.eq(q.field("reportSubType"), "DETAILED"))
+      .collect();
+
+    // Find SUMMARY report for this date
+    const summaryReports = await ctx.db
+      .query("appStoreReports")
+      .withIndex("by_app_date", (q) => q.eq("appId", appId).eq("reportDate", reportDate))
+      .filter((q) => q.eq(q.field("reportSubType"), "SUMMARY"))
+      .collect();
+
+    const result: any = {
+      date: reportDate,
+      subscriberReport: null,
+      summaryReport: null,
+    };
+
+    // Analyze SUBSCRIBER (DETAILED) report - this is where events come from
+    if (subscriberReports.length > 0) {
+      const report = subscriberReports[0];
+      const lines = report.content.trim().split(/\r?\n/);
+      const headers = lines[0]?.split("\t").map(h => h.trim().toLowerCase()) || [];
+
+      // Find column indices
+      const eventIdx = headers.findIndex(h => /^event$/i.test(h));
+      const eventDateIdx = headers.findIndex(h => /event.*date/i.test(h));
+      const quantityIdx = headers.findIndex(h => /^quantity$/i.test(h));
+      const customerPriceIdx = headers.findIndex(h => /customer\s*price/i.test(h));
+      const proceedsIdx = headers.findIndex(h => /developer\s*proceeds|proceeds/i.test(h));
+      const productIdIdx = headers.findIndex(h => /product.*id|subscription.*apple.*id/i.test(h));
+
+      // Analyze all rows
+      const eventBreakdown: Record<string, { count: number; revenue: number; rowsOnDate: number }> = {};
+      let totalRows = 0;
+      let rowsMatchingDate = 0;
+
+      for (let i = 1; i < lines.length; i++) {
+        const cols = lines[i].split("\t");
+        totalRows++;
+
+        const eventValue = eventIdx >= 0 ? (cols[eventIdx] || "").trim() : "(no event column)";
+        const eventDateStr = eventDateIdx >= 0 ? (cols[eventDateIdx] || "").trim() : "";
+        const quantity = quantityIdx >= 0 ? parseInt(cols[quantityIdx] || "1") : 1;
+        const price = customerPriceIdx >= 0 ? parseFloat(cols[customerPriceIdx] || "0") : 0;
+
+        // Normalize event date
+        let normalizedDate = eventDateStr;
+        if (eventDateStr.includes("/")) {
+          const parts = eventDateStr.split("/");
+          if (parts.length === 3) {
+            normalizedDate = `${parts[2]}-${parts[0].padStart(2, "0")}-${parts[1].padStart(2, "0")}`;
+          }
+        }
+
+        const matchesDate = normalizedDate === reportDate;
+        if (matchesDate) rowsMatchingDate++;
+
+        const key = eventValue || "(empty)";
+        if (!eventBreakdown[key]) {
+          eventBreakdown[key] = { count: 0, revenue: 0, rowsOnDate: 0 };
+        }
+        eventBreakdown[key].count += quantity;
+        eventBreakdown[key].revenue += price * quantity;
+        if (matchesDate) {
+          eventBreakdown[key].rowsOnDate += quantity;
+        }
+      }
+
+      // Classify events as the code would
+      const classifications: Record<string, string> = {};
+      for (const eventVal of Object.keys(eventBreakdown)) {
+        const lower = eventVal.toLowerCase();
+        if (lower.includes("refund")) {
+          classifications[eventVal] = "refund";
+        } else if (lower.includes("cancel")) {
+          classifications[eventVal] = "cancellation";
+        } else if (lower.includes("rate after one year") || lower === "renew" || lower.includes("renewal")) {
+          classifications[eventVal] = "renewal";
+        } else if (lower.includes("start introductory price") ||
+                   lower.includes("paid subscription from introductory price") ||
+                   lower.includes("start promotional offer") ||
+                   lower.includes("initial") ||
+                   lower.includes("new") ||
+                   lower.includes("subscribe")) {
+          classifications[eventVal] = "first_payment";
+        } else if (eventVal === "(empty)" || eventVal === "") {
+          classifications[eventVal] = "renewal_default (empty event)";
+        } else {
+          classifications[eventVal] = "renewal_default (unknown)";
+        }
+      }
+
+      result.subscriberReport = {
+        totalRows,
+        rowsMatchingDate,
+        headers: headers.slice(0, 15), // First 15 headers
+        columnIndices: { eventIdx, eventDateIdx, quantityIdx, customerPriceIdx, proceedsIdx, productIdIdx },
+        eventBreakdown: Object.entries(eventBreakdown)
+          .sort((a, b) => b[1].count - a[1].count)
+          .map(([event, stats]) => ({
+            event,
+            ...stats,
+            classification: classifications[event],
+          })),
+        sampleRows: lines.slice(1, 6).map(line => line.split("\t").slice(0, 10)), // First 5 data rows, first 10 cols
+      };
+    }
+
+    // Analyze SUMMARY report - this is where subscriber counts come from
+    if (summaryReports.length > 0) {
+      const report = summaryReports[0];
+      const lines = report.content.trim().split(/\r?\n/);
+      const headers = lines[0]?.split("\t").map(h => h.trim().toLowerCase()) || [];
+
+      // Find subscriber-related columns
+      const activeSubsIdx = headers.findIndex(h => /active.*subscri|subscri.*active/i.test(h));
+      const activeTrialIdx = headers.findIndex(h => /active.*free.*trial|active.*trial|trial.*intro/i.test(h));
+      const productIdIdx = headers.findIndex(h => /product.*id|sku|subscription.*name/i.test(h));
+
+      // Sum up subscriber counts
+      let totalActive = 0;
+      let totalTrial = 0;
+      const byProduct: Record<string, { active: number; trial: number }> = {};
+
+      for (let i = 1; i < lines.length; i++) {
+        const cols = lines[i].split("\t");
+        const active = activeSubsIdx >= 0 ? parseInt(cols[activeSubsIdx] || "0") : 0;
+        const trial = activeTrialIdx >= 0 ? parseInt(cols[activeTrialIdx] || "0") : 0;
+        const productId = productIdIdx >= 0 ? (cols[productIdIdx] || "unknown").trim() : "unknown";
+
+        totalActive += active;
+        totalTrial += trial;
+
+        if (!byProduct[productId]) {
+          byProduct[productId] = { active: 0, trial: 0 };
+        }
+        byProduct[productId].active += active;
+        byProduct[productId].trial += trial;
+      }
+
+      result.summaryReport = {
+        totalRows: lines.length - 1,
+        headers: headers.slice(0, 15),
+        columnIndices: { activeSubsIdx, activeTrialIdx, productIdIdx },
+        totals: { active: totalActive, trial: totalTrial, paid: totalActive - totalTrial },
+        byProduct: Object.entries(byProduct)
+          .sort((a, b) => b[1].active - a[1].active)
+          .slice(0, 10),
+        sampleRows: lines.slice(1, 6).map(line => line.split("\t").slice(0, 10)),
+      };
+    }
+
+    return result;
   },
 });
 

@@ -1,197 +1,12 @@
 "use client";
 
 export function MetricsDefinitions() {
-  const SRC = {
-    stripe: {
-      stock: "Stripe API: subscriptions.list",
-      mrr: "Stripe API: subscriptions.list → MRR = monthly prices + (yearly prices / 12)",
-      monthlyYearly: "Stripe API: subscriptions.list price.recurring.interval",
-      cancellations: "Stripe API: subscriptions.list cancel_at_period_end flag",
-      grace: "Stripe API: subscriptions.status = 'past_due'",
-      firstPayments: "Stripe API: invoices.list (paid, billing_reason='subscription_create')",
-      renewals: "Stripe API: invoices.list (paid, excluding billing_reason='subscription_create')",
-      revenue: "Stripe API: invoices.list (paid) + refunds.list",
-    },
-    appstore: {
-      stock: "SUBSCRIPTION_SUMMARY report (DAILY v1_4): Active/Trial/Paid counts",
-      cancellations: "Day-over-day delta from SUBSCRIPTION_SUMMARY Paid Subscribers",
-      grace: "SUBSCRIPTION_SUMMARY: Grace Period + Billing Retry columns",
-      firstPayments: "SUBSCRIBER report (DETAILED v1_3) event data OR day-over-day Paid gains",
-      renewals: "SUBSCRIBER report (DETAILED v1_3): Proceeds Reason column (Renew/Rate After One Year)",
-      revenue: "SUBSCRIPTION_SUMMARY: Customer Price (gross) and Developer Proceeds (net)",
-      mrr: "SUBSCRIPTION_SUMMARY: MRR = monthly prices + (yearly prices / 12)",
-      monthlyYearly: "SUBSCRIPTION_SUMMARY: Product ID patterns (month/year/annual) + Subscription Duration column",
-    },
-    googleplay: {
-      stock: "GCS Reports: Subscription metrics from subscription reports (if available in bucket)",
-      revenue: "GCS Reports: Financial/earnings reports with transaction-level revenue data",
-      subscriptionMetrics: "GCS Reports: Active/trial/paid counts, monthly/yearly split from subscription reports",
-      flowMetrics: "GCS Reports: New subscriptions, cancellations, renewals from subscription reports",
-      limited: "Note: Availability depends on report types in your auto-managed GCS bucket (gs://pubsite_prod_rev_XXX)",
-    },
-  } as const;
-
-  const definitions = [
-    {
-      name: "Active Subscribers",
-      type: "Stock Metric",
-      total: "Current count of all active and trialing subscriptions. Uses the latest snapshot from each platform.",
-      chart: "Weekly snapshot showing the total number of active subscribers at the end of each week.",
-      sources: {
-        stripe: SRC.stripe.stock,
-        appstore: SRC.appstore.stock,
-        googleplay: SRC.googleplay.subscriptionMetrics,
-      },
-    },
-    {
-      name: "Trial Subscribers",
-      type: "Stock Metric",
-      total: "Current count of subscriptions in trial period. Uses the latest snapshot from each platform.",
-      chart: "Weekly snapshot showing the number of trial subscribers at the end of each week.",
-      sources: {
-        stripe: SRC.stripe.stock,
-        appstore: SRC.appstore.stock,
-        googleplay: SRC.googleplay.subscriptionMetrics,
-      },
-    },
-    {
-      name: "Paid Subscribers",
-      type: "Stock Metric",
-      total: "Current count of active paying subscriptions (Active minus Trial). Uses the latest snapshot from each platform.",
-      chart: "Weekly snapshot showing the number of paid subscribers at the end of each week.",
-      sources: {
-        stripe: SRC.stripe.stock,
-        appstore: SRC.appstore.stock,
-        googleplay: SRC.googleplay.subscriptionMetrics,
-      },
-    },
-    {
-      name: "Monthly Subs",
-      type: "Stock Metric",
-      total: "Current count of paid subscribers with monthly billing. Derived from product ID patterns in Sales Reports.",
-      chart: "Weekly snapshot showing the number of monthly subscribers at the end of each week.",
-      sources: {
-        stripe: SRC.stripe.monthlyYearly,
-        appstore: SRC.appstore.monthlyYearly,
-        googleplay: SRC.googleplay.subscriptionMetrics,
-      },
-    },
-    {
-      name: "Yearly Subs",
-      type: "Stock Metric",
-      total: "Current count of paid subscribers with yearly billing. Derived from product ID patterns in Sales Reports.",
-      chart: "Weekly snapshot showing the number of yearly subscribers at the end of each week.",
-      sources: {
-        stripe: SRC.stripe.monthlyYearly,
-        appstore: SRC.appstore.monthlyYearly,
-        googleplay: SRC.googleplay.subscriptionMetrics,
-      },
-    },
-    {
-      name: "Cancellations",
-      type: "Flow Metric",
-      total: "Sum of all subscription cancellations over the past 30 days. This is the large number in the card.",
-      chart: "Each week shows the total cancellations for THAT specific 7-day period only. Each bar represents one week's cancellations.",
-      sources: {
-        stripe: SRC.stripe.cancellations,
-        appstore: SRC.appstore.cancellations,
-        googleplay: SRC.googleplay.flowMetrics,
-      },
-    },
-    {
-      name: "Churn Rate",
-      type: "Flow Metric",
-      total: "Percentage of paid subscribers who churned during the period. Formula: (Customers lost ÷ Starting paid subscribers) × 100. Monthly view shows 30-day churn rate; Weekly view shows 7-day churn rate.",
-      chart: "Each period shows the churn rate calculated from churned subscribers divided by starting subscribers for that period.",
-      sources: {
-        stripe: "Calculated from churn count / paid subscribers at period start",
-        appstore: "Calculated from churn count / paid subscribers at period start",
-        googleplay: "Calculated from churn count / paid subscribers at period start (if subscription data available)",
-      },
-    },
-    {
-      name: "Grace Events",
-      type: "Flow Metric",
-      total: "Sum of all subscriptions in grace period or billing retry over the past 30 days. This is the large number in the card.",
-      chart: "Each week shows the total grace events for THAT specific 7-day period only. Each bar represents one week's grace events.",
-      sources: {
-        stripe: SRC.stripe.grace,
-        appstore: SRC.appstore.grace,
-        googleplay: "Not available in standard GCS reports",
-      },
-    },
-    {
-      name: "First Payments",
-      type: "Flow Metric",
-      total: "Sum of all first payment events over the past 30 days. For App Store: from SUBSCRIBER report event data or day-over-day paid subscriber gains. For Stripe: from paid invoices with billing_reason='subscription_create'. This is the large number in the card.",
-      chart: "Each week shows the total first payments for THAT specific 7-day period only. Each bar represents one week's first payments.",
-      sources: {
-        stripe: SRC.stripe.firstPayments,
-        appstore: SRC.appstore.firstPayments,
-        googleplay: SRC.googleplay.flowMetrics,
-      },
-    },
-    {
-      name: "Renewals",
-      type: "Flow Metric",
-      total: "Sum of all renewal payment events over the past 30 days. For App Store: extracted from SUBSCRIBER report Proceeds Reason column. For Stripe: from paid invoices. This is the large number in the card.",
-      chart: "Each week shows the total renewals for THAT specific 7-day period only. Each bar represents one week's renewals.",
-      sources: {
-        stripe: SRC.stripe.renewals,
-        appstore: SRC.appstore.renewals,
-        googleplay: SRC.googleplay.flowMetrics,
-      },
-    },
-    {
-      name: "MRR (Monthly Recurring Revenue)",
-      type: "Stock Metric",
-      total: "Monthly recurring revenue: MRR = (monthly subscription prices) + (yearly subscription prices / 12). Unified formula across all platforms.",
-      chart: "Weekly snapshot showing MRR at the end of each week.",
-      sources: {
-        stripe: SRC.stripe.mrr,
-        appstore: SRC.appstore.mrr,
-        googleplay: "Derived from subscriber counts × App Store average prices. When 'Derive Google Play plan split from App Store' is enabled: MRR = (GP monthly subs × AS avg monthly price) + (GP yearly subs × AS avg yearly MRR)",
-      },
-    },
-    {
-      name: "Monthly Revenue (Gross)",
-      type: "Flow Metric",
-      total: "Sum of all gross revenue collected over the past 30 days before platform fees. This is the large number in the card.",
-      chart: "Each week shows the total gross revenue for THAT specific 7-day period only. Each bar represents one week's gross revenue.",
-      sources: {
-        stripe: SRC.stripe.revenue,
-        appstore: SRC.appstore.revenue,
-        googleplay: SRC.googleplay.revenue,
-      },
-    },
-    {
-      name: "Monthly Revenue (Net)",
-      type: "Flow Metric",
-      total: "Sum of all net revenue collected over the past 30 days after estimated platform fees (85% of gross). This is the large number in the card.",
-      chart: "Each week shows the total net revenue for THAT specific 7-day period only. Each bar represents one week's net revenue.",
-      sources: {
-        stripe: SRC.stripe.revenue,
-        appstore: SRC.appstore.revenue,
-        googleplay: SRC.googleplay.revenue,
-      },
-    },
-    {
-      name: "Proceeds (excl. VAT & Fees)",
-      type: "Flow Metric",
-      total: "Sum of actual money you receive from stores over the past 30 days after VAT and platform fees. This is what lands in your bank account.",
-      chart: "Each week shows the total proceeds for THAT specific 7-day period only. Each bar represents one week's proceeds.",
-      sources: {
-        stripe: "Stripe API: charge.balance_transaction.net (actual amount after Stripe fees)",
-        appstore: "SUBSCRIBER report: Developer Proceeds column (directly from Apple)",
-        googleplay: "GCS Earnings reports: Amount (Merchant Currency) - this is your actual payout",
-      },
-    },
-  ];
-
   return (
     <div className="mt-8 p-6 bg-gray-50 rounded-lg border border-gray-200">
       <h3 className="text-lg font-semibold mb-4">Metrics Definitions</h3>
-      <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded text-sm">
+      
+      {/* Understanding Metric Types - KEEP THIS */}
+      <div className="mb-6 p-3 bg-blue-50 border border-blue-200 rounded text-sm">
         <p className="font-medium mb-1">Understanding Metric Types:</p>
         <ul className="space-y-1 ml-4 list-disc">
           <li><strong>Stock Metrics:</strong> Point-in-time measurements (e.g., current subscriber count). Shows latest value.</li>
@@ -201,40 +16,228 @@ export function MetricsDefinitions() {
           Dashed lines indicate derived or carried-forward values; solid lines indicate actual platform data.
         </p>
       </div>
-      <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded text-sm">
-        <p className="font-medium mb-1">Google Play Data Availability:</p>
-        <p className="text-xs text-gray-700">
-          Google Play metrics depend on what report types exist in your auto-managed GCS bucket (gs://pubsite_prod_rev_XXX). 
-          <strong> Revenue data</strong> is typically available from financial/earnings reports. 
-          <strong> Subscription metrics</strong> (active, trial, paid counts, cancellations, renewals) are available only if subscription reports exist in your bucket.
-          Check sync logs after connecting to see which report types were discovered.
-        </p>
+
+      {/* SUBSCRIBER METRICS */}
+      <div className="mb-6">
+        <h4 className="font-semibold text-sm mb-3 text-gray-800">Subscriber Metrics (Stock)</h4>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs border-collapse">
+            <thead>
+              <tr className="bg-gray-100">
+                <th className="text-left p-2 border border-gray-200 font-semibold">Metric</th>
+                <th className="text-left p-2 border border-gray-200 font-semibold">Definition</th>
+                <th className="text-left p-2 border border-gray-200 font-semibold">Stripe</th>
+                <th className="text-left p-2 border border-gray-200 font-semibold">App Store</th>
+                <th className="text-left p-2 border border-gray-200 font-semibold">Google Play</th>
+                <th className="text-left p-2 border border-gray-200 font-semibold">Formula</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td className="p-2 border border-gray-200 font-medium">Active Subscribers</td>
+                <td className="p-2 border border-gray-200">All active and trialing subscriptions</td>
+                <td className="p-2 border border-gray-200"><code className="bg-gray-100 px-1 rounded text-[10px]">subscriptions.list</code> where status is active or trialing</td>
+                <td className="p-2 border border-gray-200">SUBSCRIPTION_SUMMARY report (DAILY v1_4), &quot;Active Subscribers&quot; column</td>
+                <td className="p-2 border border-gray-200">GCS subscription reports, &quot;active subscriptions&quot; column</td>
+                <td className="p-2 border border-gray-200"><code className="bg-gray-100 px-1 rounded text-[10px]">count where status = active OR trialing</code></td>
+              </tr>
+              <tr className="bg-gray-50">
+                <td className="p-2 border border-gray-200 font-medium">Trial Subscribers</td>
+                <td className="p-2 border border-gray-200">Subscriptions in trial period</td>
+                <td className="p-2 border border-gray-200"><code className="bg-gray-100 px-1 rounded text-[10px]">subscriptions.list</code> where <code className="bg-gray-100 px-1 rounded text-[10px]">status = trialing</code></td>
+                <td className="p-2 border border-gray-200">SUBSCRIPTION_SUMMARY report, &quot;Active Free Trial&quot; column</td>
+                <td className="p-2 border border-gray-200">GCS subscription reports, &quot;trial&quot; column (or derived from App Store ratio)</td>
+                <td className="p-2 border border-gray-200"><code className="bg-gray-100 px-1 rounded text-[10px]">count where isTrial = true</code></td>
+              </tr>
+              <tr>
+                <td className="p-2 border border-gray-200 font-medium">Paid Subscribers</td>
+                <td className="p-2 border border-gray-200">Active minus trial</td>
+                <td className="p-2 border border-gray-200">Derived</td>
+                <td className="p-2 border border-gray-200">Derived</td>
+                <td className="p-2 border border-gray-200">Derived</td>
+                <td className="p-2 border border-gray-200"><code className="bg-gray-100 px-1 rounded text-[10px]">activeSubscribers - trialSubscribers</code></td>
+              </tr>
+              <tr className="bg-gray-50">
+                <td className="p-2 border border-gray-200 font-medium">Monthly Subs</td>
+                <td className="p-2 border border-gray-200">Paid subscribers on monthly billing</td>
+                <td className="p-2 border border-gray-200"><code className="bg-gray-100 px-1 rounded text-[10px]">price.recurring.interval = month</code></td>
+                <td className="p-2 border border-gray-200">Product ID pattern matching (month/monthly/1m/30day)</td>
+                <td className="p-2 border border-gray-200">GCS &quot;monthly subscriptions&quot; column (or derived from App Store ratio)</td>
+                <td className="p-2 border border-gray-200"><code className="bg-gray-100 px-1 rounded text-[10px]">count where priceInterval = month AND not trial</code></td>
+              </tr>
+              <tr>
+                <td className="p-2 border border-gray-200 font-medium">Yearly Subs</td>
+                <td className="p-2 border border-gray-200">Paid subscribers on yearly billing</td>
+                <td className="p-2 border border-gray-200"><code className="bg-gray-100 px-1 rounded text-[10px]">price.recurring.interval = year</code></td>
+                <td className="p-2 border border-gray-200">Product ID pattern matching (year/yearly/annual/12m)</td>
+                <td className="p-2 border border-gray-200">GCS &quot;yearly subscriptions&quot; column (or derived from App Store ratio)</td>
+                <td className="p-2 border border-gray-200"><code className="bg-gray-100 px-1 rounded text-[10px]">count where priceInterval = year AND not trial</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {definitions.map((def) => (
-          <div key={def.name} className="bg-white p-4 rounded border border-gray-100">
-            <div className="flex items-center justify-between mb-2">
-              <h4 className="font-semibold text-sm">{def.name}</h4>
-              <span className="text-xs px-2 py-1 bg-gray-100 rounded">{def.type}</span>
+
+      {/* FLOW METRICS */}
+      <div className="mb-6">
+        <h4 className="font-semibold text-sm mb-3 text-gray-800">Event Metrics (Flow - summed over period)</h4>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs border-collapse">
+            <thead>
+              <tr className="bg-gray-100">
+                <th className="text-left p-2 border border-gray-200 font-semibold">Metric</th>
+                <th className="text-left p-2 border border-gray-200 font-semibold">Definition</th>
+                <th className="text-left p-2 border border-gray-200 font-semibold">Stripe</th>
+                <th className="text-left p-2 border border-gray-200 font-semibold">App Store</th>
+                <th className="text-left p-2 border border-gray-200 font-semibold">Google Play</th>
+                <th className="text-left p-2 border border-gray-200 font-semibold">Formula</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td className="p-2 border border-gray-200 font-medium">Cancellations</td>
+                <td className="p-2 border border-gray-200">Subscriptions that ended during period</td>
+                <td className="p-2 border border-gray-200">Subscriptions where <code className="bg-gray-100 px-1 rounded text-[10px]">status = canceled</code> with endDate in period</td>
+                <td className="p-2 border border-gray-200">SUBSCRIPTION_EVENT report &quot;Cancel&quot; events, or day-over-day paid subscriber drops</td>
+                <td className="p-2 border border-gray-200">GCS subscription reports, &quot;canceled subscriptions&quot; column</td>
+                <td className="p-2 border border-gray-200"><code className="bg-gray-100 px-1 rounded text-[10px]">count where status = canceled AND endDate in period</code></td>
+              </tr>
+              <tr className="bg-gray-50">
+                <td className="p-2 border border-gray-200 font-medium">Churn Rate</td>
+                <td className="p-2 border border-gray-200">Percentage of paid subscribers lost</td>
+                <td className="p-2 border border-gray-200">Calculated</td>
+                <td className="p-2 border border-gray-200">Calculated</td>
+                <td className="p-2 border border-gray-200">Calculated</td>
+                <td className="p-2 border border-gray-200"><code className="bg-gray-100 px-1 rounded text-[10px]">(churnCount / startingPaidSubscribers) × 100</code></td>
+              </tr>
+              <tr>
+                <td className="p-2 border border-gray-200 font-medium">First Payments</td>
+                <td className="p-2 border border-gray-200">New subscription purchases</td>
+                <td className="p-2 border border-gray-200"><code className="bg-gray-100 px-1 rounded text-[10px]">invoices.list</code> where <code className="bg-gray-100 px-1 rounded text-[10px]">billing_reason = subscription_create</code> and <code className="bg-gray-100 px-1 rounded text-[10px]">status = paid</code></td>
+                <td className="p-2 border border-gray-200">SUBSCRIBER report &quot;Start Introductory Price&quot; events, or SUBSCRIPTION_EVENT &quot;Subscribe&quot; events</td>
+                <td className="p-2 border border-gray-200">GCS subscription reports, &quot;new subscriptions&quot; column</td>
+                <td className="p-2 border border-gray-200"><code className="bg-gray-100 px-1 rounded text-[10px]">count where eventType = first_payment</code></td>
+              </tr>
+              <tr className="bg-gray-50">
+                <td className="p-2 border border-gray-200 font-medium">Renewals</td>
+                <td className="p-2 border border-gray-200">Recurring charges after first payment</td>
+                <td className="p-2 border border-gray-200"><code className="bg-gray-100 px-1 rounded text-[10px]">invoices.list</code> paid invoices excluding <code className="bg-gray-100 px-1 rounded text-[10px]">billing_reason = subscription_create</code></td>
+                <td className="p-2 border border-gray-200">SUBSCRIBER report rows with positive Customer Price (incl. &quot;Rate After One Year&quot;)</td>
+                <td className="p-2 border border-gray-200">Total transactions minus new subscriptions</td>
+                <td className="p-2 border border-gray-200"><code className="bg-gray-100 px-1 rounded text-[10px]">count where eventType = renewal</code></td>
+              </tr>
+              <tr>
+                <td className="p-2 border border-gray-200 font-medium">Refunds</td>
+                <td className="p-2 border border-gray-200">Number of refund events issued during period</td>
+                <td className="p-2 border border-gray-200"><code className="bg-gray-100 px-1 rounded text-[10px]">refunds.list</code> API, also negative invoices</td>
+                <td className="p-2 border border-gray-200">SUBSCRIBER report &quot;Refund&quot; events</td>
+                <td className="p-2 border border-gray-200">Reflected in revenue (negative transactions), not as separate count</td>
+                <td className="p-2 border border-gray-200"><code className="bg-gray-100 px-1 rounded text-[10px]">count where eventType = refund</code></td>
+              </tr>
+              <tr className="bg-gray-50">
+                <td className="p-2 border border-gray-200 font-medium">ARPU</td>
+                <td className="p-2 border border-gray-200">Revenue per active subscriber</td>
+                <td className="p-2 border border-gray-200">Calculated</td>
+                <td className="p-2 border border-gray-200">Calculated</td>
+                <td className="p-2 border border-gray-200">Calculated</td>
+                <td className="p-2 border border-gray-200"><code className="bg-gray-100 px-1 rounded text-[10px]">revenue / activeSubscribers</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
             </div>
-            <div className="space-y-1 text-sm text-gray-700">
-              <div>
-                <span className="font-medium">Total Value:</span> {def.total}
+
+      {/* REVENUE METRICS */}
+      <div className="mb-6">
+        <h4 className="font-semibold text-sm mb-3 text-gray-800">Revenue Metrics (Flow - summed over period)</h4>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs border-collapse">
+            <thead>
+              <tr className="bg-gray-100">
+                <th className="text-left p-2 border border-gray-200 font-semibold">Metric</th>
+                <th className="text-left p-2 border border-gray-200 font-semibold">Definition</th>
+                <th className="text-left p-2 border border-gray-200 font-semibold">Stripe</th>
+                <th className="text-left p-2 border border-gray-200 font-semibold">App Store</th>
+                <th className="text-left p-2 border border-gray-200 font-semibold">Google Play</th>
+                <th className="text-left p-2 border border-gray-200 font-semibold">Formula</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td className="p-2 border border-gray-200 font-medium">Charged Revenue</td>
+                <td className="p-2 border border-gray-200">Gross amount including VAT</td>
+                <td className="p-2 border border-gray-200"><code className="bg-gray-100 px-1 rounded text-[10px]">invoice.amount_paid</code></td>
+                <td className="p-2 border border-gray-200">SUBSCRIBER report (DETAILED v1_3), &quot;Customer Price&quot; column</td>
+                <td className="p-2 border border-gray-200">GCS sales reports, &quot;charged amount&quot; column</td>
+                <td className="p-2 border border-gray-200"><code className="bg-gray-100 px-1 rounded text-[10px]">sum of amount from revenue events</code></td>
+              </tr>
+              <tr className="bg-gray-50">
+                <td className="p-2 border border-gray-200 font-medium">Revenue (excl. VAT)</td>
+                <td className="p-2 border border-gray-200">After VAT, before platform fees</td>
+                <td className="p-2 border border-gray-200"><code className="bg-gray-100 px-1 rounded text-[10px]">invoice.total_excluding_tax</code> or calculated from country VAT rates</td>
+                <td className="p-2 border border-gray-200">Calculated: Customer Price / (1 + vatRate) using storefront country</td>
+                <td className="p-2 border border-gray-200">GCS sales reports, &quot;item price&quot; column</td>
+                <td className="p-2 border border-gray-200"><code className="bg-gray-100 px-1 rounded text-[10px]">chargedAmount / (1 + vatRate)</code></td>
+              </tr>
+              <tr>
+                <td className="p-2 border border-gray-200 font-medium">Proceeds</td>
+                <td className="p-2 border border-gray-200">After VAT and platform fees (your actual payout)</td>
+                <td className="p-2 border border-gray-200"><code className="bg-gray-100 px-1 rounded text-[10px]">charge.balance_transaction.net</code></td>
+                <td className="p-2 border border-gray-200">SUBSCRIBER report, &quot;Developer Proceeds&quot; column</td>
+                <td className="p-2 border border-gray-200">GCS earnings reports, &quot;amount (merchant currency)&quot;</td>
+                <td className="p-2 border border-gray-200">Direct from platform data</td>
+              </tr>
+              <tr className="bg-gray-50">
+                <td className="p-2 border border-gray-200 font-medium">MRR</td>
+                <td className="p-2 border border-gray-200">Normalized monthly recurring revenue (Stock)</td>
+                <td className="p-2 border border-gray-200">Active subscription prices from <code className="bg-gray-100 px-1 rounded text-[10px]">price.unit_amount</code></td>
+                <td className="p-2 border border-gray-200">Active subscribers × Customer Price from SUBSCRIPTION_SUMMARY</td>
+                <td className="p-2 border border-gray-200">Derived: subscriber counts × App Store avg prices per subscriber</td>
+                <td className="p-2 border border-gray-200"><code className="bg-gray-100 px-1 rounded text-[10px]">monthlyRevenue + (yearlyRevenue / 12)</code></td>
+              </tr>
+            </tbody>
+          </table>
               </div>
-              <div>
-                <span className="font-medium">Chart:</span> {def.chart}
               </div>
-              <div>
-                <span className="font-medium">Data sources (by channel):</span>
-                <ul className="mt-1 ml-4 list-disc">
-                  <li><span className="font-medium">Stripe:</span> {(def as any).sources.stripe}</li>
-                  <li><span className="font-medium">App Store:</span> {(def as any).sources.appstore}</li>
-                  <li><span className="font-medium">Google Play:</span> {(def as any).sources.googleplay}</li>
-                </ul>
+
+      {/* REVENUE BY PLAN TYPE */}
+      <div className="mb-4">
+        <h4 className="font-semibold text-sm mb-3 text-gray-800">Revenue by Plan Type (Flow)</h4>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs border-collapse">
+            <thead>
+              <tr className="bg-gray-100">
+                <th className="text-left p-2 border border-gray-200 font-semibold">Metric</th>
+                <th className="text-left p-2 border border-gray-200 font-semibold">Definition</th>
+                <th className="text-left p-2 border border-gray-200 font-semibold">Stripe</th>
+                <th className="text-left p-2 border border-gray-200 font-semibold">App Store</th>
+                <th className="text-left p-2 border border-gray-200 font-semibold">Google Play</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td className="p-2 border border-gray-200 font-medium">Monthly Plans - Charged/Revenue/Proceeds</td>
+                <td className="p-2 border border-gray-200">Revenue from monthly subscriptions</td>
+                <td className="p-2 border border-gray-200">Revenue events where subscription&apos;s <code className="bg-gray-100 px-1 rounded text-[10px]">priceInterval = month</code></td>
+                <td className="p-2 border border-gray-200">Revenue events where Product ID matches monthly pattern</td>
+                <td className="p-2 border border-gray-200">Derived: total Google Play revenue × (App Store monthly revenue / App Store total revenue)</td>
+              </tr>
+              <tr className="bg-gray-50">
+                <td className="p-2 border border-gray-200 font-medium">Yearly Plans - Charged/Revenue/Proceeds</td>
+                <td className="p-2 border border-gray-200">Revenue from yearly subscriptions</td>
+                <td className="p-2 border border-gray-200">Revenue events where subscription&apos;s <code className="bg-gray-100 px-1 rounded text-[10px]">priceInterval = year</code></td>
+                <td className="p-2 border border-gray-200">Revenue events where Product ID matches yearly pattern</td>
+                <td className="p-2 border border-gray-200">Derived: total Google Play revenue × (App Store yearly revenue / App Store total revenue)</td>
+              </tr>
+            </tbody>
+          </table>
               </div>
             </div>
-          </div>
-        ))}
+
+      {/* CURRENCY CONVERSION */}
+      <div className="p-3 bg-gray-100 border border-gray-200 rounded text-xs text-gray-700">
+        <p className="font-medium mb-1">Currency Conversion:</p>
+        <p>All revenue amounts are converted to your app&apos;s preferred currency using exchange rates from the <code className="bg-gray-200 px-1 rounded">exchangeRates</code> table. Historical rates by year-month are used when available, with fallback to latest rates. Google Play amounts in buyer currency are first converted to USD using approximate rates, then to your currency.</p>
       </div>
     </div>
   );

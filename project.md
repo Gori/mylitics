@@ -65,7 +65,7 @@
 
 **Subscriber Metrics (Not Available):**
 - ⚠️ Active/Trial/Paid Subscribers: Set to 0
-- ⚠️ Cancellations, Churn, Grace: Set to 0
+- ⚠️ Cancellations, Churn: Set to 0
 - ⚠️ First Payments, Renewals: Set to 0
 - ⚠️ MRR: Set to 0
 
@@ -188,7 +188,6 @@ Previous implementation tried to calculate metrics by querying old database data
 
 ### Stripe Integration Fixes (`convex/integrations/stripe.ts`)
 - ✅ **Fetch ALL subscriptions** - Added `status: "all"` parameter
-- ✅ **Track grace periods** - Set `isInGrace: subscription.status === "past_due"`
 - ✅ **Track cancellations** - Set `willCancel: cancel_at_period_end`
 - ✅ **Fix canceled endDate** - Use `canceled_at` or `ended_at` for canceled subs
 - ✅ **Only paid invoices** - Only create revenue for `invoice.status === "paid"`
@@ -202,7 +201,6 @@ Previous implementation tried to calculate metrics by querying old database data
 - Active/Trial/Paid Subs: From current subscriptions array
 - Cancellations: Count `willCancel` flag in current subs
 - Churn: Count canceled subs with endDate in last 30 days
-- Grace Events: Count `isInGrace` flag in current subs
 - First Payments: Count from revenueEvents array
 - Renewals: Count from revenueEvents array
 - MRR: Sum prices from active non-trial subs, rounded to 2 decimals
@@ -218,20 +216,19 @@ Previous implementation tried to calculate metrics by querying old database data
 - ✅ **More flexible event matching** - Uses `.includes()` instead of regex
 - ✅ **Better refund handling** - Subtracts from revenue, doesn't double-add
 - ✅ **Fixed active subscriber calc** - Accounts for cancellations properly
-- ✅ **All event types** - Parses first payments, renewals, refunds, trials, grace, cancellations
+- ✅ **All event types** - Parses first payments, renewals, refunds, trials, cancellations
 
-### Validated Metrics (11 total)
+### Validated Metrics (10 total)
 1. Active Subscribers
 2. Trial Subscribers
 3. Paid Subscribers
 4. Cancellations
 5. Churn
-6. Grace Events
-7. First Payments
-8. Renewals
-9. MRR (rounded to 2 decimals)
-10. Monthly Revenue (Gross)
-11. Monthly Revenue (Net)
+6. First Payments
+7. Renewals
+8. MRR (rounded to 2 decimals)
+9. Monthly Revenue (Gross)
+10. Monthly Revenue (Net)
 
 ## v2 Upgrade - ✅ Completed
 
@@ -240,7 +237,7 @@ Previous implementation tried to calculate metrics by querying old database data
 - ✅ Updated grid layout: 1 col mobile, 2 cols medium, 3 cols large
 - ✅ Split metrics into current snapshot vs 30-day aggregates
   - Current: Active/Trial/Paid Subscribers
-  - 30-day: Cancellations, Churn, Grace Events, First Payments, Renewals, MRR, Revenue
+  - 30-day: Cancellations, Churn, First Payments, Renewals, MRR, Revenue
 - ✅ Added date ranges for 30-day metrics (e.g., "Dec 23 - Jan 23")
 - ✅ Added weekly historical charts (52 weeks) with line graphs
   - Shows Total + per-platform lines (App Store, Google Play, Stripe)
@@ -309,7 +306,6 @@ Previous implementation tried to calculate metrics by querying old database data
 - Trial vs Paid breakdown
 - Cancellations
 - Churn
-- Grace Events
 - First Payments
 - Renewals
 - MRR (Monthly Recurring Revenue)

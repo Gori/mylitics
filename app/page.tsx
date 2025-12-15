@@ -166,7 +166,7 @@ export default function Home() {
             imageSrc="/images/stripe.webp"
             title="Stripe"
             description="Full subscriber metrics and revenue tracking."
-            details="Subscribers, MRR, revenue, cancellations, grace periods, renewals"
+            details="Subscribers, MRR, revenue, cancellations, renewals"
             imageSize={45}
           />
         </div>

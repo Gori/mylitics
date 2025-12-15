@@ -186,7 +186,6 @@ export default function DashboardPage() {
       // If GP has subscription data, assume flow metrics are available (0 is valid)
       available.add("cancellations");
       available.add("churnRate");
-      available.add("graceEvents");
       available.add("firstPayments");
       available.add("renewals");
     }
@@ -532,7 +531,7 @@ export default function DashboardPage() {
                   right={rightBlockPlanSplit("yearlySubscribers")}
                 />
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-1 gap-4">
                 <MetricCard currency={currency}
                   revenueFormat={revenueFormat}
                   chartType={chartType}
@@ -544,18 +543,6 @@ export default function DashboardPage() {
                   viewMode={viewMode}
                   platformsWithData={getPlatformsWithData("cancellations")}
                   right={rightBlock("cancellations")}
-                />
-                <MetricCard currency={currency}
-                  revenueFormat={revenueFormat}
-                  chartType={chartType}
-                  label="Grace Events"
-                  value={metrics.unified.graceEvents}
-                  metricKey="graceEvents"
-                  appId={appId}
-                  connectedPlatforms={connectedPlatforms}
-                  viewMode={viewMode}
-                  platformsWithData={getPlatformsWithData("graceEvents")}
-                  right={rightBlock("graceEvents")}
                 />
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -584,7 +571,7 @@ export default function DashboardPage() {
                   right={rightBlockArpu(viewMode)}
                 />
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <MetricCard currency={currency}
                   revenueFormat={revenueFormat}
                   chartType={chartType}
@@ -608,6 +595,18 @@ export default function DashboardPage() {
                   viewMode={viewMode}
                   platformsWithData={getPlatformsWithData("renewals")}
                   right={rightBlock("renewals")}
+                />
+                <MetricCard currency={currency}
+                  revenueFormat={revenueFormat}
+                  chartType={chartType}
+                  label="Refunds"
+                  value={metrics.unified.refunds ?? 0}
+                  metricKey="refunds"
+                  appId={appId}
+                  connectedPlatforms={connectedPlatforms}
+                  viewMode={viewMode}
+                  platformsWithData={getPlatformsWithData("refunds")}
+                  right={rightBlock("refunds")}
                 />
               </div>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
