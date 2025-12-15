@@ -90,6 +90,7 @@ export default defineSchema({
     startDate: v.number(),
     endDate: v.optional(v.number()),
     isTrial: v.boolean(),
+    isInGrace: v.optional(v.boolean()), // Legacy field for backward compatibility
     willCancel: v.boolean(),
     rawData: v.optional(v.string()), // JSON string of raw platform data
     // Stripe-specific fields for efficient MRR calculation

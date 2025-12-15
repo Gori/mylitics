@@ -819,6 +819,7 @@ export const processAppStoreReport = internalMutation({
       renewals: v.number(),
       firstPayments: v.number(),
       cancellations: v.number(),
+      refunds: v.optional(v.number()),
       revenueGross: v.optional(v.number()),
       revenueNet: v.optional(v.number()),
       revenueProceeds: v.optional(v.number()), // Developer Proceeds - what Apple pays you
@@ -1069,6 +1070,10 @@ export const processAppStoreReport = internalMutation({
       if (eventData.firstPayments > 0) {
         finalFirstPayments = eventData.firstPayments;
       }
+      // Use refunds from SUBSCRIBER report (from "refund" events or negative revenue)
+      if (eventData.refunds !== undefined && eventData.refunds > 0) {
+        refunds = eventData.refunds;
+      }
       // Use REVENUE from SUBSCRIBER report if available
       // NOTE: eventData.revenueGross/Net/Proceeds are ALREADY in userCurrency (converted in processAppStoreSubscriberReport)
       // revenueGross = Charged Revenue (what customer paid, including VAT)
@@ -1269,6 +1274,7 @@ export const processAppStoreSubscriberReport = internalMutation({
     let renewals = 0;
     let firstPayments = 0;
     let cancellations = 0;
+    let refunds = 0;
     let revenueGross = 0;
     let revenueNet = 0;
     let revenueProceeds = 0; // Developer Proceeds - what you actually receive from Apple
@@ -1405,7 +1411,7 @@ export const processAppStoreSubscriberReport = internalMutation({
       
       if (isRefund) {
         // Refunds are negative revenue (rowGross might already be negative)
-        cancellations += quantity;
+        refunds += quantity;
         revenueGross += Math.min(rowGross, 0); // Ensure negative
         revenueNet += Math.min(rowNet, 0);
         revenueProceeds += Math.min(rowProceeds, 0);
@@ -1476,7 +1482,7 @@ export const processAppStoreSubscriberReport = internalMutation({
     // DEBUG: Log comprehensive event classification breakdown
     console.log(`[App Store Subscriber ${date}] ========== EVENT CLASSIFICATION BREAKDOWN ==========`);
     console.log(`[App Store Subscriber ${date}] Total rows: ${lines.length - 1}, Processed: ${rowsProcessed}, Skipped (wrong date): ${rowsSkippedWrongDate}`);
-    console.log(`[App Store Subscriber ${date}] Results: firstPayments=${firstPayments}, renewals=${renewals}, cancellations=${cancellations}`);
+    console.log(`[App Store Subscriber ${date}] Results: firstPayments=${firstPayments}, renewals=${renewals}, cancellations=${cancellations}, refunds=${refunds}`);
     console.log(`[App Store Subscriber ${date}] Revenue: gross=${revenueGross.toFixed(2)}, net=${revenueNet.toFixed(2)}, proceeds=${revenueProceeds.toFixed(2)}`);
     
     // Log each unique event value and how it was classified
@@ -1497,6 +1503,7 @@ export const processAppStoreSubscriberReport = internalMutation({
       renewals, 
       firstPayments, 
       cancellations,
+      refunds,
       revenueGross,
       revenueNet,
       revenueProceeds, // Developer Proceeds - what Apple actually pays you
