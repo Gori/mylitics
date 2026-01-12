@@ -1,29 +1,19 @@
 import { v } from "convex/values";
-import { mutation, internalMutation, query } from "./_generated/server";
-import { getAuthUserId } from "./auth";
-
-async function getUserId(ctx: any) {
-  const userId = await getAuthUserId(ctx);
-  if (!userId) throw new Error("Not authenticated");
-  return userId;
-}
-
-async function validateAppOwnership(ctx: any, appId: string) {
-  const userId = await getUserId(ctx);
-  
-  const app = await ctx.db.get(appId);
-  if (!app) throw new Error("App not found");
-  if (app.userId !== userId) throw new Error("Not authorized");
-  
-  return app;
-}
+import { mutation, internalMutation } from "./_generated/server";
+import { requireUserId, validateAppOwnership } from "./lib/authHelpers";
 
 export const deleteMetricsSnapshot = mutation({
   args: {
     snapshotId: v.id("metricsSnapshots"),
   },
   handler: async (ctx, { snapshotId }) => {
-    await getUserId(ctx);
+    // First get the snapshot to find its appId
+    const snapshot = await ctx.db.get(snapshotId);
+    if (!snapshot) throw new Error("Snapshot not found");
+
+    // Validate the user owns the app this snapshot belongs to
+    await validateAppOwnership(ctx, snapshot.appId);
+
     await ctx.db.delete(snapshotId);
     return { success: true };
   },
@@ -114,8 +104,8 @@ export const updateUserPreferences = mutation({
     chartType: v.optional(v.union(v.literal("line"), v.literal("area"))),
   },
   handler: async (ctx, { revenueFormat, chartType }) => {
-    const userId = await getUserId(ctx);
-    const updates: Record<string, any> = {};
+    const userId = await requireUserId(ctx);
+    const updates: Record<string, "whole" | "twoDecimals" | "line" | "area"> = {};
 
     if (revenueFormat !== undefined) {
       updates.revenueFormat = revenueFormat;

@@ -127,7 +127,8 @@ export default defineSchema({
   })
     .index("by_app", ["appId"])
     .index("by_app_platform", ["appId", "platform"])
-    .index("by_app_platform_time", ["appId", "platform", "timestamp"]),
+    .index("by_app_platform_time", ["appId", "platform", "timestamp"])
+    .index("by_external_id", ["platform", "externalId"]),
 
   // Logs for sync progress and status
   syncLogs: defineTable({

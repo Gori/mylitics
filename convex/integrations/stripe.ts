@@ -91,13 +91,23 @@ export async function fetchStripe(apiKey: string, startDate?: number, endDate?: 
   console.log(`[Stripe] Fetched ${subCount} subscriptions`);
 
   const invoiceParams: any = { 
-    limit: 100
+    limit: 100,
+    // Expand payment_intent to get charge info for proceeds calculation
+    expand: ["data.payment_intent", "data.charge"]
   };
   if (startDate) {
     invoiceParams.created = { gte: Math.floor(startDate / 1000) };
   }
 
   console.log(`[Stripe] Fetching invoices with params:`, invoiceParams);
+  
+  // STEP 1: Collect all invoices first (fast)
+  const allInvoices: Stripe.Invoice[] = [];
+  for await (const invoice of stripe.invoices.list(invoiceParams)) {
+    allInvoices.push(invoice);
+  }
+  console.log(`[Stripe] Collected ${allInvoices.length} invoices, now processing proceeds in parallel...`);
+  
   let invoiceCount = 0;
   let skippedInvoices = 0;
   const invoiceStatusCounts: Record<string, number> = {};
@@ -105,16 +115,39 @@ export async function fetchStripe(apiKey: string, startDate?: number, endDate?: 
   let invoicesPaid = 0;
   const eventTypeCounts: Record<string, number> = { first_payment: 0, renewal: 0, refund: 0 };
   
-  for await (const invoice of stripe.invoices.list(invoiceParams)) {
+  // Debug counters for proceeds tracking
+  let invoicesWithChargeField = 0;
+  let invoicesWithPaymentIntent = 0;
+  let invoicesWithProceeds = 0;
+  let chargeRetrievalErrors = 0;
+  let paymentIntentRetrievalErrors = 0;
+  let invoicesWithNoPaymentPath = 0;
+  let balanceTxIsString = 0;
+  
+  // STEP 2: Process invoices and identify which need proceeds fetching
+  type PendingInvoice = {
+    invoice: Stripe.Invoice;
+    subscriptionId: string;
+    eventTimestamp: number;
+    amount: number;
+    amountExcludingTax?: number;
+    country?: string;
+    eventType: "first_payment" | "renewal" | "refund";
+    // For proceeds fetching
+    chargeId?: string;
+    needsProceedsFetch: boolean;
+    amountProceeds?: number;
+  };
+  
+  const pendingInvoices: PendingInvoice[] = [];
+  
+  for (const invoice of allInvoices) {
     invoiceCount++;
     const invAny = invoice as any;
     
-    // Use paid_at (when payment succeeded) for accurate revenue timing
-    // Fall back to created if paid_at not available (shouldn't happen for paid invoices)
     const paidAt = invAny.status_transitions?.paid_at;
     const eventTimestamp = paidAt ? paidAt * 1000 : (invoice.created || 0) * 1000;
     
-    // Filter by paid_at timestamp (not created) for accurate date range
     if (startDate && eventTimestamp < startDate) {
       skippedInvoices++;
       continue;
@@ -127,114 +160,195 @@ export async function fetchStripe(apiKey: string, startDate?: number, endDate?: 
     const status = invoice.status || "unknown";
     invoiceStatusCounts[status] = (invoiceStatusCounts[status] || 0) + 1;
 
-    // Extract subscription ID from parent.subscription_details.subscription (new Stripe format)
     let subscriptionId: string | null = null;
     const parentSub = invAny.parent?.subscription_details?.subscription;
     if (typeof parentSub === "string" && parentSub.length > 0) {
       subscriptionId = parentSub;
+    } else if (typeof invAny.subscription === "string" && invAny.subscription.length > 0) {
+      subscriptionId = invAny.subscription;
     }
     
-    // Debug logging for first few invoices
-    if (invoiceCount <= 5) {
-      console.log(`[Stripe] Invoice #${invoiceCount}: id=${invoice.id}, status=${invoice.status}, billing_reason=${invAny.billing_reason}, paid_at=${paidAt || 'null'}, subId=${subscriptionId || "NULL"}, amount_paid=${invAny.amount_paid}`);
+    if (invoiceCount <= 3) {
+      console.log(`[Stripe] Invoice #${invoiceCount}: id=${invoice.id}, status=${invoice.status}, amount_paid=${invAny.amount_paid}, subId=${subscriptionId || "NULL"}`);
     }
     
-    if (subscriptionId) {
+    if (subscriptionId && invoice.status === "paid") {
       invoicesWithSubscription++;
+      invoicesPaid++;
       
-      // Only process paid invoices for revenue
-      if (invoice.status === "paid") {
-        invoicesPaid++;
-        
-        let eventType: "first_payment" | "renewal" | "refund" = "renewal";
-        let amount = (invAny.amount_paid || 0) / 100;
-        // Extract tax-excluded amount from Stripe Tax - only if actually provided
-        // If null/undefined, we'll calculate VAT manually from country in metrics.ts
-        let amountExcludingTax: number | undefined = invAny.total_excluding_tax != null 
-          ? invAny.total_excluding_tax / 100 
-          : undefined;
-        
-        // Fetch actual proceeds from the balance transaction
-        // This gives us the ACTUAL fee Stripe charged, not an estimate
-        // Try multiple paths: direct charge, payment_intent's charge
-        let amountProceeds: number | undefined = undefined;
-        let chargeId: string | null = null;
-        
-        // Path 1: Direct charge field
-        if (invAny.charge && typeof invAny.charge === "string") {
-          chargeId = invAny.charge;
+      let eventType: "first_payment" | "renewal" | "refund" = "renewal";
+      let amount = (invAny.amount_paid || 0) / 100;
+      let amountExcludingTax: number | undefined = invAny.total_excluding_tax != null 
+        ? invAny.total_excluding_tax / 100 
+        : undefined;
+      
+      let amountProceeds: number | undefined = undefined;
+      let chargeId: string | undefined = undefined;
+      let needsProceedsFetch = true;
+      
+      // Check if proceeds already available from expanded data
+      if (invAny.charge && typeof invAny.charge === "object" && invAny.charge.id) {
+        chargeId = invAny.charge.id;
+        invoicesWithChargeField++;
+        const btx = invAny.charge.balance_transaction;
+        if (btx && typeof btx === "object" && btx.net !== undefined) {
+          amountProceeds = btx.net / 100;
+          invoicesWithProceeds++;
+          needsProceedsFetch = false;
         }
-        // Path 2: Through payment_intent (newer Stripe API)
-        else if (invAny.payment_intent && typeof invAny.payment_intent === "string") {
-          try {
-            const pi = await stripe.paymentIntents.retrieve(invAny.payment_intent);
-            const piAny = pi as any;
-            if (piAny.latest_charge && typeof piAny.latest_charge === "string") {
-              chargeId = piAny.latest_charge;
-            }
-          } catch (e) {
-            // Ignore errors fetching payment intent
+      } else if (invAny.payment_intent && typeof invAny.payment_intent === "object") {
+        invoicesWithPaymentIntent++;
+        const piAny = invAny.payment_intent;
+        if (piAny.latest_charge && typeof piAny.latest_charge === "object" && piAny.latest_charge.id) {
+          chargeId = piAny.latest_charge.id;
+          const btx = piAny.latest_charge.balance_transaction;
+          if (btx && typeof btx === "object" && btx.net !== undefined) {
+            amountProceeds = btx.net / 100;
+            invoicesWithProceeds++;
+            needsProceedsFetch = false;
           }
         }
-        
-        // Fetch balance transaction from charge
-        if (chargeId) {
-          try {
-            const charge = await stripe.charges.retrieve(chargeId, {
-              expand: ["balance_transaction"],
-            });
-            const balanceTransaction = (charge as any).balance_transaction;
-            if (balanceTransaction && typeof balanceTransaction === "object") {
-              // net = amount after Stripe fees, in smallest currency unit
-              amountProceeds = (balanceTransaction.net || 0) / 100;
-            }
-          } catch (e) {
-            // If we can't fetch the charge, leave proceeds undefined
-          }
-        }
-        
-        // Log first few to debug
-        if (invoiceCount <= 3) {
-          console.log(`[Stripe] Invoice ${invoice.id}: charge=${invAny.charge || 'null'}, payment_intent=${invAny.payment_intent || 'null'}, amountProceeds=${amountProceeds}`);
-        }
-        
-        // Extract country from customer address
-        const country = invAny.customer_address?.country || undefined;
-        
-        // Check if this is a refund (negative amount or specific billing reason)
-        if (amount < 0 || invAny.billing_reason === "subscription_cycle" && invAny.amount_paid < 0) {
-          eventType = "refund";
-          amount = Math.abs(amount);
-          if (amountExcludingTax !== undefined) {
-            amountExcludingTax = Math.abs(amountExcludingTax);
-          }
-          if (amountProceeds !== undefined) {
-            amountProceeds = Math.abs(amountProceeds);
-          }
-        } else if (invAny.billing_reason === "subscription_create") {
-          eventType = "first_payment";
-        }
-        
-        eventTypeCounts[eventType]++;
-        
-        revenueEvents.push({
-          subscriptionExternalId: subscriptionId,
-          eventType,
-          amount,
-          amountExcludingTax,
-          amountProceeds,
-          currency: invoice.currency || "usd",
-          country,
-          timestamp: eventTimestamp,
-          externalId: invoice.id,
-        });
+      } else if (invAny.charge && typeof invAny.charge === "string") {
+        chargeId = invAny.charge;
+        invoicesWithChargeField++;
+      } else if (invAny.payment_intent && typeof invAny.payment_intent === "string") {
+        // Will need to fetch payment_intent
+        invoicesWithPaymentIntent++;
       }
+      
+      const country = invAny.customer_address?.country || undefined;
+      
+      if (amount < 0 || (invAny.billing_reason === "subscription_cycle" && invAny.amount_paid < 0)) {
+        eventType = "refund";
+        amount = Math.abs(amount);
+        if (amountExcludingTax !== undefined) amountExcludingTax = Math.abs(amountExcludingTax);
+        if (amountProceeds !== undefined) amountProceeds = Math.abs(amountProceeds);
+      } else if (invAny.billing_reason === "subscription_create") {
+        eventType = "first_payment";
+      }
+      
+      eventTypeCounts[eventType]++;
+      
+      pendingInvoices.push({
+        invoice,
+        subscriptionId,
+        eventTimestamp,
+        amount,
+        amountExcludingTax,
+        country,
+        eventType,
+        chargeId,
+        needsProceedsFetch,
+        amountProceeds,
+      });
     }
+  }
+  
+  console.log(`[Stripe] Found ${pendingInvoices.length} paid invoices, ${pendingInvoices.filter(p => p.needsProceedsFetch).length} need proceeds fetch`);
+  
+  // STEP 3: Fetch proceeds in parallel batches (10 concurrent requests)
+  const BATCH_SIZE = 10;
+  const needsProceedsFetch = pendingInvoices.filter(p => p.needsProceedsFetch);
+  
+  for (let i = 0; i < needsProceedsFetch.length; i += BATCH_SIZE) {
+    const batch = needsProceedsFetch.slice(i, i + BATCH_SIZE);
+    if (i % 100 === 0 && i > 0) {
+      console.log(`[Stripe] Processing proceeds batch ${i}/${needsProceedsFetch.length}...`);
+    }
+    
+    await Promise.all(batch.map(async (pending) => {
+      const invAny = pending.invoice as any;
+      let chargeId = pending.chargeId;
+      let amountProceeds: number | undefined = undefined;
+      
+      // Try to get payment_intent ID
+      let paymentIntentId: string | undefined = undefined;
+      if (invAny.payment_intent && typeof invAny.payment_intent === "string") {
+        paymentIntentId = invAny.payment_intent;
+      }
+      
+      // Path: Use /v1/invoice_payments endpoint for newer Stripe API
+      if (!chargeId && !paymentIntentId) {
+        try {
+          const resp = await fetch(`https://api.stripe.com/v1/invoice_payments?invoice=${pending.invoice.id}`, {
+            headers: { "Authorization": `Bearer ${apiKey}` },
+          });
+          if (resp.ok) {
+            const data = await resp.json() as any;
+            if (data.data?.[0]?.payment?.payment_intent) {
+              paymentIntentId = data.data[0].payment.payment_intent;
+            }
+          }
+        } catch {}
+      }
+      
+      // Fetch payment_intent to get charge
+      if (paymentIntentId && !chargeId) {
+        try {
+          const pi = await stripe.paymentIntents.retrieve(paymentIntentId, { expand: ["latest_charge.balance_transaction"] });
+          const piAny = pi as any;
+          if (piAny.latest_charge?.id) {
+            chargeId = piAny.latest_charge.id;
+            if (piAny.latest_charge.balance_transaction?.net !== undefined) {
+              amountProceeds = piAny.latest_charge.balance_transaction.net / 100;
+              invoicesWithProceeds++;
+              pending.amountProceeds = amountProceeds;
+              pending.chargeId = chargeId;
+              return;
+            }
+          }
+        } catch {
+          paymentIntentRetrievalErrors++;
+        }
+      }
+      
+      // Fetch from charge if we have chargeId but no proceeds
+      if (chargeId && amountProceeds === undefined) {
+        try {
+          const charge = await stripe.charges.retrieve(chargeId, { expand: ["balance_transaction"] });
+          const btx = (charge as any).balance_transaction;
+          if (btx && typeof btx === "object" && btx.net !== undefined) {
+            amountProceeds = btx.net / 100;
+            invoicesWithProceeds++;
+          } else if (btx && typeof btx === "string") {
+            balanceTxIsString++;
+            const btxObj = await stripe.balanceTransactions.retrieve(btx);
+            amountProceeds = btxObj.net / 100;
+            invoicesWithProceeds++;
+          }
+        } catch {
+          chargeRetrievalErrors++;
+        }
+      }
+      
+      pending.amountProceeds = amountProceeds;
+      pending.chargeId = chargeId;
+    }));
+  }
+  
+  // STEP 4: Build final revenue events
+  for (const pending of pendingInvoices) {
+    if (invoicesPaid <= 5) {
+      console.log(`[Stripe] Invoice ${pending.invoice.id}: amount=${pending.amount}, amountProceeds=${pending.amountProceeds ?? 'undefined'}, chargeId=${pending.chargeId || 'null'}`);
+    }
+    
+    revenueEvents.push({
+      subscriptionExternalId: pending.subscriptionId,
+      eventType: pending.eventType,
+      amount: pending.amount,
+      amountExcludingTax: pending.amountExcludingTax,
+      amountProceeds: pending.amountProceeds,
+      currency: pending.invoice.currency || "usd",
+      country: pending.country,
+      timestamp: pending.eventTimestamp,
+      externalId: pending.invoice.id,
+    });
   }
   
   console.log(`[Stripe] Processed ${invoiceCount} invoices, created ${revenueEvents.length} revenue events, skipped ${skippedInvoices} by date`);
   console.log(`[Stripe] Event type breakdown: First Payments=${eventTypeCounts.first_payment}, Renewals=${eventTypeCounts.renewal}, Refunds=${eventTypeCounts.refund}`);
   console.log(`[Stripe] Revenue events summary - Total: ${revenueEvents.length}, Invoices with subscription: ${invoicesWithSubscription}, Paid invoices: ${invoicesPaid}`);
+  console.log(`[Stripe] PROCEEDS DEBUG: invoicesWithChargeField=${invoicesWithChargeField}, invoicesWithPaymentIntent=${invoicesWithPaymentIntent}, invoicesWithProceeds=${invoicesWithProceeds}, chargeRetrievalErrors=${chargeRetrievalErrors}, piRetrievalErrors=${paymentIntentRetrievalErrors}, noPaymentPath=${invoicesWithNoPaymentPath}, balanceTxIsString=${balanceTxIsString}`);
 
   // Fetch refunds/credit notes
   const refundParams: any = { limit: 100 };

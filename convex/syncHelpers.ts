@@ -1,36 +1,37 @@
 import { v } from "convex/values";
 import { mutation, query, internalQuery, internalMutation } from "./_generated/server";
 import { api, internal } from "./_generated/api";
-import { getAuthUserId } from "./auth";
+import { fetchExchangeRatesToUSD } from "./lib/exchangeRates";
+import { getUserId, requireUserId, validateAppOwnership } from "./lib/authHelpers";
+import { parseCredentials } from "./lib/safeJson";
+import { GenericQueryCtx } from "convex/server";
+import { DataModel } from "./_generated/dataModel";
 
-async function getUserId(ctx: any) {
-  const userId = await getAuthUserId(ctx);
-  return userId || null;
-}
+type QueryCtx = GenericQueryCtx<DataModel>;
 
 // Helper to check if exchange rate exists for a currency
-async function hasExchangeRate(ctx: any, currency: string): Promise<boolean> {
+async function hasExchangeRate(ctx: QueryCtx, currency: string): Promise<boolean> {
   const targetCurrency = currency.toUpperCase();
-  
+
   // USD always has rates (base currency)
   if (targetCurrency === "USD") return true;
-  
+
   // Check if USD -> targetCurrency exists
   const directRate = await ctx.db
     .query("exchangeRates")
-    .withIndex("by_pair", (q: any) => q.eq("fromCurrency", "USD").eq("toCurrency", targetCurrency))
+    .withIndex("by_pair", (q) => q.eq("fromCurrency", "USD").eq("toCurrency", targetCurrency))
     .order("desc")
     .first();
-  
+
   if (directRate) return true;
-  
+
   // Check if targetCurrency -> USD exists (inverse)
   const inverseRate = await ctx.db
     .query("exchangeRates")
-    .withIndex("by_pair", (q: any) => q.eq("fromCurrency", targetCurrency).eq("toCurrency", "USD"))
+    .withIndex("by_pair", (q) => q.eq("fromCurrency", targetCurrency).eq("toCurrency", "USD"))
     .order("desc")
     .first();
-  
+
   return !!inverseRate;
 }
 
@@ -41,14 +42,8 @@ export const triggerSync = mutation({
     platform: v.optional(v.union(v.literal("stripe"), v.literal("googleplay"), v.literal("appstore"))),
   },
   handler: async (ctx, { appId, forceHistorical, platform }) => {
-    const userId = await getUserId(ctx);
-    if (!userId) throw new Error("Not authenticated");
-
-    // Validate app ownership
-    const app = await ctx.db.get(appId);
-    if (!app || app.userId !== userId) {
-      throw new Error("Not authorized");
-    }
+    // Validate authentication and app ownership
+    const app = await validateAppOwnership(ctx, appId);
 
     // Check if exchange rates exist for the app's currency
     const appCurrency = app.currency || "USD";
@@ -71,8 +66,7 @@ export const triggerSync = mutation({
 export const triggerExchangeRatesFetch = mutation({
   args: {},
   handler: async (ctx) => {
-    const userId = await getUserId(ctx);
-    if (!userId) throw new Error("Not authenticated");
+    await requireUserId(ctx);
 
     await ctx.scheduler.runAfter(0, api.crons.fetchExchangeRates, {});
 
@@ -83,14 +77,7 @@ export const triggerExchangeRatesFetch = mutation({
 export const resetConnectionSyncs = mutation({
   args: { appId: v.id("apps") },
   handler: async (ctx, { appId }) => {
-    const userId = await getUserId(ctx);
-    if (!userId) throw new Error("Not authenticated");
-
-    // Validate app ownership
-    const app = await ctx.db.get(appId);
-    if (!app || app.userId !== userId) {
-      throw new Error("Not authorized");
-    }
+    await validateAppOwnership(ctx, appId);
 
     const connections = await ctx.db
       .query("platformConnections")
@@ -129,18 +116,28 @@ export const updateLastSync = internalMutation({
   },
 });
 
+// Valid log levels for sync operations
+const LOG_LEVELS = ["info", "success", "error", "warn", "debug"] as const;
+type LogLevel = typeof LOG_LEVELS[number];
+
 export const appendSyncLog = internalMutation({
   args: {
     appId: v.id("apps"),
     message: v.string(),
-    level: v.optional(v.string()),
+    level: v.optional(v.union(
+      v.literal("info"),
+      v.literal("success"),
+      v.literal("error"),
+      v.literal("warn"),
+      v.literal("debug")
+    )),
   },
   handler: async (ctx, { appId, message, level }) => {
     await ctx.db.insert("syncLogs", {
       appId,
       timestamp: Date.now(),
       message,
-      level,
+      level: level ?? "info",
     });
   },
 });
@@ -233,23 +230,25 @@ export const startSync = internalMutation({
     appId: v.id("apps"),
   },
   handler: async (ctx, { appId }) => {
-    // Cancel any existing active syncs
-    const existingSync = await ctx.db
+    // Cancel ALL existing active syncs for this app (not just first)
+    // This prevents race conditions where multiple syncs could be active
+    const existingSyncs = await ctx.db
       .query("syncStatus")
       .withIndex("by_app_status", (q) => q.eq("appId", appId).eq("status", "active"))
-      .first();
-    
-    if (existingSync) {
+      .collect();
+
+    for (const existingSync of existingSyncs) {
       await ctx.db.patch(existingSync._id, { status: "cancelled" });
     }
-    
-    // Create new sync status
+
+    // Create new sync status atomically
+    // Convex mutations are atomic, so this entire handler executes as one transaction
     const syncId = await ctx.db.insert("syncStatus", {
       appId,
       startedAt: Date.now(),
       status: "active",
     });
-    
+
     return syncId;
   },
 });
@@ -279,26 +278,19 @@ export const cancelSync = mutation({
     appId: v.id("apps"),
   },
   handler: async (ctx, { appId }) => {
-    const userId = await getUserId(ctx);
-    if (!userId) throw new Error("Not authenticated");
-
-    // Validate app ownership
-    const app = await ctx.db.get(appId);
-    if (!app || app.userId !== userId) {
-      throw new Error("Not authorized");
-    }
+    await validateAppOwnership(ctx, appId);
 
     // Find active sync and cancel it
     const activeSync = await ctx.db
       .query("syncStatus")
       .withIndex("by_app_status", (q) => q.eq("appId", appId).eq("status", "active"))
       .first();
-    
+
     if (activeSync) {
       await ctx.db.patch(activeSync._id, { status: "cancelled" });
       return { success: true };
     }
-    
+
     return { success: false, message: "No active sync to cancel" };
   },
 });
@@ -308,20 +300,13 @@ export const getActiveSyncStatus = query({
     appId: v.id("apps"),
   },
   handler: async (ctx, { appId }) => {
-    const userId = await getUserId(ctx);
-    if (!userId) throw new Error("Not authenticated");
-
-    // Validate app ownership
-    const app = await ctx.db.get(appId);
-    if (!app || app.userId !== userId) {
-      throw new Error("Not authorized");
-    }
+    await validateAppOwnership(ctx, appId);
 
     const activeSync = await ctx.db
       .query("syncStatus")
       .withIndex("by_app_status", (q) => q.eq("appId", appId).eq("status", "active"))
       .first();
-    
+
     return activeSync ? { active: true, syncId: activeSync._id, startedAt: activeSync.startedAt } : { active: false };
   },
 });
@@ -332,13 +317,7 @@ export const getGooglePlayCredentials = query({
     appId: v.id("apps"),
   },
   handler: async (ctx, { appId }) => {
-    const userId = await getUserId(ctx);
-    if (!userId) throw new Error("Not authenticated");
-
-    const app = await ctx.db.get(appId);
-    if (!app || app.userId !== userId) {
-      throw new Error("Not authorized");
-    }
+    await validateAppOwnership(ctx, appId);
 
     const connection = await ctx.db
       .query("platformConnections")
@@ -350,7 +329,11 @@ export const getGooglePlayCredentials = query({
       return null;
     }
 
-    const credentials = JSON.parse(connection.credentials);
+    const credentials = parseCredentials<{
+      gcsBucketName?: string;
+      gcsReportPrefix?: string;
+      packageName?: string;
+    }>(connection.credentials, "googleplay");
     return {
       gcsBucketName: credentials.gcsBucketName,
       gcsReportPrefix: credentials.gcsReportPrefix || "",
@@ -444,6 +427,14 @@ export const getActiveSyncProgress = internalQuery({
       .query("syncProgress")
       .withIndex("by_app_platform", (q) => q.eq("appId", appId).eq("platform", platform))
       .first();
+  },
+});
+
+// Fetch exchange rates for currency conversion in sync operations
+export const getExchangeRatesToUSD = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    return await fetchExchangeRatesToUSD(ctx);
   },
 });
 

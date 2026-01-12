@@ -61,11 +61,32 @@ export async function fetchAppStore(
 export const decodeAppStoreNotification = action({
   args: {
     signedPayload: v.string(),
+    bundleId: v.optional(v.string()),
+    appAppleId: v.optional(v.number()),
   },
-  handler: async (ctx, { signedPayload }) => {
-    const verifier = new SignedDataVerifier([], true, Environment.PRODUCTION, "");
-    const decoded = await verifier.verifyAndDecodeNotification(signedPayload);
-    return decoded as any;
+  handler: async (ctx, { signedPayload, bundleId, appAppleId }) => {
+    // SignedDataVerifier constructor:
+    // - appleRootCAs: Empty array means it will fetch Apple's root CAs online
+    // - enableOnlineChecks: true enables OCSP checks and fetching root CAs
+    // - environment: PRODUCTION for live app notifications
+    // - bundleId: Required for validation (use empty string if unknown, will be extracted from payload)
+    // - appAppleId: Optional app ID for additional validation
+    const verifier = new SignedDataVerifier(
+      [], // Empty array - will fetch Apple root CAs via online checks
+      true, // Enable online checks (fetches Apple root CAs and OCSP validation)
+      Environment.PRODUCTION,
+      bundleId || "", // Bundle ID for validation (can be empty, extracted from payload)
+      appAppleId // Optional: App Apple ID for additional validation
+    );
+
+    try {
+      const decoded = await verifier.verifyAndDecodeNotification(signedPayload);
+      return decoded;
+    } catch (error) {
+      // Log verification errors for debugging
+      console.error("[App Store] Notification verification failed:", error);
+      throw new Error(`App Store notification verification failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   },
 });
 

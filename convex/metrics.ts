@@ -70,6 +70,126 @@ function calculateMRR(monthlyRevenue: number, yearlyRevenue: number): number {
   return Math.round((monthlyRevenue + yearlyRevenue / 12 + Number.EPSILON) * 100) / 100;
 }
 
+// Delete a batch of revenue events for a platform (call multiple times until done)
+export const deleteRevenueEventsForPlatform = internalMutation({
+  args: {
+    appId: v.id("apps"),
+    platform: v.union(
+      v.literal("appstore"),
+      v.literal("googleplay"),
+      v.literal("stripe")
+    ),
+    maxToDelete: v.optional(v.number()), // Max to delete in this call (default 500)
+  },
+  handler: async (ctx, { appId, platform, maxToDelete = 500 }) => {
+    // Delete up to maxToDelete events in this single mutation
+    const batch = await ctx.db
+      .query("revenueEvents")
+      .withIndex("by_app_platform", (q) => q.eq("appId", appId).eq("platform", platform))
+      .take(maxToDelete);
+    
+    for (const event of batch) {
+      await ctx.db.delete(event._id);
+    }
+    
+    console.log(`[Cleanup ${platform}] Deleted ${batch.length} revenue events`);
+    return { deleted: batch.length, hasMore: batch.length === maxToDelete };
+  },
+});
+
+// Batch mutation for storing revenue events (to avoid 16MB read limit)
+export const storeRevenueEventsBatch = internalMutation({
+  args: {
+    appId: v.id("apps"),
+    platform: v.union(
+      v.literal("appstore"),
+      v.literal("googleplay"),
+      v.literal("stripe")
+    ),
+    events: v.array(
+      v.object({
+        subscriptionExternalId: v.string(),
+        eventType: v.union(
+          v.literal("first_payment"),
+          v.literal("renewal"),
+          v.literal("refund")
+        ),
+        amount: v.number(),
+        amountExcludingTax: v.optional(v.number()),
+        amountProceeds: v.optional(v.number()),
+        currency: v.string(),
+        country: v.optional(v.string()),
+        timestamp: v.number(),
+        externalId: v.optional(v.string()),
+      })
+    ),
+  },
+  handler: async (ctx, { appId, platform, events }) => {
+    if (events.length === 0) return { stored: 0, updated: 0, skipped: 0 };
+    
+    // Get subscriptions for mapping
+    const allSubs = await ctx.db
+      .query("subscriptions")
+      .withIndex("by_app_platform", (q) => q.eq("appId", appId).eq("platform", platform))
+      .collect();
+    const subMap = new Map(allSubs.map(s => [s.externalId, s]));
+    
+    // Find timestamp range for existing event query
+    let minTs = Infinity, maxTs = 0;
+    for (const e of events) {
+      if (e.timestamp < minTs) minTs = e.timestamp;
+      if (e.timestamp > maxTs) maxTs = e.timestamp;
+    }
+    
+    // Load existing events only in this batch's time range
+    const existing = await ctx.db
+      .query("revenueEvents")
+      .withIndex("by_app_platform_time", (q) => 
+        q.eq("appId", appId).eq("platform", platform).gte("timestamp", minTs).lte("timestamp", maxTs)
+      )
+      .collect();
+    
+    const existingMap = new Map<string, typeof existing[0]>();
+    for (const ev of existing) {
+      existingMap.set(`${ev.subscriptionId}|${ev.timestamp}|${ev.amount}`, ev);
+    }
+    
+    let stored = 0, updated = 0, skipped = 0;
+    
+    for (const event of events) {
+      const sub = subMap.get(event.subscriptionExternalId);
+      if (!sub) { skipped++; continue; }
+      
+      const key = `${sub._id}|${event.timestamp}|${event.amount}`;
+      const existingEvent = existingMap.get(key);
+      
+      if (!existingEvent) {
+        await ctx.db.insert("revenueEvents", {
+          appId,
+          platform,
+          subscriptionId: sub._id,
+          eventType: event.eventType,
+          amount: event.amount,
+          amountExcludingTax: event.amountExcludingTax,
+          amountProceeds: event.amountProceeds,
+          currency: event.currency,
+          country: event.country,
+          timestamp: event.timestamp,
+          externalId: event.externalId,
+        });
+        stored++;
+      } else if (event.amountProceeds != null && existingEvent.amountProceeds == null) {
+        await ctx.db.patch(existingEvent._id, { amountProceeds: event.amountProceeds });
+        updated++;
+      } else {
+        skipped++;
+      }
+    }
+    
+    return { stored, updated, skipped };
+  },
+});
+
 export const processAndStoreMetrics = internalMutation({
   args: {
     appId: v.id("apps"),
@@ -115,8 +235,9 @@ export const processAndStoreMetrics = internalMutation({
       })
     ),
     snapshotDate: v.optional(v.string()),
+    skipRevenueEventStorage: v.optional(v.boolean()), // Skip storing events (they'll be stored in batches separately)
   },
-  handler: async (ctx, { appId, platform, subscriptions, revenueEvents, snapshotDate }) => {
+  handler: async (ctx, { appId, platform, subscriptions, revenueEvents, snapshotDate, skipRevenueEventStorage }) => {
     const now = new Date();
     const today = snapshotDate || now.toISOString().split("T")[0];
 
@@ -179,47 +300,71 @@ export const processAndStoreMetrics = internalMutation({
       }
     }
     
-    // Store revenue events (with deduplication)
-    console.log(`[Metrics ${platform}] Storing ${revenueEvents.length} revenue events...`);
-    let revenueStored = 0;
-    let revenueSkippedDuplicate = 0;
-    let revenueSkippedNoSub = 0;
-    
-    console.log(`[Metrics ${platform}] Processing ${revenueEvents.length} revenue events from API`);
-    
-    // Sample first revenue event to debug
-    if (revenueEvents.length > 0) {
-      console.log(`[Metrics ${platform}] Sample revenue event: subscriptionExternalId="${revenueEvents[0].subscriptionExternalId}", eventType="${revenueEvents[0].eventType}", amount=${revenueEvents[0].amount}, timestamp=${revenueEvents[0].timestamp}`);
-    }
-    
-    // Get all subscriptions for this user/platform
-    const allSubs = await ctx.db
-      .query("subscriptions")
-      .withIndex("by_app_platform", (q) => q.eq("appId", appId).eq("platform", platform))
-      .collect();
-    console.log(`[Metrics ${platform}] Found ${allSubs.length} subscriptions in database for matching`);
+    // Store revenue events (with deduplication) - SKIP if handled separately in batches
+    if (!skipRevenueEventStorage) {
+      console.log(`[Metrics ${platform}] Storing ${revenueEvents.length} revenue events...`);
+      let revenueStored = 0;
+      let revenueSkippedDuplicate = 0;
+      let revenueSkippedNoSub = 0;
+      
+      console.log(`[Metrics ${platform}] Processing ${revenueEvents.length} revenue events from API`);
+      
+      // Sample first revenue event to debug
+      if (revenueEvents.length > 0) {
+        console.log(`[Metrics ${platform}] Sample revenue event: subscriptionExternalId="${revenueEvents[0].subscriptionExternalId}", eventType="${revenueEvents[0].eventType}", amount=${revenueEvents[0].amount}, timestamp=${revenueEvents[0].timestamp}`);
+      }
+      
+      // Get all subscriptions for this user/platform
+      const allSubs = await ctx.db
+        .query("subscriptions")
+        .withIndex("by_app_platform", (q) => q.eq("appId", appId).eq("platform", platform))
+        .collect();
+      console.log(`[Metrics ${platform}] Found ${allSubs.length} subscriptions in database for matching`);
     
     // Create a map of externalId -> subscription for fast lookup
     const subMap = new Map(allSubs.map(s => [s.externalId, s]));
     
-    // Process revenue events with per-event deduplication to avoid 16MB read limit
+    // Find timestamp range of incoming events to limit the query
+    let minTimestamp = Infinity;
+    let maxTimestamp = 0;
+    for (const event of revenueEvents) {
+      if (event.timestamp < minTimestamp) minTimestamp = event.timestamp;
+      if (event.timestamp > maxTimestamp) maxTimestamp = event.timestamp;
+    }
+    
+    // Only load existing events in the relevant time range (not ALL events)
+    // This avoids the 16MB read limit for historical syncs
+    const existingEvents = minTimestamp !== Infinity
+      ? await ctx.db
+          .query("revenueEvents")
+          .withIndex("by_app_platform_time", (q) => 
+            q.eq("appId", appId).eq("platform", platform).gte("timestamp", minTimestamp).lte("timestamp", maxTimestamp)
+          )
+          .collect()
+      : [];
+    
+    // Create dedup map: key = "subscriptionId|timestamp|amount" -> event
+    const existingEventMap = new Map<string, typeof existingEvents[0]>();
+    for (const ev of existingEvents) {
+      const key = `${ev.subscriptionId}|${ev.timestamp}|${ev.amount}`;
+      existingEventMap.set(key, ev);
+    }
+    console.log(`[Metrics ${platform}] Loaded ${existingEvents.length} existing events for time range ${new Date(minTimestamp).toISOString()} - ${new Date(maxTimestamp).toISOString()}`);
+    
+    // Count how many existing events are missing amountProceeds
+    const existingWithoutProceeds = Array.from(existingEventMap.values()).filter(e => e.amountProceeds == null).length;
+    const incomingWithProceeds = revenueEvents.filter(e => e.amountProceeds != null).length;
+    console.log(`[Metrics ${platform}] PROCEEDS UPDATE CHECK: ${existingWithoutProceeds}/${existingEvents.length} existing events missing proceeds, ${incomingWithProceeds}/${revenueEvents.length} incoming have proceeds`);
+    
+    let proceedsUpdated = 0;
+    
+    // Process revenue events using in-memory deduplication
     for (const event of revenueEvents) {
       const sub = subMap.get(event.subscriptionExternalId);
       
       if (sub) {
-        // Check for duplicate by querying per-event (avoids loading all events into memory)
-        const existingEvent = await ctx.db
-          .query("revenueEvents")
-          .withIndex("by_app_platform_time", (q) => 
-            q.eq("appId", appId).eq("platform", platform).eq("timestamp", event.timestamp)
-          )
-          .filter((q) => 
-            q.and(
-              q.eq(q.field("subscriptionId"), sub._id),
-              q.eq(q.field("amount"), event.amount)
-            )
-          )
-          .first();
+        const key = `${sub._id}|${event.timestamp}|${event.amount}`;
+        const existingEvent = existingEventMap.get(key);
         
         if (!existingEvent) {
           // Extract externalId from rawData if not provided (backward compat)
@@ -247,10 +392,12 @@ export const processAndStoreMetrics = internalMutation({
           revenueStored++;
         } else {
           // Update existing event if it's missing amountProceeds but new one has it
-          if (event.amountProceeds !== undefined && existingEvent.amountProceeds === undefined) {
+          // Use == null to catch both undefined AND null
+          if (event.amountProceeds != null && existingEvent.amountProceeds == null) {
             await ctx.db.patch(existingEvent._id, {
               amountProceeds: event.amountProceeds,
             });
+            proceedsUpdated++;
             revenueStored++; // Count as stored since we updated it
           } else {
             revenueSkippedDuplicate++;
@@ -263,7 +410,10 @@ export const processAndStoreMetrics = internalMutation({
         }
       }
     }
-    console.log(`[Metrics ${platform}] Revenue events: ${revenueStored} stored, ${revenueSkippedDuplicate} duplicates skipped, ${revenueSkippedNoSub} skipped (no subscription found)`);
+      console.log(`[Metrics ${platform}] Revenue events: ${revenueStored} stored (${proceedsUpdated} proceeds updated), ${revenueSkippedDuplicate} duplicates skipped, ${revenueSkippedNoSub} skipped (no subscription found)`);
+    } else {
+      console.log(`[Metrics ${platform}] Skipping revenue event storage (handled in batches)`);
+    }
     
     const thirtyDaysAgo = now.getTime() - 30 * 24 * 60 * 60 * 1000;
 
@@ -354,8 +504,22 @@ export const processAndStoreMetrics = internalMutation({
     }
     
     if (todayRevenue.length > 0) {
-      console.log(`[Metrics ${platform}] Sample revenue event: ${JSON.stringify(todayRevenue[0])}`);
+      // Debug: Show full sample event including amountProceeds
+      const sample = todayRevenue[0];
+      console.log(`[Metrics ${platform}] Sample revenue event: amount=${sample.amount}, amountProceeds=${sample.amountProceeds}, amountExcludingTax=${sample.amountExcludingTax}, currency=${sample.currency}`);
+      
+      // Count how many events have proceeds defined
+      const eventsWithProceeds = todayRevenue.filter(e => e.amountProceeds !== undefined && e.amountProceeds !== null).length;
+      console.log(`[Metrics ${platform}] PROCEEDS CHECK: ${eventsWithProceeds}/${todayRevenue.length} events have amountProceeds defined`);
+      
+      // Show a few sample amountProceeds values
+      const proceedsSamples = todayRevenue.slice(0, 3).map(e => `${e.amount}→${e.amountProceeds}`);
+      console.log(`[Metrics ${platform}] PROCEEDS SAMPLES: ${proceedsSamples.join(', ')}`);
     }
+    
+    // Also check ALL revenue events passed from API (not just today's)
+    const allEventsWithProceeds = revenueEvents.filter(e => e.amountProceeds !== undefined && e.amountProceeds !== null).length;
+    console.log(`[Metrics ${platform}] ALL EVENTS PROCEEDS: ${allEventsWithProceeds}/${revenueEvents.length} have amountProceeds from API`);
     
     for (const e of todayRevenue) {
       // Charged Revenue = amount (including VAT)
@@ -378,8 +542,18 @@ export const processAndStoreMetrics = internalMutation({
       }
       const convertedRevenue = await convertAndRoundCurrency(ctx, amountExclTax, e.currency, userCurrency);
       
-      // Proceeds = amount after platform fees (from amountProceeds if available)
-      const amountProceedsValue = e.amountProceeds ?? e.amount; // Fallback to amount if no proceeds
+      // Proceeds = Stripe's net amount (after fees) MINUS VAT
+      // Stripe's balance_transaction.net = Charged - Stripe fee (but still includes VAT)
+      // Correct Proceeds = amountProceeds - VAT = amountProceeds - (amount - amountExcludingTax)
+      const vatAmount = e.amount - amountExclTax;
+      let amountProceedsValue: number;
+      if (e.amountProceeds != null) {
+        // Stripe net minus VAT = true proceeds
+        amountProceedsValue = e.amountProceeds - vatAmount;
+      } else {
+        // No Stripe proceeds data - estimate as revenue minus ~3% fee
+        amountProceedsValue = amountExclTax * 0.97;
+      }
       const convertedProceeds = await convertAndRoundCurrency(ctx, amountProceedsValue, e.currency, userCurrency);
       
       // Determine plan type from subscription
@@ -598,7 +772,17 @@ export const generateHistoricalSnapshots = internalMutation({
       )
       .collect();
     
-    console.log(`[Historical ${platform}] Found ${subs.length} subscriptions and ${revenue.length} revenue events for date range`)
+    // Debug: count how many events have amountProceeds set vs falling back to amount
+    const eventsWithProceeds = revenue.filter(e => e.amountProceeds != null).length;
+    console.log(`[Historical ${platform}] Found ${subs.length} subscriptions and ${revenue.length} revenue events for date range`);
+    console.log(`[Historical ${platform}] PROCEEDS IN DB: ${eventsWithProceeds}/${revenue.length} events have amountProceeds set`);
+    if (revenue.length > 0 && eventsWithProceeds < revenue.length) {
+      // Show sample of events WITHOUT proceeds
+      const withoutProceeds = revenue.filter(e => e.amountProceeds == null).slice(0, 3);
+      for (const e of withoutProceeds) {
+        console.log(`[Historical ${platform}] Event WITHOUT proceeds: id=${e.externalId}, amount=${e.amount}, timestamp=${new Date(e.timestamp).toISOString()}`);
+      }
+    }
 
     let daysProcessed = 0;
     let lastProcessedDate: string | null = null;
@@ -694,8 +878,14 @@ export const generateHistoricalSnapshots = internalMutation({
         }
         const convertedRevenue = await convertAndRoundCurrency(ctx, amountExclTax, e.currency, userCurrency, yearMonth);
         
-        // Proceeds = amount after platform fees
-        const amountProceedsValue = e.amountProceeds ?? e.amount;
+        // Proceeds = Stripe's net (after fees) MINUS VAT
+        const vatAmount = e.amount - amountExclTax;
+        let amountProceedsValue: number;
+        if (e.amountProceeds != null) {
+          amountProceedsValue = e.amountProceeds - vatAmount;
+        } else {
+          amountProceedsValue = amountExclTax * 0.97;
+        }
         const convertedProceeds = await convertAndRoundCurrency(ctx, amountProceedsValue, e.currency, userCurrency, yearMonth);
         
         // Determine plan type from subscription
@@ -1865,9 +2055,10 @@ export const processGooglePlayReports = internalMutation({
     appId: v.id("apps"),
     revenueByDate: v.any(), // Record<string, { gross: number; net: number; transactions: number }>
     subscriptionMetricsByDate: v.any(), // Record<string, { active, trial, paid, monthly, yearly, newSubscriptions, canceledSubscriptions, renewals }>
+    refundsByDate: v.optional(v.any()), // Record<string, number> - count of refunds per date
     discoveredReportTypes: v.array(v.string()),
   },
-  handler: async (ctx, { appId, revenueByDate, subscriptionMetricsByDate, discoveredReportTypes }) => {
+  handler: async (ctx, { appId, revenueByDate, subscriptionMetricsByDate, refundsByDate, discoveredReportTypes }) => {
     const app = await ctx.db.get(appId);
     const userCurrency = app?.currency || "USD";
 
@@ -2045,7 +2236,7 @@ export const processGooglePlayReports = internalMutation({
         paybacks: 0,
         firstPayments: newSubscriptions,
         renewals,
-        refunds: 0, // Google Play refunds are reflected in revenue adjustments, not as separate events
+        refunds: refundsByDate?.[date] || 0, // From financial reports
         mrr,
         // Revenue metrics - from financial reports
         weeklyChargedRevenue,

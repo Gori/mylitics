@@ -1,35 +1,12 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
-import { getAuthUserId } from "./auth";
-
-// Helper to get current authenticated user ID
-async function getUserId(ctx: any) {
-  const userId = await getAuthUserId(ctx);
-  if (!userId) throw new Error("Not authenticated");
-  return userId;
-}
-
-// Helper to validate app ownership
-async function validateAppOwnership(ctx: any, appId: string) {
-  const userId = await getUserId(ctx);
-  const app = await ctx.db.get(appId);
-  
-  if (!app) {
-    throw new Error("App not found");
-  }
-  
-  if (app.userId !== userId) {
-    throw new Error("Not authorized to access this app");
-  }
-  
-  return app;
-}
+import { requireUserId, validateAppOwnership } from "./lib/authHelpers";
 
 // Get all apps for the current user
 export const getUserApps = query({
   args: {},
   handler: async (ctx) => {
-    const userId = await getUserId(ctx);
+    const userId = await requireUserId(ctx);
     
     const apps = await ctx.db
       .query("apps")
@@ -44,7 +21,7 @@ export const getUserApps = query({
 export const getAppBySlug = query({
   args: { slug: v.string() },
   handler: async (ctx, { slug }) => {
-    const userId = await getUserId(ctx);
+    const userId = await requireUserId(ctx);
     
     const app = await ctx.db
       .query("apps")
@@ -76,7 +53,7 @@ export const createApp = mutation({
     currency: v.optional(v.string()),
   },
   handler: async (ctx, { name, slug, currency }) => {
-    const userId = await getUserId(ctx);
+    const userId = await requireUserId(ctx);
     
     // Validate slug is unique for this user
     const existing = await ctx.db
@@ -131,11 +108,13 @@ export const updateApp = mutation({
 });
 
 // Delete an app and all its associated data
+// Note: For apps with large amounts of data, consider using a background job
+// to avoid mutation timeout limits. Current implementation is suitable for typical apps.
 export const deleteApp = mutation({
   args: { appId: v.id("apps") },
   handler: async (ctx, { appId }) => {
     await validateAppOwnership(ctx, appId);
-    
+
     // Delete all platform connections
     const connections = await ctx.db
       .query("platformConnections")

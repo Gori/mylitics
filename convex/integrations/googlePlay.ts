@@ -5,6 +5,8 @@ import { v } from "convex/values";
 import { Storage } from "@google-cloud/storage";
 import { google } from "googleapis";
 import AdmZip from "adm-zip";
+import { getToUsdRate, FALLBACK_RATES_TO_USD } from "../lib/exchangeRates";
+import { parseCredentials } from "../lib/safeJson";
 
 // Types for different report data
 type RevenueData = {
@@ -32,6 +34,8 @@ interface ParsedReport {
   fileName: string;
   revenueByDate?: Record<string, RevenueData>;
   subscriptionMetricsByDate?: Record<string, SubscriptionMetrics>;
+  renewalsByDate?: Record<string, number>;
+  refundsByDate?: Record<string, number>;
 }
 
 // Helper: Detect and decode CSV encoding (UTF-8 vs UTF-16)
@@ -79,15 +83,17 @@ export const fetchGooglePlayData = action({
     gcsReportPrefix: v.optional(v.string()),
     startDate: v.optional(v.number()),
     endDate: v.optional(v.number()),
+    exchangeRates: v.optional(v.record(v.string(), v.number())),
   },
-  handler: async (ctx, { serviceAccountJson, packageName, gcsBucketName, gcsReportPrefix, startDate, endDate }) => {
+  handler: async (ctx, { serviceAccountJson, packageName, gcsBucketName, gcsReportPrefix, startDate, endDate, exchangeRates }) => {
     return await fetchGooglePlayFromGCS(
       serviceAccountJson,
       packageName,
       gcsBucketName,
       gcsReportPrefix || "",
       startDate,
-      endDate
+      endDate,
+      exchangeRates || FALLBACK_RATES_TO_USD
     );
   },
 });
@@ -98,14 +104,16 @@ export async function fetchGooglePlayFromGCS(
   gcsBucketName: string,
   gcsReportPrefix: string,
   startDate?: number,
-  endDate?: number
+  endDate?: number,
+  exchangeRates: Record<string, number> = FALLBACK_RATES_TO_USD
 ) {
-  const credentials = JSON.parse(serviceAccountJson);
+  const credentials = parseCredentials(serviceAccountJson, "googleplay service account");
   const storage = new Storage({ credentials });
 
   // Aggregated results
   const revenueByDate: Record<string, RevenueData> = {};
   const subscriptionMetricsByDate: Record<string, SubscriptionMetrics> = {};
+  const refundsByDate: Record<string, number> = {};
   const discoveredReportTypes: Set<ReportType> = new Set();
 
   // Track revenue by source for debugging duplicate counting
@@ -170,7 +178,7 @@ export async function fetchGooglePlayFromGCS(
 
     if (csvFiles.length === 0 && zipFiles.length === 0) {
       console.warn(`[Google Play GCS] No reports found for ${packageName}`);
-      return { revenueByDate, subscriptionMetricsByDate, discoveredReportTypes: Array.from(discoveredReportTypes) };
+      return { revenueByDate, subscriptionMetricsByDate, refundsByDate, discoveredReportTypes: Array.from(discoveredReportTypes) };
     }
 
     // Log breakdown of file types found
@@ -261,7 +269,7 @@ export async function fetchGooglePlayFromGCS(
         const [contents] = await file.download();
         const csvContent = detectAndDecodeCSV(contents);
         
-        const parsed = await parseFinancialReportCSV(csvContent, file.name, startDate, endDate);
+        const parsed = await parseFinancialReportCSV(csvContent, file.name, startDate, endDate, exchangeRates);
         if (parsed && parsed.revenueByDate) {
           parsedReports.push(parsed);
           discoveredReportTypes.add(parsed.type);
@@ -313,7 +321,7 @@ export async function fetchGooglePlayFromGCS(
               const csvBuffer = entry.getData();
               const csvContent = detectAndDecodeCSV(csvBuffer);
               
-              const parsed = await parseFinancialReportCSV(csvContent, `${file.name}/${entry.entryName}`, startDate, endDate);
+              const parsed = await parseFinancialReportCSV(csvContent, `${file.name}/${entry.entryName}`, startDate, endDate, exchangeRates);
               if (parsed && parsed.revenueByDate) {
                 parsedReports.push(parsed);
                 discoveredReportTypes.add("financial");
@@ -452,6 +460,16 @@ export async function fetchGooglePlayFromGCS(
           subscriptionMetricsByDate[date].renewals += metrics.renewals;
         }
       }
+
+      // Merge refunds data
+      if (report.refundsByDate) {
+        for (const [date, count] of Object.entries(report.refundsByDate)) {
+          if (!refundsByDate[date]) {
+            refundsByDate[date] = 0;
+          }
+          refundsByDate[date] += count as number;
+        }
+      }
     }
 
     // Phase 5: Log summary
@@ -498,11 +516,18 @@ export async function fetchGooglePlayFromGCS(
         console.log(`[Google Play Summary] Latest subs (${latestDate}): Active=${latest.active}, Trial=${latest.trial}, Paid=${latest.paid}`);
       }
     }
+
+    // Log refunds summary
+    const totalRefunds = Object.values(refundsByDate).reduce((sum, count) => sum + count, 0);
+    const datesWithRefunds = Object.keys(refundsByDate).length;
+    console.log(`[Google Play Summary] Refunds: ${totalRefunds} total across ${datesWithRefunds} dates`);
+    
     console.log(`[Google Play Summary] ========================================`);
 
     return { 
       revenueByDate, 
       subscriptionMetricsByDate, 
+      refundsByDate,
       discoveredReportTypes: Array.from(discoveredReportTypes) 
     };
   } catch (error) {
@@ -642,7 +667,8 @@ async function parseFinancialReportCSV(
   csvContent: string,
   fileName: string,
   startDate?: number,
-  endDate?: number
+  endDate?: number,
+  exchangeRates: Record<string, number> = FALLBACK_RATES_TO_USD
 ): Promise<ParsedReport | null> {
   const revenueByDate: Record<string, RevenueData> = {};
   const renewalsByDate: Record<string, number> = {};
@@ -838,66 +864,11 @@ async function parseFinancialReportCSV(
       const effectiveCurrency = isSalesFile ? currency : merchantCurrency;
       
       if (effectiveCurrency !== 'USD' && effectiveCurrency !== 'UNKNOWN') {
-        // Approximate exchange rates to USD (updated December 2024)
-        // Source: approximate mid-market rates
-        const toUsdRates: Record<string, number> = {
-          // Nordic currencies
-          'NOK': 0.088,  // Norwegian Krone
-          'SEK': 0.091,  // Swedish Krona
-          'DKK': 0.14,   // Danish Krone
-          'ISK': 0.0071, // Icelandic Króna
-          // European currencies
-          'EUR': 1.05,   // Euro
-          'GBP': 1.26,   // British Pound
-          'CHF': 1.12,   // Swiss Franc
-          'PLN': 0.24,   // Polish Złoty
-          'CZK': 0.042,  // Czech Koruna
-          'HUF': 0.0026, // Hungarian Forint
-          'RON': 0.21,   // Romanian Leu
-          'BGN': 0.54,   // Bulgarian Lev
-          'HRK': 0.14,   // Croatian Kuna
-          'TRY': 0.029,  // Turkish Lira
-          'RUB': 0.010,  // Russian Ruble
-          'UAH': 0.024,  // Ukrainian Hryvnia
-          // Americas
-          'CAD': 0.71,   // Canadian Dollar
-          'MXN': 0.049,  // Mexican Peso
-          'BRL': 0.16,   // Brazilian Real
-          'ARS': 0.001,  // Argentine Peso
-          'CLP': 0.001,  // Chilean Peso
-          'COP': 0.00023,// Colombian Peso
-          'PEN': 0.26,   // Peruvian Sol
-          // Asia-Pacific
-          'JPY': 0.0066, // Japanese Yen
-          'CNY': 0.14,   // Chinese Yuan
-          'HKD': 0.13,   // Hong Kong Dollar
-          'TWD': 0.031,  // Taiwan Dollar
-          'KRW': 0.00071,// South Korean Won
-          'INR': 0.012,  // Indian Rupee
-          'IDR': 0.000063,// Indonesian Rupiah
-          'MYR': 0.22,   // Malaysian Ringgit
-          'SGD': 0.74,   // Singapore Dollar
-          'THB': 0.029,  // Thai Baht
-          'PHP': 0.017,  // Philippine Peso
-          'VND': 0.000040,// Vietnamese Dong
-          'PKR': 0.0036, // Pakistani Rupee
-          'BDT': 0.0083, // Bangladeshi Taka
-          // Oceania
-          'AUD': 0.64,   // Australian Dollar
-          'NZD': 0.58,   // New Zealand Dollar
-          // Middle East & Africa
-          'AED': 0.27,   // UAE Dirham
-          'SAR': 0.27,   // Saudi Riyal
-          'ILS': 0.27,   // Israeli Shekel
-          'ZAR': 0.055,  // South African Rand
-          'EGP': 0.020,  // Egyptian Pound
-          'NGN': 0.00062,// Nigerian Naira
-          'KES': 0.0077, // Kenyan Shilling
-        };
-        const rate = toUsdRates[effectiveCurrency] || 0.1; // Default fallback for unknown currencies
+        // Use dynamic exchange rates from database, with fallback to hardcoded rates
+        const rate = getToUsdRate(effectiveCurrency, exchangeRates);
         gross = gross * rate;
         net = net * rate;
-        proceeds = proceeds * rate; // Also convert proceeds for earnings files
+        proceeds = proceeds * rate;
       }
 
       // Get transaction type for renewal/refund detection
@@ -1031,6 +1002,8 @@ async function parseFinancialReportCSV(
       type: "financial",
       fileName,
       revenueByDate,
+      renewalsByDate,
+      refundsByDate,
     };
   } catch (error) {
     console.error(`[Google Play Financial CSV] Error parsing ${fileName}:`, error);
@@ -1043,21 +1016,22 @@ async function parseUnknownReportCSV(
   csvContent: string,
   fileName: string,
   startDate?: number,
-  endDate?: number
+  endDate?: number,
+  exchangeRates: Record<string, number> = FALLBACK_RATES_TO_USD
 ): Promise<ParsedReport | null> {
   try {
     const lines = csvContent.trim().split(/\r?\n/);
     if (lines.length < 2) return null;
 
     const headers = lines[0].split(',').map(h => h.trim().toLowerCase().replace(/"/g, ''));
-    
+
     // Check if it looks like a subscription report
-    const hasSubscriptionColumns = headers.some(h => 
+    const hasSubscriptionColumns = headers.some(h =>
       h.includes('subscription') || h.includes('active') || h.includes('subscriber')
     );
 
     // Check if it looks like a financial report
-    const hasFinancialColumns = headers.some(h => 
+    const hasFinancialColumns = headers.some(h =>
       h.includes('earning') || h.includes('revenue') || h.includes('proceeds') || h.includes('amount')
     );
 
@@ -1066,7 +1040,7 @@ async function parseUnknownReportCSV(
     if (hasSubscriptionColumns) {
       return await parseSubscriptionReportCSV(csvContent, fileName, startDate, endDate);
     } else if (hasFinancialColumns) {
-      return await parseFinancialReportCSV(csvContent, fileName, startDate, endDate);
+      return await parseFinancialReportCSV(csvContent, fileName, startDate, endDate, exchangeRates);
     }
 
     console.log(`[Google Play Unknown CSV] Could not determine type for ${fileName}`);

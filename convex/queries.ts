@@ -1,24 +1,8 @@
 import { query } from "./_generated/server";
 import { v } from "convex/values";
-import { getAuthUserId } from "./auth";
+import { getUserId, validateAppOwnership } from "./lib/authHelpers";
 
 const DEFAULT_REVENUE_FORMAT = "whole" as const;
-
-async function getUserId(ctx: any) {
-  const userId = await getAuthUserId(ctx);
-  return userId || null;
-}
-
-async function validateAppOwnership(ctx: any, appId: string) {
-  const userId = await getUserId(ctx);
-  if (!userId) throw new Error("Not authenticated");
-  
-  const app = await ctx.db.get(appId);
-  if (!app) throw new Error("App not found");
-  if (app.userId !== userId) throw new Error("Not authorized");
-  
-  return app;
-}
 
 function getWeekStart(date: Date, weekStartDay: "monday" | "sunday"): Date {
   const weekStart = new Date(date);
@@ -1231,15 +1215,9 @@ export const getLatestMetrics = query({
     }
     
     // Calculate Google Play plan split from App Store ratio if setting is enabled
-    console.log(`[Google Play Ratio] Setting enabled: ${useAppStoreRatioForGooglePlay}, GooglePlay in map: ${!!platformMap.googleplay}, AppStore in map: ${!!platformMap.appstore}`);
-    console.log(`[Google Play Ratio] Connected platforms: ${Array.from(activePlatforms).join(', ')}`);
-    
     if (useAppStoreRatioForGooglePlay && platformMap.googleplay && platformMap.appstore) {
       const appStore = platformMap.appstore;
       const googlePlay = platformMap.googleplay;
-      
-      console.log(`[Google Play Ratio] App Store plan split: monthly=${appStore.monthlyPlanChargedRevenue}, yearly=${appStore.yearlyPlanChargedRevenue}`);
-      console.log(`[Google Play Ratio] Google Play total revenue: monthlyCharged=${googlePlay.monthlyChargedRevenue}, monthlyRevenue=${googlePlay.monthlyRevenue}, monthlyProceeds=${googlePlay.monthlyProceeds}`);
       
       // DERIVE TRIAL/PAID SUBSCRIBERS FROM APP STORE RATIO
       // Google Play reports don't have separate trial counts, so we estimate from App Store's ratio
@@ -1248,14 +1226,10 @@ export const getLatestMetrics = query({
         const estimatedGoogleTrials = Math.round(googlePlay.activeSubscribers * appStoreTrialRatio);
         const estimatedGooglePaid = Math.max(0, googlePlay.activeSubscribers - estimatedGoogleTrials);
         
-        console.log(`[Google Play Trial Ratio] App Store: ${appStore.trialSubscribers}/${appStore.activeSubscribers} = ${(appStoreTrialRatio * 100).toFixed(1)}% trials`);
-        console.log(`[Google Play Trial Ratio] Google Play before: active=${googlePlay.activeSubscribers}, trial=${googlePlay.trialSubscribers}, paid=${googlePlay.paidSubscribers}`);
-        
         // Only override if Google Play has no trial data (trial = 0)
         if (googlePlay.trialSubscribers === 0 && estimatedGoogleTrials > 0) {
           platformMap.googleplay.trialSubscribers = estimatedGoogleTrials;
           platformMap.googleplay.paidSubscribers = estimatedGooglePaid;
-          console.log(`[Google Play Trial Ratio] Google Play after: trial=${estimatedGoogleTrials}, paid=${estimatedGooglePaid} (derived from App Store ratio)`);
         }
       }
       
@@ -1263,13 +1237,9 @@ export const getLatestMetrics = query({
       const appStoreTotal = appStore.monthlyPlanChargedRevenue + appStore.yearlyPlanChargedRevenue;
       const appStoreWeeklyTotal = appStore.weeklyPlanChargedRevenueMonthly + appStore.weeklyPlanChargedRevenueYearly;
       
-      console.log(`[Google Play Ratio] App Store totals: 30-day=${appStoreTotal}, 7-day=${appStoreWeeklyTotal}`);
-      
       if (appStoreTotal > 0) {
         const monthlyRatio = appStore.monthlyPlanChargedRevenue / appStoreTotal;
         const yearlyRatio = appStore.yearlyPlanChargedRevenue / appStoreTotal;
-        
-        console.log(`[Google Play Ratio] Calculated ratios: monthly=${(monthlyRatio * 100).toFixed(1)}%, yearly=${(yearlyRatio * 100).toFixed(1)}%`);
         
         // Apply ratio to Google Play revenue
         platformMap.googleplay.monthlyPlanChargedRevenue = Math.round((googlePlay.monthlyChargedRevenue * monthlyRatio + Number.EPSILON) * 100) / 100;
@@ -1278,8 +1248,6 @@ export const getLatestMetrics = query({
         platformMap.googleplay.yearlyPlanRevenue = Math.round((googlePlay.monthlyRevenue * yearlyRatio + Number.EPSILON) * 100) / 100;
         platformMap.googleplay.monthlyPlanProceeds = Math.round((googlePlay.monthlyProceeds * monthlyRatio + Number.EPSILON) * 100) / 100;
         platformMap.googleplay.yearlyPlanProceeds = Math.round((googlePlay.monthlyProceeds * yearlyRatio + Number.EPSILON) * 100) / 100;
-        
-        console.log(`[Google Play Ratio] Derived Google Play plan split: monthlyCharged=${platformMap.googleplay.monthlyPlanChargedRevenue}, yearlyCharged=${platformMap.googleplay.yearlyPlanChargedRevenue}`);
         
         // Apply ratio to subscribers
         const monthlySubsExisting = googlePlay.monthlySubscribers ?? 0;
@@ -1292,15 +1260,11 @@ export const getLatestMetrics = query({
           if (baseSubs === 0 && googlePlay.activeSubscribers > 0) {
             baseSubs = Math.max(0, googlePlay.activeSubscribers - (googlePlay.trialSubscribers || 0));
           }
-          console.log(`[Google Play Ratio] Subscriber base: paidSubs=${googlePlay.paidSubscribers}, activeSubs=${googlePlay.activeSubscribers}, trialSubs=${googlePlay.trialSubscribers}, baseSubs=${baseSubs}`);
           if (baseSubs > 0) {
             platformMap.googleplay.monthlySubscribers = Math.round(baseSubs * monthlyRatio);
             platformMap.googleplay.yearlySubscribers = Math.round(baseSubs * yearlyRatio);
-            console.log(`[Google Play Ratio] Derived subscriber split: monthly=${platformMap.googleplay.monthlySubscribers}, yearly=${platformMap.googleplay.yearlySubscribers}`);
           }
         }
-      } else {
-        console.log(`[Google Play Ratio] SKIPPED: App Store total is 0, no ratio to calculate`);
       }
       
       if (appStoreWeeklyTotal > 0) {
@@ -1314,8 +1278,6 @@ export const getLatestMetrics = query({
         platformMap.googleplay.weeklyPlanRevenueYearly = Math.round((googlePlay.weeklyRevenue * weeklyYearlyRatio + Number.EPSILON) * 100) / 100;
         platformMap.googleplay.weeklyPlanProceedsMonthly = Math.round((googlePlay.weeklyProceeds * weeklyMonthlyRatio + Number.EPSILON) * 100) / 100;
         platformMap.googleplay.weeklyPlanProceedsYearly = Math.round((googlePlay.weeklyProceeds * weeklyYearlyRatio + Number.EPSILON) * 100) / 100;
-        
-        console.log(`[Google Play Ratio] Derived weekly split: monthlyCharged=${platformMap.googleplay.weeklyPlanChargedRevenueMonthly}, yearlyCharged=${platformMap.googleplay.weeklyPlanChargedRevenueYearly}`);
       }
       
       // IMPROVED: Calculate Google Play MRR using subscriber counts × App Store average prices
@@ -1344,7 +1306,6 @@ export const getLatestMetrics = query({
           const yearlyRatio = appStore.yearlyPlanChargedRevenue / appStoreTotal;
           gpMonthlySubs = Math.round(baseSubs * monthlyRatio);
           gpYearlySubs = Math.round(baseSubs * yearlyRatio);
-          console.log(`[Google Play MRR] Derived subscriber split from ${baseSubs} paid subs: monthly=${gpMonthlySubs}, yearly=${gpYearlySubs}`);
         }
       }
       
@@ -1358,17 +1319,13 @@ export const getLatestMetrics = query({
         const asMRRPerSub = appStore.mrr / asPaidSubs;
         const derivedMRR = Math.round((gpPaidSubs * asMRRPerSub + Number.EPSILON) * 100) / 100;
         
-        console.log(`[Google Play MRR] Derived: ${gpPaidSubs} paid subs × ${asMRRPerSub.toFixed(2)} MRR/sub (from AS: ${appStore.mrr}/${asPaidSubs}) = ${derivedMRR.toFixed(2)}`);
         platformMap.googleplay.mrr = derivedMRR;
       } else if (googlePlay.monthlyRevenue > 0) {
         // Fallback: Use 30-day revenue as approximation
         // This is less accurate but better than 0
         const derivedMRR = Math.round((googlePlay.monthlyRevenue + Number.EPSILON) * 100) / 100;
-        console.log(`[Google Play MRR] Fallback: Using 30-day revenue ${derivedMRR.toFixed(2)} as MRR approximation`);
         platformMap.googleplay.mrr = derivedMRR;
       }
-    } else {
-      console.log(`[Google Play Ratio] SKIPPED: Condition not met - setting=${useAppStoreRatioForGooglePlay}, gp=${!!platformMap.googleplay}, as=${!!platformMap.appstore}`);
     }
     
     // FALLBACK: Always derive Google Play trial/paid from App Store ratio when GP has no trial data

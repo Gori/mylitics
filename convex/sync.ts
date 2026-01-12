@@ -7,6 +7,7 @@ import { Id } from "./_generated/dataModel";
 import { fetchStripe } from "./integrations/stripe";
 import { fetchGooglePlayFromGCS } from "./integrations/googlePlay";
 import { fetchAppStore, downloadASCSubscriptionSummary, downloadASCSubscriberReport, downloadASCSubscriptionEventReport } from "./integrations/appStore";
+import { parseCredentials, tryJsonParse } from "./lib/safeJson";
 
 // Constants for chunked sync
 const CHUNK_SIZE = 30; // Process 30 days per action (well under 10-min timeout)
@@ -74,7 +75,7 @@ export const syncAllPlatforms = action({
         });
 
         if (connection.platform === "stripe") {
-          const credentials = JSON.parse(connection.credentials);
+          const credentials = parseCredentials<{ apiKey: string }>(connection.credentials, "stripe");
           
           if (isFirstSync) {
             await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
@@ -119,11 +120,48 @@ export const syncAllPlatforms = action({
               level: "info",
             });
 
+            // For full sync: Delete old revenue events first to ensure clean data with correct proceeds
+            console.log(`[Stripe] Full sync: Deleting old revenue events for clean re-import...`);
+            let totalDeleted = 0;
+            let deleteResult;
+            do {
+              deleteResult = await ctx.runMutation(internal.metrics.deleteRevenueEventsForPlatform, {
+                appId,
+                platform: "stripe",
+                maxToDelete: 500,
+              });
+              totalDeleted += deleteResult.deleted;
+              if (deleteResult.hasMore) {
+                console.log(`[Stripe] Deleted ${totalDeleted} old revenue events so far...`);
+              }
+            } while (deleteResult.hasMore);
+            console.log(`[Stripe] Deleted ${totalDeleted} old revenue events total`);
+            
+            // Store revenue events in batches to avoid 16MB read limit
+            const BATCH_SIZE = 100;
+            let totalStored = 0, totalUpdated = 0, totalSkipped = 0;
+            for (let i = 0; i < data.revenueEvents.length; i += BATCH_SIZE) {
+              const batch = data.revenueEvents.slice(i, i + BATCH_SIZE);
+              const result = await ctx.runMutation(internal.metrics.storeRevenueEventsBatch, {
+                appId,
+                platform: "stripe",
+                events: batch,
+              });
+              totalStored += result.stored;
+              totalUpdated += result.updated;
+              totalSkipped += result.skipped;
+              if (i % 500 === 0 && i > 0) {
+                console.log(`[Stripe] Stored revenue events batch ${i}/${data.revenueEvents.length}`);
+              }
+            }
+            console.log(`[Stripe] Revenue events: ${totalStored} stored, ${totalUpdated} updated, ${totalSkipped} skipped`);
+            
             const result1 = await ctx.runMutation(internal.metrics.processAndStoreMetrics, {
               appId,
               platform: "stripe",
               subscriptions: data.subscriptions,
               revenueEvents: data.revenueEvents,
+              skipRevenueEventStorage: true, // Already stored in batches above
             });
             // Generate daily snapshots for past 365 days from stored raw data in monthly chunks
             const nowMs = Date.now();
@@ -177,11 +215,23 @@ export const syncAllPlatforms = action({
               level: "info",
             });
 
+            // Store revenue events in batches for incremental sync too
+            const BATCH_SIZE_INC = 100;
+            for (let i = 0; i < data.revenueEvents.length; i += BATCH_SIZE_INC) {
+              const batch = data.revenueEvents.slice(i, i + BATCH_SIZE_INC);
+              await ctx.runMutation(internal.metrics.storeRevenueEventsBatch, {
+                appId,
+                platform: "stripe",
+                events: batch,
+              });
+            }
+            
             const result2 = await ctx.runMutation(internal.metrics.processAndStoreMetrics, {
               appId,
               platform: "stripe",
               subscriptions: data.subscriptions,
               revenueEvents: data.revenueEvents,
+              skipRevenueEventStorage: true,
             });
             
             await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
@@ -197,7 +247,12 @@ export const syncAllPlatforms = action({
             level: "success",
           });
         } else if (connection.platform === "googleplay") {
-          const credentials = JSON.parse(connection.credentials);
+          const credentials = parseCredentials<{
+            serviceAccountJson: string;
+            packageName: string;
+            gcsBucketName?: string;
+            gcsReportPrefix?: string;
+          }>(connection.credentials, "googleplay");
           const { serviceAccountJson, packageName, gcsBucketName, gcsReportPrefix } = credentials;
 
           if (!gcsBucketName) {
@@ -215,6 +270,9 @@ export const syncAllPlatforms = action({
             level: "info",
           });
 
+          // Fetch exchange rates from database for currency conversion
+          const exchangeRates = await ctx.runQuery(internal.syncHelpers.getExchangeRatesToUSD, {});
+
           if (isFirstSync) {
             await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
               appId,
@@ -229,7 +287,9 @@ export const syncAllPlatforms = action({
                 packageName,
                 gcsBucketName,
                 gcsReportPrefix || "",
-                undefined // No date filter - get all historical data
+                undefined, // No date filter - get all historical data
+                undefined,
+                exchangeRates
               );
 
               // Log discovered report types
@@ -272,6 +332,7 @@ export const syncAllPlatforms = action({
                 appId,
                 revenueByDate: data.revenueByDate,
                 subscriptionMetricsByDate: data.subscriptionMetricsByDate || {},
+                refundsByDate: data.refundsByDate || {},
                 discoveredReportTypes: reportTypes,
               });
 
@@ -296,14 +357,16 @@ export const syncAllPlatforms = action({
 
             // For incremental sync, fetch last 90 days to catch any updates
             const ninetyDaysAgo = Date.now() - 90 * 24 * 60 * 60 * 1000;
-            
+
             try {
               const data = await fetchGooglePlayFromGCS(
                 serviceAccountJson,
                 packageName,
                 gcsBucketName,
                 gcsReportPrefix || "",
-                ninetyDaysAgo
+                ninetyDaysAgo,
+                undefined,
+                exchangeRates
               );
 
               const reportTypes = data.discoveredReportTypes || [];
@@ -327,6 +390,7 @@ export const syncAllPlatforms = action({
                   appId,
                   revenueByDate: data.revenueByDate,
                   subscriptionMetricsByDate: data.subscriptionMetricsByDate || {},
+                  refundsByDate: data.refundsByDate || {},
                   discoveredReportTypes: reportTypes,
                 });
 
@@ -357,7 +421,13 @@ export const syncAllPlatforms = action({
             level: "success",
           });
         } else if (connection.platform === "appstore") {
-          const credentials = JSON.parse(connection.credentials);
+          const credentials = parseCredentials<{
+            issuerId: string;
+            keyId: string;
+            privateKey: string;
+            vendorNumber: string;
+            bundleId?: string;
+          }>(connection.credentials, "appstore");
           const { issuerId, keyId, privateKey, vendorNumber, bundleId } = credentials;
 
           if (!vendorNumber) {
@@ -714,7 +784,12 @@ export const debugGCSBucket = action({
       return { error: "No Google Play connection found" };
     }
 
-    const credentials = JSON.parse(gpConnection.credentials);
+    const credentials = parseCredentials<{
+      serviceAccountJson: string;
+      packageName: string;
+      gcsBucketName?: string;
+      gcsReportPrefix?: string;
+    }>(gpConnection.credentials, "googleplay");
     const { serviceAccountJson, packageName, gcsBucketName, gcsReportPrefix } = credentials;
 
     if (!gcsBucketName) {
@@ -723,7 +798,8 @@ export const debugGCSBucket = action({
 
     // Import GCS Storage and list files directly
     const { Storage } = await import("@google-cloud/storage");
-    const storage = new Storage({ credentials: JSON.parse(serviceAccountJson) });
+    const serviceAccountCredentials = parseCredentials(serviceAccountJson, "googleplay service account");
+    const storage = new Storage({ credentials: serviceAccountCredentials });
 
     try {
       const [allFiles] = await storage.bucket(gcsBucketName).getFiles({
@@ -861,7 +937,13 @@ export const syncAppStoreChunk = internalAction({
       return;
     }
     
-    const { issuerId, keyId, privateKey, vendorNumber, bundleId } = JSON.parse(credentials);
+    const { issuerId, keyId, privateKey, vendorNumber, bundleId } = parseCredentials<{
+      issuerId: string;
+      keyId: string;
+      privateKey: string;
+      vendorNumber: string;
+      bundleId?: string;
+    }>(credentials, "appstore");
 
     const chunkNum = currentChunk + 1;
     const chunkStart = currentChunk * CHUNK_SIZE;

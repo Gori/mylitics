@@ -1,6 +1,15 @@
 import { google, GoogleGenerativeAIProviderOptions } from '@ai-sdk/google';
 import { streamText, convertToModelMessages, UIMessage, stepCountIs } from 'ai';
 import { tools } from '@/app/dashboard/components/chat/tools';
+import { getAuthToken } from '@/lib/auth-server';
+
+// Maximum rows to include in the AI context to prevent context overflow
+const MAX_CSV_ROWS = 200;
+
+// Input validation limits
+const MAX_MESSAGES = 50; // Maximum conversation history
+const MAX_QUESTION_LENGTH = 2000; // Maximum question length in characters
+const MAX_REQUEST_SIZE = 5 * 1024 * 1024; // 5MB max request size
 
 function extractDateRange(csvData: string): { start: string; end: string } | null {
   if (!csvData?.trim()) return null;
@@ -11,11 +20,71 @@ function extractDateRange(csvData: string): { start: string; end: string } | nul
   return { start: headers[0], end: headers[headers.length - 1] };
 }
 
+/**
+ * Truncate CSV data to prevent context overflow.
+ * Keeps the header row and the most recent data rows.
+ */
+function truncateCSV(csvData: string | undefined, maxRows: number = MAX_CSV_ROWS): { csv: string; truncated: boolean } {
+  if (!csvData?.trim()) return { csv: '', truncated: false };
+
+  const lines = csvData.split('\n');
+  if (lines.length <= maxRows) {
+    return { csv: csvData, truncated: false };
+  }
+
+  // Keep header + most recent rows
+  const header = lines[0];
+  const dataRows = lines.slice(1);
+  const keptRows = dataRows.slice(-maxRows + 1); // -1 for header
+
+  return {
+    csv: [header, ...keptRows].join('\n'),
+    truncated: true,
+  };
+}
+
 export async function POST(request: Request) {
+  // Verify authentication
+  const token = await getAuthToken();
+  if (!token) {
+    return new Response('Unauthorized', { status: 401 });
+  }
+
   console.log('\n=== CHAT API REQUEST ===');
   const startTime = Date.now();
-  
-  const { messages }: { messages: UIMessage[] } = await request.json();
+
+  // Validate Content-Length header to prevent oversized requests
+  const contentLength = request.headers.get('content-length');
+  if (contentLength && parseInt(contentLength, 10) > MAX_REQUEST_SIZE) {
+    console.error('[CHAT API] Request too large:', contentLength);
+    return new Response('Request too large', { status: 413 });
+  }
+
+  let body: { messages?: UIMessage[] };
+  try {
+    body = await request.json();
+  } catch (e) {
+    console.error('[CHAT API] Failed to parse request body', e);
+    return new Response('Invalid JSON body', { status: 400 });
+  }
+
+  const { messages } = body;
+
+  // Validate messages array
+  if (!messages || !Array.isArray(messages)) {
+    console.error('[CHAT API] Messages must be an array');
+    return new Response('Messages must be an array', { status: 400 });
+  }
+
+  if (messages.length === 0) {
+    console.error('[CHAT API] Messages array is empty');
+    return new Response('Messages array cannot be empty', { status: 400 });
+  }
+
+  if (messages.length > MAX_MESSAGES) {
+    console.error('[CHAT API] Too many messages:', messages.length);
+    return new Response(`Maximum ${MAX_MESSAGES} messages allowed`, { status: 400 });
+  }
 
   const latestMessage = messages[messages.length - 1];
   const messageText = latestMessage?.parts?.[0]?.type === 'text' ? latestMessage.parts[0].text : '';
@@ -38,6 +107,13 @@ export async function POST(request: Request) {
   }
 
   const question = questionMatch[1];
+
+  // Validate question length
+  if (question.length > MAX_QUESTION_LENGTH) {
+    console.error('[CHAT API] Question too long:', question.length);
+    return new Response(`Question exceeds maximum length of ${MAX_QUESTION_LENGTH} characters`, { status: 400 });
+  }
+
   console.log('[CHAT API] Question:', question);
   console.log('[CHAT API] Message count:', messages.length);
 
@@ -92,6 +168,10 @@ export async function POST(request: Request) {
   const weeklyRange = extractDateRange(data.weeklyCSV);
   const monthlyRange = extractDateRange(data.monthlyCSV);
 
+  // Truncate CSV data if too large to prevent context overflow
+  const { csv: weeklyCSV, truncated: weeklyTruncated } = truncateCSV(data.weeklyCSV);
+  const { csv: monthlyCSV, truncated: monthlyTruncated } = truncateCSV(data.monthlyCSV);
+
   const systemMessage = `You are a subscription metrics analyst with access to comprehensive historical data.
 
 CURRENT DATE: ${currentDateFormatted} (${currentDate})
@@ -117,15 +197,17 @@ You have access to TWO datasets for historical analysis:
    - Granular week-by-week metrics
    - Best for: identifying specific weeks with changes, short-term trends, recent performance
    - CSV columns: Metric, Platform, Total, [weekly dates...]
-   
-${data.weeklyCSV || 'No weekly data available'}
+   ${weeklyTruncated ? '- NOTE: Data truncated to most recent rows due to size' : ''}
+
+${weeklyCSV || 'No weekly data available'}
 
 2. MONTHLY DATA${monthlyRange ? ` (${monthlyRange.start} to ${monthlyRange.end})` : ''}:
    - Aggregated month-by-month metrics
    - Best for: long-term trends, seasonal patterns, year-over-year comparisons
    - CSV columns: Metric, Platform, Total, [monthly periods as YYYY-MM...]
+   ${monthlyTruncated ? '- NOTE: Data truncated to most recent rows due to size' : ''}
 
-${data.monthlyCSV || 'No monthly data available'}
+${monthlyCSV || 'No monthly data available'}
 
 === METRICS EXPLANATION ===
 - Stock metrics (Active/Trial/Paid/Monthly/Yearly Subscribers, MRR): Show point-in-time values

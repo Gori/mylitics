@@ -3,6 +3,7 @@
 import { action } from "../_generated/server";
 import { v } from "convex/values";
 import { google } from "googleapis";
+import { parseCredentials } from "../lib/safeJson";
 
 /**
  * Google Play Developer API Integration
@@ -49,8 +50,8 @@ export async function getSubscriptionDetails(
   purchaseToken: string
 ): Promise<SubscriptionDetails | null> {
   try {
-    const credentials = JSON.parse(serviceAccountJson);
-    
+    const credentials = parseCredentials(serviceAccountJson, "googleplay service account");
+
     // Initialize Google Auth
     const auth = new google.auth.GoogleAuth({
       credentials,
