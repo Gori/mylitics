@@ -1,6 +1,17 @@
 import { query } from "./_generated/server";
 import { v } from "convex/values";
 import { getUserId, validateAppOwnership } from "./lib/authHelpers";
+import {
+  ONE_DAY_MS,
+  ONE_WEEK_MS,
+  THIRTY_DAYS_MS,
+  ONE_YEAR_MS,
+  DEFAULT_QUERY_LIMIT,
+  SAMPLE_SIZE_SMALL,
+  SAMPLE_SIZE_MEDIUM,
+  SAMPLE_SIZE_STANDARD,
+  PERCENTAGE_PRECISION,
+} from "./lib/constants";
 
 const DEFAULT_REVENUE_FORMAT = "whole" as const;
 
@@ -947,7 +958,7 @@ export const getLatestMetrics = query({
 
     const now = new Date();
     const today = now.toISOString().split("T")[0];
-    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const thirtyDaysAgo = new Date(now.getTime() - THIRTY_DAYS_MS);
     
     const dateRangeStart = thirtyDaysAgo.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
     const dateRangeEnd = now.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
@@ -1495,7 +1506,7 @@ export const getWeeklyMetricsHistory = query({
   },
   handler: async (ctx, { appId, metric }) => {
     const app = await validateAppOwnership(ctx, appId);
-    const oneYearAgo = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+    const oneYearAgo = new Date(Date.now() - ONE_YEAR_MS).toISOString().split("T")[0];
     const snapshots = await ctx.db
       .query("metricsSnapshots")
       .withIndex("by_app_date", (q) => q.eq("appId", appId))
@@ -1513,7 +1524,7 @@ export const getMonthlyMetricsHistory = query({
   },
   handler: async (ctx, { appId, metric }) => {
     const app = await validateAppOwnership(ctx, appId);
-    const oneYearAgo = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+    const oneYearAgo = new Date(Date.now() - ONE_YEAR_MS).toISOString().split("T")[0];
 
     const snapshots = await ctx.db
       .query("metricsSnapshots")
@@ -1575,8 +1586,8 @@ export const getAllDebugData = query({
     const metrics = Array.from(HISTORY_METRICS);
     const flowMetrics = Array.from(FLOW_METRICS);
 
-    const oneYearAgo = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
-    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+    const oneYearAgo = new Date(Date.now() - ONE_YEAR_MS).toISOString().split("T")[0];
+    const thirtyDaysAgo = new Date(Date.now() - THIRTY_DAYS_MS).toISOString().split("T")[0];
 
     const snapshots = await ctx.db
       .query("metricsSnapshots")
@@ -1727,7 +1738,7 @@ export const getChatContext = query({
     } : null;
     
     // Get 52 weeks of historical data
-    const oneYearAgo = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000);
+    const oneYearAgo = new Date(now.getTime() - ONE_YEAR_MS);
     
     const snapshots = await ctx.db
       .query("metricsSnapshots")
@@ -1847,7 +1858,7 @@ export const debugRevenueCalculation = query({
     await validateAppOwnership(ctx, appId);
 
     const now = Date.now();
-    const thirtyDaysAgo = new Date(now - 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+    const thirtyDaysAgo = new Date(now - THIRTY_DAYS_MS).toISOString().split("T")[0];
     const today = new Date(now).toISOString().split("T")[0];
 
     // Get all snapshots for the past 30 days
@@ -2241,7 +2252,7 @@ export const debugMonthlyMetrics = query({
     };
 
     const monthStartMs = new Date(startDate).getTime();
-    const monthEndMs = new Date(endDate).getTime() + 24 * 60 * 60 * 1000;
+    const monthEndMs = new Date(endDate).getTime() + ONE_DAY_MS;
 
     for (const sub of subscriptions) {
       if (!subscriptionStats.byPlatform[sub.platform]) {
@@ -2539,7 +2550,7 @@ export const debugRevenueBreakdown = query({
 
     // Calculate 30-day total (what dashboard shows)
     const now = new Date();
-    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const thirtyDaysAgo = new Date(now.getTime() - THIRTY_DAYS_MS);
     const thirtyDaysAgoStr = thirtyDaysAgo.toISOString().split("T")[0];
 
     const last30DaySnapshots = snapshots.filter(s => s.date >= thirtyDaysAgoStr);
@@ -2756,8 +2767,8 @@ export const debugChurnRate = query({
     await validateAppOwnership(ctx, appId);
 
     const now = Date.now();
-    const thirtyDaysAgo = new Date(now - 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
-    const sevenDaysAgo = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+    const thirtyDaysAgo = new Date(now - THIRTY_DAYS_MS).toISOString().split("T")[0];
+    const sevenDaysAgo = new Date(now - ONE_WEEK_MS).toISOString().split("T")[0];
 
     // Get all snapshots for the past 30 days
     const snapshots = await ctx.db

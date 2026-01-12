@@ -3,6 +3,8 @@
 import { action } from "../_generated/server";
 import { v } from "convex/values";
 import Stripe from "stripe";
+import { logError, getErrorMessage } from "../lib/errors";
+import { STRIPE_API_LIMIT, CENTS_PER_DOLLAR } from "../lib/constants";
 
 export const fetchStripeData = action({
   args: {
@@ -279,7 +281,9 @@ export async function fetchStripe(apiKey: string, startDate?: number, endDate?: 
               paymentIntentId = data.data[0].payment.payment_intent;
             }
           }
-        } catch {}
+        } catch (error) {
+          logError("stripe", "fetch invoice payments", error, { invoiceId: pending.invoice.id });
+        }
       }
       
       // Fetch payment_intent to get charge
@@ -297,8 +301,9 @@ export async function fetchStripe(apiKey: string, startDate?: number, endDate?: 
               return;
             }
           }
-        } catch {
+        } catch (error) {
           paymentIntentRetrievalErrors++;
+          logError("stripe", "retrieve payment intent", error, { paymentIntentId });
         }
       }
       
@@ -316,8 +321,9 @@ export async function fetchStripe(apiKey: string, startDate?: number, endDate?: 
             amountProceeds = btxObj.net / 100;
             invoicesWithProceeds++;
           }
-        } catch {
+        } catch (error) {
           chargeRetrievalErrors++;
+          logError("stripe", "retrieve charge", error, { chargeId });
         }
       }
       

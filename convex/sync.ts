@@ -8,10 +8,26 @@ import { fetchStripe } from "./integrations/stripe";
 import { fetchGooglePlayFromGCS } from "./integrations/googlePlay";
 import { fetchAppStore, downloadASCSubscriptionSummary, downloadASCSubscriberReport, downloadASCSubscriptionEventReport } from "./integrations/appStore";
 import { parseCredentials, tryJsonParse } from "./lib/safeJson";
+import {
+  ONE_YEAR_MS,
+  THIRTY_DAYS_MS,
+  NINETY_DAYS_MS,
+  ONE_DAY_MS,
+  SYNC_CHUNK_SIZE_DAYS,
+  HISTORICAL_SYNC_DAYS,
+  DB_BATCH_SIZE,
+  MAX_DELETE_BATCH,
+  UNIFIED_SYNC_CHUNK_DAYS,
+  SCHEDULER_DELAY_MS,
+  SAMPLE_SIZE_STANDARD,
+  SAMPLE_SIZE_SMALL,
+  SAMPLE_SIZE_LARGE,
+  SAMPLE_SIZE_XLARGE,
+} from "./lib/constants";
 
-// Constants for chunked sync
-const CHUNK_SIZE = 30; // Process 30 days per action (well under 10-min timeout)
-const TOTAL_HISTORICAL_DAYS = 365;
+// Use constants from lib/constants.ts
+const CHUNK_SIZE = SYNC_CHUNK_SIZE_DAYS;
+const TOTAL_HISTORICAL_DAYS = HISTORICAL_SYNC_DAYS;
 
 export const syncAllPlatforms = action({
   args: {
@@ -84,7 +100,7 @@ export const syncAllPlatforms = action({
               level: "info",
             });
 
-            const oneYearAgo = Date.now() - 365 * 24 * 60 * 60 * 1000;
+            const oneYearAgo = Date.now() - ONE_YEAR_MS;
             const data = await fetchStripe(credentials.apiKey, oneYearAgo);
 
             await ctx.runMutation(internal.syncHelpers.appendSyncLog, {
@@ -165,7 +181,7 @@ export const syncAllPlatforms = action({
             });
             // Generate daily snapshots for past 365 days from stored raw data in monthly chunks
             const nowMs = Date.now();
-            const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
+            const thirtyDaysMs = THIRTY_DAYS_MS;
             let chunkStart = oneYearAgo;
             let chunkIdx = 1;
             while (chunkStart < nowMs) {
@@ -356,7 +372,7 @@ export const syncAllPlatforms = action({
             });
 
             // For incremental sync, fetch last 90 days to catch any updates
-            const ninetyDaysAgo = Date.now() - 90 * 24 * 60 * 60 * 1000;
+            const ninetyDaysAgo = Date.now() - NINETY_DAYS_MS;
 
             try {
               const data = await fetchGooglePlayFromGCS(

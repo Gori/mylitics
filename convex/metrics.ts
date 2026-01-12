@@ -2,6 +2,14 @@ import { v } from "convex/values";
 import { mutation, query, internalMutation } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
 import { calculateRevenueExcludingVat } from "./lib/vatRates";
+import {
+  ONE_DAY_MS,
+  THIRTY_DAYS_MS,
+  CENTS_PER_DOLLAR,
+  CURRENCY_DECIMAL_PLACES,
+  SAMPLE_SIZE_SMALL,
+  SAMPLE_SIZE_LARGE,
+} from "./lib/constants";
 
 // Helper to convert currency and round to 2 decimals
 // This is the single source of truth for all currency conversions and rounding
@@ -415,7 +423,7 @@ export const processAndStoreMetrics = internalMutation({
       console.log(`[Metrics ${platform}] Skipping revenue event storage (handled in batches)`);
     }
     
-    const thirtyDaysAgo = now.getTime() - 30 * 24 * 60 * 60 * 1000;
+    const thirtyDaysAgo = now.getTime() - THIRTY_DAYS_MS;
 
     // ========== CALCULATE EVERYTHING FROM FRESH API DATA ONLY ==========
     
@@ -442,7 +450,7 @@ export const processAndStoreMetrics = internalMutation({
 
     // Flow metrics from today's events only
     const todayStart = new Date(today).getTime();  // Start of day (00:00:00)
-    const todayEnd = todayStart + 24 * 60 * 60 * 1000 - 1;  // End of day (23:59:59.999)
+    const todayEnd = todayStart + ONE_DAY_MS - 1;  // End of day (23:59:59.999)
     
     // Cancellations = subscriptions that actually ended/canceled today (not just scheduled to cancel)
     const churn = subscriptions.filter((s) => s.status === "canceled" && s.endDate && s.endDate >= todayStart && s.endDate <= todayEnd).length;
@@ -748,7 +756,7 @@ export const generateHistoricalSnapshots = internalMutation({
     endMs: v.number(),
   },
   handler: async (ctx, { appId, platform, startMs, endMs }) => {
-    const oneDayMs = 24 * 60 * 60 * 1000;
+    const oneDayMs = ONE_DAY_MS;
     const totalDays = Math.floor((endMs - startMs) / oneDayMs) + 1;
     const chunkStartTime = Date.now();
     console.log(
@@ -1050,7 +1058,7 @@ export const processAppStoreReport = internalMutation({
     const userCurrency = app?.currency || "USD";
 
     // Get previous day's snapshot to calculate cancellations
-    const prevDate = new Date(new Date(date).getTime() - 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+    const prevDate = new Date(new Date(date).getTime() - ONE_DAY_MS).toISOString().split("T")[0];
     const prevSnapshot = await ctx.db
       .query("metricsSnapshots")
       .withIndex("by_app_platform", (q) => q.eq("appId", appId).eq("platform", "appstore"))
@@ -1833,7 +1841,7 @@ export const generateUnifiedHistoricalSnapshots = internalMutation({
   },
   handler: async (ctx, { appId, daysBack }) => {
     const today = Date.now();
-    const oneDayMs = 24 * 60 * 60 * 1000;
+    const oneDayMs = ONE_DAY_MS;
     let created = 0;
 
     // Process each day from daysBack to yesterday (not today, that's handled separately)
@@ -1917,7 +1925,7 @@ export const generateUnifiedHistoricalSnapshotsChunk = internalMutation({
   },
   handler: async (ctx, { appId, startDayBack, endDayBack }) => {
     const today = Date.now();
-    const oneDayMs = 24 * 60 * 60 * 1000;
+    const oneDayMs = ONE_DAY_MS;
     let created = 0;
 
     // Process each day in this chunk (from oldest to newest)

@@ -2,6 +2,9 @@
  * Utility functions for Google Play report processing.
  */
 
+import { parseDateString as parseDate, formatDateUTC, parseToDate } from "../../lib/dateUtils";
+import { UTF16_SAMPLE_SIZE, UTF16_NULL_BYTE_THRESHOLD } from "../../lib/constants";
+
 /**
  * Detect and decode CSV content that may be UTF-8 or UTF-16 encoded.
  */
@@ -27,13 +30,13 @@ export function detectAndDecodeCSV(buffer: Buffer): string {
   // Check for UTF-16 without BOM by detecting null bytes pattern
   // UTF-16 has null bytes between ASCII characters
   let nullCount = 0;
-  const sampleSize = Math.min(200, buffer.length);
+  const sampleSize = Math.min(UTF16_SAMPLE_SIZE, buffer.length);
   for (let i = 0; i < sampleSize; i++) {
     if (buffer[i] === 0) nullCount++;
   }
 
   // If >30% null bytes, it's likely UTF-16
-  if (nullCount / sampleSize > 0.3) {
+  if (nullCount / sampleSize > UTF16_NULL_BYTE_THRESHOLD) {
     return buffer.toString('utf16le');
   }
 
@@ -76,6 +79,7 @@ export function parseNumber(str: string | undefined): number {
 /**
  * Parse a date string to YYYY-MM-DD format.
  * Returns null if the date is invalid or outside the specified range.
+ * Uses centralized date parsing from lib/dateUtils.ts.
  */
 export function parseDateString(
   dateStr: string,
@@ -84,41 +88,17 @@ export function parseDateString(
 ): string | null {
   if (!dateStr) return null;
 
-  let dateMs: number;
-  try {
-    if (dateStr.includes('-')) {
-      // Format: YYYY-MM-DD or similar
-      dateMs = new Date(dateStr).getTime();
-    } else if (dateStr.includes('/')) {
-      // Format: MM/DD/YYYY
-      const parts = dateStr.split('/');
-      if (parts.length === 3) {
-        const mm = parseInt(parts[0]);
-        const dd = parseInt(parts[1]);
-        const yyyy = parseInt(parts[2]);
-        if (mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31) {
-          dateMs = new Date(yyyy, mm - 1, dd).getTime();
-        } else {
-          return null;
-        }
-      } else {
-        return null;
-      }
-    } else if (dateStr.includes(',')) {
-      // Format: "Month DD, YYYY"
-      dateMs = new Date(dateStr).getTime();
-    } else {
-      return null;
-    }
+  // Use centralized date parsing
+  const parsed = parseDate(dateStr);
+  if (!parsed) return null;
 
-    if (isNaN(dateMs)) return null;
+  // Check date range if specified
+  const date = parseToDate(parsed);
+  if (!date) return null;
 
-    // Check date range if specified
-    if (startDate && dateMs < startDate) return null;
-    if (endDate && dateMs > endDate) return null;
+  const dateMs = date.getTime();
+  if (startDate && dateMs < startDate) return null;
+  if (endDate && dateMs > endDate) return null;
 
-    return new Date(dateMs).toISOString().split('T')[0];
-  } catch {
-    return null;
-  }
+  return parsed;
 }

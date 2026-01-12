@@ -5,6 +5,7 @@ import { v } from "convex/values";
 import { AppStoreServerAPIClient, Environment, SignedDataVerifier } from "@apple/app-store-server-library";
 import jwt from "jsonwebtoken";
 import zlib from "zlib";
+import { logError, getErrorMessage, safeFetch } from "../lib/errors";
 
 export const fetchAppStoreData = action({
   args: {
@@ -98,13 +99,18 @@ export const listVendors = action({
     privateKey: v.string(),
   },
   handler: async (ctx, { issuerId, keyId, privateKey }) => {
-    const token = createASCJWT(issuerId, keyId, privateKey);
-    const res = await fetch("https://api.appstoreconnect.apple.com/v1/salesReports?filter[reportType]=VENDOR&filter[reportSubType]=SUMMARY&filter[frequency]=DAILY&filter[vendorNumber]=000000", {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    // The ASC Sales API requires a vendorNumber; typically retrieved via Finance reports UI.
-    // For simplicity, return 403/400 text so user can provide vendorNumber.
-    return { status: res.status, text: await res.text() };
+    try {
+      const token = createASCJWT(issuerId, keyId, privateKey);
+      const res = await fetch("https://api.appstoreconnect.apple.com/v1/salesReports?filter[reportType]=VENDOR&filter[reportSubType]=SUMMARY&filter[frequency]=DAILY&filter[vendorNumber]=000000", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      // The ASC Sales API requires a vendorNumber; typically retrieved via Finance reports UI.
+      // For simplicity, return 403/400 text so user can provide vendorNumber.
+      return { status: res.status, text: await res.text() };
+    } catch (error) {
+      logError("appstore", "listVendors", error);
+      return { status: 0, text: `Network error: ${getErrorMessage(error)}` };
+    }
   },
 });
 
@@ -244,20 +250,34 @@ async function downloadASCReport(
     'filter[version]': version,
   });
   const url = `https://api.appstoreconnect.apple.com/v1/salesReports?${params.toString()}`;
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+
+  let res: Response;
+  try {
+    res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  } catch (error) {
+    logError("appstore", "downloadASCReport", error, { reportType, reportSubType, reportDate });
+    return { ok: false, status: 0, text: `Network error: ${getErrorMessage(error)}`, wwwAuth: null, requestId: null } as const;
+  }
+
   if (!res.ok) {
     const text = await res.text();
     const wwwAuth = res.headers.get("www-authenticate") || null;
     const requestId = res.headers.get("x-request-id") || null;
     // Only log non-404 errors (404s are common for recent dates due to Apple reporting delay)
     if (res.status !== 404) {
-      console.log(`[App Store API] HTTP ${res.status} error for ${reportType}/${reportSubType} ${reportDate}`);
+      logError("appstore", "downloadASCReport", `HTTP ${res.status}`, { reportType, reportSubType, reportDate, text: text.substring(0, 200) });
     }
     return { ok: false, status: res.status, text, wwwAuth, requestId } as const;
   }
-  const gz = Buffer.from(await res.arrayBuffer());
-  const tsv = zlib.gunzipSync(gz).toString("utf-8");
-  return { ok: true, tsv } as const;
+
+  try {
+    const gz = Buffer.from(await res.arrayBuffer());
+    const tsv = zlib.gunzipSync(gz).toString("utf-8");
+    return { ok: true, tsv } as const;
+  } catch (error) {
+    logError("appstore", "decompress report", error, { reportType, reportSubType, reportDate });
+    return { ok: false, status: res.status, text: `Decompression error: ${getErrorMessage(error)}`, wwwAuth: null, requestId: null } as const;
+  }
 }
 
 export async function downloadASCSubscriptionSummary(
