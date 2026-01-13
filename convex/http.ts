@@ -9,6 +9,18 @@ const http = httpRouter();
 // Register BetterAuth routes
 authComponent.registerRoutes(http, createAuth);
 
+// Type for decoded App Store notification payload (library types are incomplete)
+type DecodedNotification = {
+  notificationType?: string;
+  subtype?: string;
+  environment?: string;
+  data?: {
+    bundleId?: string;
+    transactionInfo?: { originalTransactionId?: string };
+    renewalInfo?: { originalTransactionId?: string };
+  };
+};
+
 // App Store Server Notifications V2 ingestion
 http.route({
   path: "/appstore/notifications",
@@ -20,11 +32,13 @@ http.route({
       if (!signedPayload) return new Response("missing signedPayload", { status: 400 });
 
       // Verify & decode in a Node action to avoid bundling Node built-ins here
-      const decoded = await ctx.runAction(api.integrations.appStore.decodeAppStoreNotification, {
+      const rawDecoded = await ctx.runAction(api.integrations.appStore.decodeAppStoreNotification, {
         signedPayload,
       });
 
-const data = decoded?.data;
+      // Cast to our type since the library types are incomplete
+      const decoded = rawDecoded as DecodedNotification | null;
+      const data = decoded?.data;
       const notificationType = decoded?.notificationType || "unknown";
       const subtype = decoded?.subtype || undefined;
       const bundleId = data?.bundleId || undefined;
